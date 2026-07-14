@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.pnpm-store/
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets — NEVER commit
+.env
+.env.local
+.env*.local
+.env.production
+.env.development.local
+.env.test.local
+
+# Agent system prompt — copiar de agent/system-prompt.example.md
+# y customizarlo. NO commitearlo (es identidad del operador).
+agent/system-prompt.md
+
+# Supabase
+**/supabase/.branches
+**/supabase/.temp
+**/supabase/.env
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Vercel / Netlify
+.vercel
+.netlify
+
+# Local Claude scratch
+.claude/
+
+# Test
+coverage/
+
+# Tooling scratch
+.atl/
+.opencode/
+
+# Secretos de producción (no commitear)
+.env.produccion
+.env.produccion.*
+n8n/
+agents-n8n/
+.playwright-mcp/
+agents-n8n/*

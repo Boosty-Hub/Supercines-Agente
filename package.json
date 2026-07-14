@@ -1,0 +1,5 @@
+{
+  "name": "kommo-claude-agent-template",
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Token de marca — indigo-600; un clon lo sobreescribe en un solo lugar */
+  --brand: 79 70 229;            /* indigo-600 — acento producto, sobrio pero con identidad */
+  --brand-foreground: 255 255 255;
+  --ring: 79 70 229;             /* foco indigo, coherente */
+  --brand-soft: 238 242 255;    /* indigo-50 — fondos de acento suaves (nav activo, KPI icon bg) */
+  --brand-strong: 67 56 202;   /* indigo-700 — hover de primario */
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}

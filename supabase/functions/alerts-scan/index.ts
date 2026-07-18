@@ -139,6 +139,12 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
     )
     .eq("direction", "inbound")
     .eq("requires_human_review", true)
+    // Un mensaje que el agente decidió ignorar —etapa apagada, canal
+    // silenciado, "Apagar Agente" o regla de silencio— NO puede exigir
+    // revisión humana: si el agente no debe meterse ahí, tampoco debe
+    // levantar una alerta. Sin este filtro, la conversación interna del
+    // equipo llenaba el panel de alertas.
+    .eq("ignored", false)
     .gte("created_at", since);
   const rows = (data ?? []) as Array<{
     id: string;

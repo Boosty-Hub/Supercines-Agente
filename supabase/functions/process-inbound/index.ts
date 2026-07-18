@@ -272,29 +272,49 @@ function isTruthyKommoValue(v: unknown): boolean {
   return ["1", "true", "on", "yes", "si", "sí", "y", "activo"].includes(s);
 }
 
-// deno-lint-ignore no-explicit-any
-async function isAgentOffForLead(
+// Estado del lead leído directo de Kommo en UNA sola llamada.
+//
+// Antes esta función solo devolvía el interruptor "Apagar Agente" y descartaba
+// el resto de la respuesta — incluido `status_id`. Eso dejaba `kommo_stage_id`
+// en null para todo lead cuyo primer evento fuese `message.add` (el payload de
+// mensajes de Kommo NO trae `leads.add`), y el gate de etapa ignorada se saltaba
+// en silencio: el agente terminaba clasificando conversaciones de embudos
+// apagados (ventas por zona, equipo interno). Ahora aprovechamos la misma
+// respuesta para devolver también la etapa.
+//
+// `statusId: null` significa "no se pudo determinar" (error de red, 4xx, o el
+// lead ya no existe) → los gates siguen fail-open, como antes.
+type LeadState = { agentOff: boolean; statusId: number | null };
+
+async function fetchLeadState(
   kommoLeadId: number,
-  fieldId: number,
+  fieldId: number | null,
   domain: string,
   token: string
-): Promise<boolean> {
+): Promise<LeadState> {
   try {
     const res = await fetch(`https://${domain}/api/v4/leads/${kommoLeadId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return false; // fail-open: si no se puede leer, el agente responde normal
+    if (!res.ok) return { agentOff: false, statusId: null }; // fail-open
     // deno-lint-ignore no-explicit-any
     const lead = (await res.json()) as any;
-    const cfv = (lead?.custom_fields_values ?? []) as Array<{
-      field_id: number;
-      values: Array<{ value: unknown }>;
-    }>;
-    const f = cfv.find((c) => Number(c.field_id) === Number(fieldId));
-    if (!f) return false;
-    return isTruthyKommoValue(f.values?.[0]?.value);
+
+    const rawStatus = Number(lead?.status_id);
+    const statusId = Number.isFinite(rawStatus) ? rawStatus : null;
+
+    let agentOff = false;
+    if (fieldId != null) {
+      const cfv = (lead?.custom_fields_values ?? []) as Array<{
+        field_id: number;
+        values: Array<{ value: unknown }>;
+      }>;
+      const f = cfv.find((c) => Number(c.field_id) === Number(fieldId));
+      if (f) agentOff = isTruthyKommoValue(f.values?.[0]?.value);
+    }
+    return { agentOff, statusId };
   } catch {
-    return false;
+    return { agentOff: false, statusId: null };
   }
 }
 
@@ -562,21 +582,119 @@ const MAX_AUDIO_BYTES = 24_000_000; // límite de Whisper ~25MB
 // <subdominio>.amocrm.com). URL fuera del allowlist → falla → human review.
 const AUDIO_HOST_SUFFIXES = [".kommo.com", ".amocrm.com", ".amocrm.ru", ".amojo.me"];
 
-function assertAllowedAudioUrl(raw: string): URL {
+// Hostnames que jamás se fetchean, ni siquiera siguiendo un redirect: son las
+// puertas a la red interna y al metadata del cloud.
+const BLOCKED_HOST_PATTERNS = [
+  /^localhost$/,
+  /\.localhost$/,
+  /^metadata(\.|$)/,
+  /\.internal$/,
+  /\.local$/,
+  /^instance-data(\.|$)/,
+];
+
+function parseHttpsUrl(raw: string, base?: URL): URL {
   let u: URL;
   try {
-    u = new URL(raw);
+    u = base ? new URL(raw, base) : new URL(raw);
   } catch {
     throw new Error("audio url inválida");
   }
   if (u.protocol !== "https:") throw new Error("audio url no-https");
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
-  // Nunca IPs literales (v4 o v6) — solo hostnames de los dominios esperados.
-  if (/^[\d.]+$/.test(host) || host.includes(":")) throw new Error("audio host no permitido");
+  // Nunca IPs literales (v4 o v6): así 169.254.169.254 y 10.x/127.x quedan
+  // fuera sin necesidad de resolver DNS, que acá no se puede hacer.
+  if (/^[\d.]+$/.test(host) || host.includes(":") || u.hostname.startsWith("[")) {
+    throw new Error("audio host no permitido (ip literal)");
+  }
+  if (BLOCKED_HOST_PATTERNS.some((re) => re.test(host))) {
+    throw new Error(`audio host no permitido: ${host}`);
+  }
+  return u;
+}
+
+// ORIGEN estricto: la URL que viene en el webhook —input hostil, el endpoint no
+// pide auth— tiene que ser de Kommo. Eso es lo que impide que un payload
+// forjado dispare un fetch a donde quiera.
+function assertAllowedAudioUrl(raw: string): URL {
+  const u = parseHttpsUrl(raw);
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (!AUDIO_HOST_SUFFIXES.some((s) => host.endsWith(s) || host === s.slice(1))) {
     throw new Error(`audio host no permitido: ${host}`);
   }
   return u;
+}
+
+// SALTOS: una vez validado que el origen es Kommo, los redirects van a donde
+// su CDN los mande — hoy amojo.kommo.com → drive-c.kommo.com →
+// storage.googleapis.com. Exigirles el allowlist de Kommo rompía TODA nota de
+// voz. Se mantiene lo que de verdad protege (https, nada de IPs literales,
+// nada de hosts internos) y se deja que el destino sea cualquier host público.
+function assertAllowedRedirect(raw: string, base: URL): URL {
+  return parseHttpsUrl(raw, base);
+}
+
+// Kommo NO sirve el adjunto directo: amojo.kommo.com responde 301 hacia
+// drive-c.kommo.com. El fetch usaba redirect:"error" (anti-SSRF), así que
+// TODA nota de voz fallaba en el primer salto y nunca se transcribía.
+//
+// Se siguen los redirects a mano revalidando CADA salto contra el allowlist:
+// se conserva la protección (un 3xx no puede llevarnos a una IP interna ni
+// fuera de los dominios de Kommo) y el audio se descarga.
+const MAX_MEDIA_REDIRECTS = 5;
+
+async function fetchAllowedMedia(url: string): Promise<{ res: Response; finalUrl: URL }> {
+  let current = assertAllowedAudioUrl(url);
+  for (let hop = 0; hop <= MAX_MEDIA_REDIRECTS; hop++) {
+    const res = await fetch(current, { redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) throw new Error(`redirect ${res.status} sin Location`);
+      // Revalidación del destino (puede ser relativo) con las reglas de salto.
+      current = assertAllowedRedirect(loc, current);
+      continue;
+    }
+    if (!res.ok) throw new Error(`audio download ${res.status}`);
+    return { res, finalUrl: current };
+  }
+  throw new Error(`demasiados redirects (>${MAX_MEDIA_REDIRECTS})`);
+}
+
+// Whisper elige el decoder por la EXTENSIÓN del archivo, así que mandarle un
+// nombre equivocado hace que rechace un audio perfectamente válido con
+// "Invalid file format".
+//
+// Kommo no ayuda: el payload anuncia "file.ogg", el CDN sirve audio/mp4 y la
+// URL final suele terminar en un UUID pelado sin extensión. Por eso el orden de
+// confianza es Content-Type → URL final → nombre del payload.
+const AUDIO_EXT_BY_MIME: Record<string, string> = {
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/m4a": "m4a",
+  "audio/aac": "m4a",
+  "video/mp4": "mp4",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/ogg": "ogg",
+  "audio/opus": "ogg",
+  "audio/vorbis": "ogg",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/webm": "webm",
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
+};
+const AUDIO_EXT_RE = /\.(mp3|mp4|m4a|ogg|oga|wav|webm|mpga|mpeg|flac)$/i;
+
+function audioFilename(finalUrl: URL, contentType: string | null, payloadName?: string): string {
+  const mime = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  const ext = AUDIO_EXT_BY_MIME[mime];
+  if (ext) return `audio.${ext}`;
+  const fromUrl = finalUrl.pathname.split("/").pop() ?? "";
+  if (AUDIO_EXT_RE.test(fromUrl)) return fromUrl;
+  if (payloadName && AUDIO_EXT_RE.test(payloadName)) return payloadName;
+  return "audio.m4a"; // Kommo sirve mp4/aac en la práctica
 }
 
 async function transcribeAudio(
@@ -584,17 +702,17 @@ async function transcribeAudio(
   url: string,
   filename?: string
 ): Promise<string | null> {
-  const safeUrl = assertAllowedAudioUrl(url);
-  // redirect:"error" → un 3xx no puede re-dirigir el fetch a una IP interna
-  // después de la validación.
-  const audioRes = await fetch(safeUrl, { redirect: "error" });
-  if (!audioRes.ok) throw new Error(`audio download ${audioRes.status}`);
+  const { res: audioRes, finalUrl } = await fetchAllowedMedia(url);
   const blob = await audioRes.blob();
   if (blob.size === 0) throw new Error("audio vacío");
   if (blob.size > MAX_AUDIO_BYTES) throw new Error(`audio demasiado grande (${blob.size} bytes)`);
 
   const form = new FormData();
-  form.append("file", blob, filename || "audio.ogg");
+  form.append(
+    "file",
+    blob,
+    audioFilename(finalUrl, audioRes.headers.get("content-type"), filename)
+  );
   form.append("model", "whisper-1");
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -649,7 +767,9 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
       const channel = originToChannel(m.origin);
       const isInbound = m.type === "incoming";
-      // status_id en el payload se usa para actualizar la etapa del lead en Kommo
+      // status_id del payload. OJO: en un webhook `message.add` Kommo NO manda
+      // `leads.add`, así que esto es undefined casi siempre; la etapa real se
+      // resuelve más abajo contra la API (ver fetchLeadState).
       const stageId = payload.leads?.add?.[0]?.status_id
         ? Number(payload.leads.add[0].status_id)
         : undefined;
@@ -668,42 +788,72 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       if (!text && !media) continue;
 
       // ¿El adjunto es procesable y está habilitado?
+      //
+      // mediaStatus/mediaError se persisten en el mensaje: todo adjunto recibido
+      // queda con constancia de si se pudo procesar. Antes un fallo solo iba a
+      // los logs de la función y el adjunto se perdía sin que nadie lo notara.
+      //   ok      → transcrito (audio) o listo para que lo lea el clasificador
+      //   skipped → apagado a propósito por configuración
+      //   failed  → se intentó y falló; genera alerta
       let mediaForClassify: MediaForClassify | null = null;
       let mediaIgnoreReason: string | null = null;
+      let mediaStatus: "ok" | "failed" | "skipped" | null = null;
+      let mediaError: string | null = null;
       if (media) {
         if (media.kind === "image") {
-          if (filters.media.images)
+          if (filters.media.images) {
             mediaForClassify = { kind: "image", label: media.label, source: media.source };
-          else mediaIgnoreReason = "media_image_off";
+            mediaStatus = "ok";
+          } else {
+            mediaIgnoreReason = "media_image_off";
+            mediaStatus = "skipped";
+          }
         } else if (media.kind === "document") {
-          if (filters.media.documents)
+          if (filters.media.documents) {
             mediaForClassify = { kind: "document", label: media.label, source: media.source };
-          else mediaIgnoreReason = "media_document_off";
+            mediaStatus = "ok";
+          } else {
+            mediaIgnoreReason = "media_document_off";
+            mediaStatus = "skipped";
+          }
         } else if (media.kind === "audio") {
           // Nota de voz → transcripción con Whisper si el toggle está prendido
           // y hay key de OpenAI. El texto transcrito sigue el camino normal
           // (clasificación + respuesta) como si el lead lo hubiera tecleado.
           if (!filters.media.audio) {
             mediaIgnoreReason = "media_audio_off";
+            mediaStatus = "skipped";
           } else if (!openaiKey) {
             mediaIgnoreReason = "media_audio_no_key";
+            mediaStatus = "failed";
+            mediaError = "sin OPENAI_API_KEY configurada";
           } else if (isInbound && media.source.type === "url") {
             try {
               const transcript = await transcribeAudio(openaiKey, media.source.url, media.filename);
               if (transcript) {
                 text = text ? `${text}\n🎙️ ${transcript}` : `🎙️ ${transcript}`;
+                mediaStatus = "ok";
               } else {
                 mediaIgnoreReason = "media_audio_transcribe_failed";
+                mediaStatus = "failed";
+                mediaError = "Whisper devolvió una transcripción vacía";
               }
             } catch (err) {
-              console.error("whisper:", err instanceof Error ? err.message : String(err));
+              const detail = err instanceof Error ? err.message : String(err);
+              console.error("whisper:", detail);
               mediaIgnoreReason = "media_audio_transcribe_failed";
+              mediaStatus = "failed";
+              mediaError = detail.slice(0, 300);
             }
           } else {
             mediaIgnoreReason = "media_audio_unsupported";
+            mediaStatus = "failed";
+            mediaError = `audio no descargable (source=${media.source.type}, inbound=${isInbound})`;
           }
         } else {
           mediaIgnoreReason = "media_unsupported";
+          mediaStatus = "failed";
+          mediaError = `tipo de adjunto no soportado: ${media.label}`;
         }
       }
 
@@ -723,12 +873,47 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
           kommo_message_id: m.id,
           media_url: media?.source.url ?? null,
           media_kind: media?.kind ?? null,
+          media_status: mediaStatus,
+          media_error: mediaError,
         })
         .select("id")
         .single();
       if (msgErr || !msg) {
         console.error("insert message:", msgErr);
         continue;
+      }
+
+      // Verificador de adjuntos: si el adjunto no se pudo procesar, se levanta
+      // una alerta. Un adjunto perdido es un lead perdido —la nota de voz que
+      // destapó esto era una cotización de alquiler de sala— y hasta ahora
+      // fallaba en silencio.
+      if (mediaStatus === "failed") {
+        const kindLabel =
+          media?.kind === "audio"
+            ? "nota de voz"
+            : media?.kind === "image"
+              ? "imagen"
+              : media?.kind === "document"
+                ? "documento"
+                : "adjunto";
+        const { error: alertErr } = await supabase.from("alerts").insert({
+          kind: "media_processing_failed",
+          severity: "warning",
+          title: `No se pudo procesar una ${kindLabel}`,
+          description:
+            `Llegó una ${kindLabel} de ${m.author?.name ?? `lead ${leadKommoId}`} que el agente no pudo leer` +
+            `${mediaError ? `: ${mediaError}` : "."} ` +
+            `El contenido NO entró en la conversación — revisalo a mano en Kommo.`,
+          ref_table: "messages",
+          ref_id: msg.id,
+          metadata: {
+            media_kind: media?.kind ?? null,
+            media_url: media?.source.url ?? null,
+            kommo_lead_id: leadKommoId,
+            reason: mediaIgnoreReason,
+          },
+        });
+        if (alertErr) console.error("alert media_processing_failed:", alertErr.message);
       }
 
       // Detección de comentario de Instagram: si el mensaje tiene talk_id y
@@ -748,17 +933,29 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // Clasificar solo inbound
       if (direction !== "inbound") continue;
 
-      // Apagar Agente: si el campo interruptor del lead está encendido en Kommo,
-      // el agente NO responde a ese lead (la asesora tomó el caso). Es lo primero
-      // que chequeamos: corta todo antes de gastar nada.
-      if (filters.agentOffFieldId && kommoDomain && kommoToken) {
-        const off = await isAgentOffForLead(
+      // Estado del lead en Kommo: interruptor "Apagar Agente" + etapa actual, en
+      // una sola llamada. Se pide cuando cualquiera de los dos gates está
+      // configurado, porque la etapa que trae el webhook de mensajes es siempre
+      // undefined y sin esto el filtro de etapas no se aplicaría nunca.
+      let freshStageId: number | null = null;
+      if (kommoDomain && kommoToken && (filters.agentOffFieldId || filters.stages.size > 0)) {
+        const state = await fetchLeadState(
           leadKommoId,
           filters.agentOffFieldId,
           kommoDomain,
           kommoToken
         );
-        if (off) {
+        freshStageId = state.statusId;
+
+        // Persistir la etapa recién leída: alimenta el gate de generate-response,
+        // los run_stage_ids del seguimiento y el histórico de lead_stage_events.
+        if (freshStageId !== null) {
+          await upsertLead(leadKommoId, { stageId: freshStageId });
+        }
+
+        // Apagar Agente: la asesora tomó el caso → el agente no responde. Se
+        // evalúa primero: corta todo antes de gastar nada.
+        if (state.agentOff) {
           await supabase
             .from("messages")
             .update({ ignored: true, ignored_reason: "agent_off" })
@@ -785,12 +982,18 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // (cero tokens). El gate de generate-response queda igual como red de
       // seguridad por si el lead cambia de etapa entre el inbound y la respuesta.
       if (filters.stages.size > 0) {
-        const { data: ld } = await supabase
-          .from("leads")
-          .select("kommo_stage_id")
-          .eq("id", leadId)
-          .maybeSingle();
-        const st = ld?.kommo_stage_id;
+        // La etapa recién leída de Kommo manda; si no se pudo determinar (API
+        // caída, lead borrado), caemos a la guardada. Sigue siendo fail-open:
+        // sin etapa conocida el mensaje pasa, como antes.
+        let st: number | null = freshStageId;
+        if (st === null) {
+          const { data: ld } = await supabase
+            .from("leads")
+            .select("kommo_stage_id")
+            .eq("id", leadId)
+            .maybeSingle();
+          st = ld?.kommo_stage_id ?? null;
+        }
         if (st != null && filters.stages.has(Number(st))) {
           await supabase
             .from("messages")

@@ -11,6 +11,7 @@ export * from "./button";
 export * from "./badge";
 export * from "./switch";
 export * from "./segmented-control";
+export * from "./loading-overlay";
 export * from "./modal";
 export * from "./confirm-dialog";
 export * from "./page-header";

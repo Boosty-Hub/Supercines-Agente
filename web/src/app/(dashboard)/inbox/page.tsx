@@ -573,6 +573,7 @@ export default async function InboxPage({
                     <li key={l.id}>
                       <Link
                         href={`/inbox?lead=${l.id}${filterQS ? `&${filterQS}` : ""}`}
+                        data-lead-name={name}
                         className={
                           "block px-3 py-2 transition-colors " +
                           (active ? "bg-brand-soft" : "hover:bg-neutral-50")

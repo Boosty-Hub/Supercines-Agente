@@ -50,6 +50,12 @@ export default function DraftActions({
   if (status === "failed") {
     return <span className="text-xs font-medium text-red-600">Falló publicación</span>;
   }
+  // Red de seguridad: generate-response crea el draft vacío como lock y lo
+  // rellena al terminar. Sin este corte se podía aprobar (y publicar al
+  // cliente) una respuesta en blanco.
+  if (status === "pending" && draftBody.trim() === "") {
+    return <span className="text-xs text-neutral-500">Redactando…</span>;
+  }
 
   return (
     <div className="space-y-2.5">

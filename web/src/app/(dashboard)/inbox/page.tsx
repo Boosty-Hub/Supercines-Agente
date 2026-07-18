@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { Badge, StatRow, StatCard, EmptyState, Inbox as InboxIcon, MessageSquare, Alert } from "@/components/ui";
+import { Badge, EmptyState, Inbox as InboxIcon, MessageSquare, Alert } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import RealtimeRefresher from "./realtime-refresher";
 import DraftActions from "./draft-actions";
@@ -24,7 +24,11 @@ type SearchParams = {
   urgent?: string;
   rango?: string;
   sort?: string;
+  etapa?: string;
 };
+
+// Pestaña de la lista según si el agente atiende la etapa del lead.
+type EtapaTab = "agente" | "apagadas" | "todas";
 
 function withinRange(iso: string | null, rango: string): boolean {
   if (!rango) return true;
@@ -57,6 +61,38 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// Métrica compacta para el topbar del Inbox: una píldora en línea en vez de la
+// card grande de StatCard, que en un layout split ocupaba demasiado alto.
+function MiniStat({
+  icon,
+  label,
+  value,
+  tone = "default",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  tone?: "default" | "brand" | "amber" | "red";
+}) {
+  const tones = {
+    default: "bg-neutral-100 text-neutral-600",
+    brand: "bg-brand-soft text-brand-strong",
+    amber: "bg-amber-50 text-amber-700",
+    red: "bg-red-50 text-red-700",
+  } as const;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${tones[tone]}`}
+    >
+      <span aria-hidden className="shrink-0 opacity-70">
+        {icon}
+      </span>
+      <span className="font-semibold tabular-nums">{value}</span>
+      <span className="hidden opacity-80 sm:inline">{label}</span>
+    </span>
+  );
+}
+
 export default async function InboxPage({
   searchParams,
 }: {
@@ -65,14 +101,32 @@ export default async function InboxPage({
   const supabase = createSupabaseServerClient();
   const selectedLead = searchParams.lead ?? null;
 
-  // 1) Leads activos (con al menos un mensaje, ordenados por último mensaje)
-  const { data: leads } = await supabase
-    .from("leads")
-    .select(
-      "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
-    )
-    .order("last_message_at", { ascending: false, nullsFirst: false })
-    .limit(500);
+  // 1) Leads activos (con al menos un mensaje, ordenados por último mensaje) +
+  // las etapas apagadas, que se usan para separar la lista entre las
+  // conversaciones que el agente atiende y las que ignora por etapa.
+  const [{ data: leads }, { data: stageCfg }] = await Promise.all([
+    supabase
+      .from("leads")
+      .select(
+        "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
+      )
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .limit(500),
+    supabase
+      .from("kommo_publish_config")
+      .select("ignored_stage_ids")
+      .eq("is_active", true)
+      .maybeSingle(),
+  ]);
+
+  const ignoredStages = new Set(
+    (((stageCfg?.ignored_stage_ids ?? []) as unknown[]).map(Number)).filter(Number.isFinite)
+  );
+  // Etapa desconocida (todavía sin sincronizar desde Kommo) = el agente SÍ
+  // responde: el gate de process-inbound es fail-open. La lista refleja el
+  // comportamiento real, no el deseado.
+  const agentHandles = (stageId: number | null) =>
+    stageId == null || !ignoredStages.has(Number(stageId));
 
   // Trabajamos lead-by-lead: para cada uno sacamos el último mensaje y flag de review
   type LeadRow = {
@@ -151,9 +205,43 @@ export default async function InboxPage({
   const fUrgent = searchParams.urgent === "1";
   const fRango = searchParams.rango ?? "";
   const fSort = searchParams.sort ?? "recent";
+  // Pestaña de etapa. Por defecto "agente": la mayoría de los embudos están
+  // apagados y esas conversaciones son ruido para quien opera el agente.
+  const fEtapa: EtapaTab =
+    searchParams.etapa === "apagadas"
+      ? "apagadas"
+      : searchParams.etapa === "todas"
+        ? "todas"
+        : "agente";
+
+  // Conteos por pestaña: se calculan ANTES de aplicar el filtro de etapa, pero
+  // DESPUÉS del resto, para que los números sigan a lo que se está mirando.
+  const matchesOtherFilters = (l: (typeof allLeadRows)[number]) => {
+    if (fQ) {
+      const hay = `${l.display_name ?? ""} ${l.kommo_lead_id ?? ""} ${l.lastMsg?.content ?? ""}`.toLowerCase();
+      if (!hay.includes(fQ)) return false;
+    }
+    if (fChannel && normChannel(l.channel) !== fChannel) return false;
+    if (fVertical && !l.verticals.includes(fVertical)) return false;
+    if (fUrgent && l.maxUrgency < 4) return false;
+    if (fEstado === "review" && !l.hasReviewPending) return false;
+    if (fEstado === "waiting" && l.lastMsg?.direction !== "inbound") return false;
+    if (fEstado === "answered" && l.lastMsg?.direction !== "outbound") return false;
+    if (fEstado === "toxic" && l.maxToxicity <= 0.3) return false;
+    if (fRango && !withinRange(l.last_message_at, fRango)) return false;
+    return true;
+  };
+  const preEtapa = allLeadRows.filter(matchesOtherFilters);
+  const etapaCounts = {
+    agente: preEtapa.filter((l) => agentHandles(l.kommo_stage_id)).length,
+    apagadas: preEtapa.filter((l) => !agentHandles(l.kommo_stage_id)).length,
+    todas: preEtapa.length,
+  };
 
   const leadRows = allLeadRows
     .filter((l) => {
+      if (fEtapa === "agente" && !agentHandles(l.kommo_stage_id)) return false;
+      if (fEtapa === "apagadas" && agentHandles(l.kommo_stage_id)) return false;
       if (fQ) {
         const hay = `${l.display_name ?? ""} ${l.kommo_lead_id ?? ""} ${l.lastMsg?.content ?? ""}`.toLowerCase();
         if (!hay.includes(fQ)) return false;
@@ -196,7 +284,18 @@ export default async function InboxPage({
   if (fUrgent) filterParams.set("urgent", "1");
   if (fRango) filterParams.set("rango", fRango);
   if (fSort !== "recent") filterParams.set("sort", fSort);
+  if (fEtapa !== "agente") filterParams.set("etapa", fEtapa);
   const filterQS = filterParams.toString();
+
+  // Href de cada pestaña: conserva el resto de filtros y suelta el lead abierto
+  // (puede no existir en la pestaña destino).
+  const etapaHref = (tab: EtapaTab) => {
+    const qs = new URLSearchParams(filterParams);
+    if (tab === "agente") qs.delete("etapa");
+    else qs.set("etapa", tab);
+    const s = qs.toString();
+    return s ? `/inbox?${s}` : "/inbox";
+  };
 
   // 2) Conversación seleccionada
   type MessageRow = {
@@ -211,6 +310,8 @@ export default async function InboxPage({
     created_at: string;
     media_url: string | null;
     media_kind: string | null;
+    media_status: string | null;
+    media_error: string | null;
     is_comment: boolean;
     verticals: { slug: string } | null;
   };
@@ -254,7 +355,7 @@ export default async function InboxPage({
     const { data: msgs } = await supabase
       .from("messages")
       .select(
-        "id, direction, content, source, kommo_message_id, requires_human_review, answered_by_draft_id, classification, created_at, media_url, media_kind, is_comment, verticals(slug)"
+        "id, direction, content, source, kommo_message_id, requires_human_review, answered_by_draft_id, classification, created_at, media_url, media_kind, media_status, media_error, is_comment, verticals(slug)"
       )
       .eq("lead_id", selectedLead)
       .order("created_at", { ascending: true })
@@ -344,6 +445,10 @@ export default async function InboxPage({
   const pendingReview = allLeadRows.filter((l) => l.hasReviewPending).length;
   const totalActive = allLeadRows.length;
   const shownCount = leadRows.length;
+  // Las tres métricas del topbar miden SIEMPRE el inbox completo, para que no
+  // cambien al saltar de pestaña. Lo que se está viendo lo dicen los contadores
+  // de las propias pestañas.
+  const sinResponder = allLeadRows.filter((l) => l.lastMsg?.direction === "inbound").length;
 
   const leadName = lead ? (lead.display_name ?? `Lead ${lead.kommo_lead_id ?? "?"}`) : "";
 
@@ -351,33 +456,32 @@ export default async function InboxPage({
     <div className="flex h-full flex-col bg-neutral-50">
       <RealtimeRefresher />
 
-      {/* Topbar sticky manual (Inbox es split-full-height — NO usa PageShell) */}
+      {/* Topbar sticky manual (Inbox es split-full-height — NO usa PageShell).
+          Las métricas van EN LÍNEA con el título: en un split a pantalla
+          completa, tres cards apiladas se comían el alto útil de la lista. */}
       <div className="sticky top-0 z-20 border-b border-neutral-200/80 bg-white/80 backdrop-blur-md">
-        <div className="flex items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 sm:px-6">
           <h1 className="text-[15px] font-semibold tracking-tight text-neutral-900">Inbox</h1>
-        </div>
-        {/* Stats row debajo del título */}
-        <div className="px-4 pb-3 sm:px-6">
-          <StatRow>
-            <StatCard
-              label="Conversaciones"
+          <div className="flex items-center gap-1.5">
+            <MiniStat
+              icon={<InboxIcon size={14} />}
+              label="conversaciones"
               value={totalActive}
-              icon={<InboxIcon size={18} />}
               tone="brand"
             />
-            <StatCard
-              label="Sin responder"
-              value={leadRows.filter((l) => l.lastMsg?.direction === "inbound").length}
-              icon={<MessageSquare size={18} />}
-              tone={leadRows.filter((l) => l.lastMsg?.direction === "inbound").length > 0 ? "amber" : "default"}
+            <MiniStat
+              icon={<MessageSquare size={14} />}
+              label="sin responder"
+              value={sinResponder}
+              tone={sinResponder > 0 ? "amber" : "default"}
             />
-            <StatCard
-              label="En revisión"
+            <MiniStat
+              icon={<Alert size={14} />}
+              label="en revisión"
               value={pendingReview}
-              icon={<Alert size={18} />}
               tone={pendingReview > 0 ? "red" : "default"}
             />
-          </StatRow>
+          </div>
         </div>
       </div>
 
@@ -414,9 +518,52 @@ export default async function InboxPage({
             (selectedLead ? "hidden w-full" : "flex w-full")
           }
         >
+          {/* Pestañas por etapa: separa lo que el agente atiende de lo que
+              ignora por estar en un embudo apagado. Sin esto, las
+              conversaciones de venta por zona y de equipo interno —donde el
+              agente no debe responder— tapaban a las que sí importan. */}
+          <div className="flex shrink-0 gap-1 border-b border-neutral-200 px-2 py-2">
+            {([
+              { id: "agente", label: "Con agente" },
+              { id: "apagadas", label: "Apagadas" },
+              { id: "todas", label: "Todas" },
+            ] as const).map((t) => {
+              const on = fEtapa === t.id;
+              return (
+                <Link
+                  key={t.id}
+                  href={etapaHref(t.id)}
+                  aria-current={on ? "page" : undefined}
+                  className={
+                    "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors " +
+                    (on
+                      ? "bg-brand-soft text-brand-strong"
+                      : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900")
+                  }
+                >
+                  {t.label}
+                  <span
+                    className={
+                      "rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums " +
+                      (on ? "bg-white/70 text-brand-strong" : "bg-neutral-100 text-neutral-500")
+                    }
+                  >
+                    {etapaCounts[t.id]}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+
           <div className="flex-1 overflow-y-auto">
             {leadRows.length === 0 ? (
-              <p className="p-5 text-sm text-neutral-500">Sin conversaciones todavía.</p>
+              <p className="p-5 text-sm text-neutral-500">
+                {fEtapa === "agente"
+                  ? "Ninguna conversación en etapas donde el agente responde."
+                  : fEtapa === "apagadas"
+                    ? "Ninguna conversación en etapas apagadas."
+                    : "Sin conversaciones todavía."}
+              </p>
             ) : (
               <ul className="divide-y divide-neutral-100">
                 {leadRows.map((l) => {
@@ -633,6 +780,20 @@ export default async function InboxPage({
                                 </a>
                               ) : null;
                               })()}
+                              {/* Verificación del adjunto: si no se pudo leer, se
+                                  dice acá mismo. Un adjunto perdido es un lead
+                                  perdido y antes solo quedaba como "[Audio …]". */}
+                              {m.media_status === "failed" && (
+                                <div className="mb-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
+                                  <p className="text-xs font-medium text-amber-800">
+                                    ⚠️ El agente no pudo leer este adjunto
+                                  </p>
+                                  <p className="mt-0.5 text-[11px] text-amber-700">
+                                    No entró en la conversación — revisalo a mano en Kommo.
+                                    {m.media_error ? ` (${m.media_error})` : ""}
+                                  </p>
+                                </div>
+                              )}
                               {!(m.media_url && /^\[(Imagen|Documento|Audio|Archivo)/.test(m.content ?? "")) && (
                                 <p className="whitespace-pre-wrap text-sm text-neutral-900">{m.content}</p>
                               )}
@@ -652,8 +813,17 @@ export default async function InboxPage({
                             </div>
                           </div>
 
-                          {/* Draft (agent response) si existe */}
-                          {draft && (
+                          {/* Draft (agent response) si existe.
+                              generate-response inserta la fila VACÍA como lock
+                              (body:"", status:"pending", agent_metadata.generating)
+                              y la rellena ~30s después. Sin distinguir ese estado
+                              se veía una burbuja en blanco con el botón "Aprobar y
+                              enviar" activo — se podía aprobar una respuesta vacía. */}
+                          {draft && (() => {
+                            const draftBody = draft.edited_body ?? draft.body ?? "";
+                            const generating =
+                              draft.status === "pending" && draftBody.trim() === "";
+                            return (
                             <div className="flex justify-end">
                               <div className="max-w-[85%] rounded-2xl rounded-tr-md border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
                                 <div className="mb-1.5 flex flex-wrap items-center gap-1">
@@ -667,12 +837,26 @@ export default async function InboxPage({
                                       ? "neutral"
                                       : "amber"
                                   }>
-                                    {draft.status === "auto_sent" ? "Respuesta automática" : draft.status}
+                                    {draft.status === "auto_sent"
+                                      ? "Respuesta automática"
+                                      : generating
+                                      ? "escribiendo…"
+                                      : draft.status}
                                   </Badge>
                                 </div>
-                                <p className="whitespace-pre-wrap text-sm text-neutral-900">
-                                  {draft.edited_body ?? draft.body}
-                                </p>
+                                {generating ? (
+                                  <p className="flex items-center gap-2 text-sm italic text-neutral-500">
+                                    <span
+                                      aria-hidden
+                                      className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-emerald-300 border-t-emerald-600 motion-reduce:animate-none"
+                                    />
+                                    El agente está redactando la respuesta…
+                                  </p>
+                                ) : (
+                                  <p className="whitespace-pre-wrap text-sm text-neutral-900">
+                                    {draftBody}
+                                  </p>
+                                )}
                                 <div className="mt-1.5 text-right text-[11px] text-neutral-400">
                                   {draft.sent_at ? `enviado ${timeAgo(draft.sent_at)}` : timeAgo(draft.created_at)}
                                 </div>
@@ -687,13 +871,17 @@ export default async function InboxPage({
                                       </p>
                                     </div>
                                   )}
-                                <div className="mt-3 border-t border-emerald-200/70 pt-3">
-                                  <DraftActions
-                                    draftId={draft.id}
-                                    body={draft.edited_body ?? draft.body}
-                                    status={draft.status}
-                                  />
-                                </div>
+                                {/* Sin acciones mientras se redacta: no hay nada
+                                    que aprobar todavía. */}
+                                {!generating && (
+                                  <div className="mt-3 border-t border-emerald-200/70 pt-3">
+                                    <DraftActions
+                                      draftId={draft.id}
+                                      body={draftBody}
+                                      status={draft.status}
+                                    />
+                                  </div>
+                                )}
                                 {typeof draft.agent_metadata?.publish_error === "string" && (
                                   <details className="mt-2">
                                     <summary className="cursor-pointer text-xs text-red-600">
@@ -706,7 +894,8 @@ export default async function InboxPage({
                                 )}
                               </div>
                             </div>
-                          )}
+                            );
+                          })()}
 
                           {isInbound &&
                             m.requires_human_review &&

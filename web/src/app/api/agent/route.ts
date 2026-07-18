@@ -90,7 +90,7 @@ export async function POST(request: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.redirect(
-      new URL(`/agent?error=${encodeURIComponent(msg)}`, request.url),
+      new URL(`/settings?tab=agente&error=${encodeURIComponent(msg)}`, request.url),
       { status: 303 }
     );
   }
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
       ? `Prompt sincronizado, pero NO se pudo renombrar el agente en Anthropic (se mantuvo "${current.AGENT_NAME}"): ${renameError}`
       : `No se pudo renombrar el agente (se mantuvo "${current.AGENT_NAME}"): ${renameError}`;
     return NextResponse.redirect(
-      new URL(`/agent?saved=1&sync=error&error=${encodeURIComponent(detail)}`, request.url),
+      new URL(`/settings?tab=agente&saved=1&sync=error&error=${encodeURIComponent(detail)}`, request.url),
       { status: 303 }
     );
   }
@@ -114,7 +114,7 @@ export async function POST(request: Request) {
   if (!sync.synced && sync.error) {
     return NextResponse.redirect(
       new URL(
-        `/agent?saved=1&sync=error&error=${encodeURIComponent(sync.error)}`,
+        `/settings?tab=agente&saved=1&sync=error&error=${encodeURIComponent(sync.error)}`,
         request.url
       ),
       { status: 303 }
@@ -124,12 +124,12 @@ export async function POST(request: Request) {
   if (!sync.synced) {
     // Saved to DB but not provisioned yet — the wizard will create the agent.
     return NextResponse.redirect(
-      new URL("/agent?saved=1&sync=pending", request.url),
+      new URL("/settings?tab=agente&saved=1&sync=pending", request.url),
       { status: 303 }
     );
   }
 
-  return NextResponse.redirect(new URL("/agent?saved=1&sync=ok", request.url), {
+  return NextResponse.redirect(new URL("/settings?tab=agente&saved=1&sync=ok", request.url), {
     status: 303,
   });
 }

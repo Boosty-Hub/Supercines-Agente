@@ -9,6 +9,47 @@
  * Actualiza un custom field de un lead en Kommo.
  * Throws si la respuesta no es OK.
  */
+// Los campos de texto de Kommo NO aceptan caracteres de 4 bytes (fuera del BMP):
+// guardan el texto TRUNCADO desde el primer emoji en adelante, sin avisar. Con
+// un emoji en la primera línea, el campo queda prácticamente vacío y al cliente
+// no le llega nada. Verificado contra la cuenta real:
+//
+//   "ANTES 🎬 DESPUES" (16 chars) → se guarda "ANTES " (6 chars)
+//   "🎬 al inicio"     (12 chars) → se guarda ""       (0 chars)
+//   600 chars sin emoji           → se guarda entero (no es límite de largo)
+//
+// Es el típico utf8 (3 bytes) en vez de utf8mb4 del lado de Kommo. Como la voz
+// del agente usa emoji a full, hay que sanear ANTES de escribir: los que tienen
+// equivalente dentro del BMP se mapean para no perder el tono, el resto se cae.
+const BMP_EQUIVALENTE: Record<string, string> = {
+  "🕐": "⏰", "🕒": "⏰", "🕓": "⏰", "🕗": "⏰", "⌚": "⌚",
+  "🎟": "🎫", // ambos no-BMP: cae al strip, queda por claridad del intento
+  "⭐": "⭐", "❤️": "❤", "✔️": "✔", "⚠️": "⚠", "➡️": "➡",
+};
+
+/** Deja el texto guardable en un campo de Kommo (solo BMP). */
+export function sanitizeForKommoField(input: string): string {
+  const out: string[] = [];
+  for (const ch of input) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0xfe0f || cp === 0x200d) continue; // selector de variación / ZWJ huérfanos
+    if (cp > 0xffff) {
+      const alt = BMP_EQUIVALENTE[ch];
+      if (alt && (alt.codePointAt(0) ?? 0) <= 0xffff) out.push(alt);
+      continue; // sin equivalente BMP → se descarta
+    }
+    out.push(ch);
+  }
+  return out
+    .join("")
+    .replace(/[ \t]{2,}/g, " ") // espacios que quedaron de los emoji borrados
+    .replace(/^[ \t]+/gm, "") // emoji al principio de línea → no dejar sangría
+    .replace(/[ \t]+$/gm, "")
+    .replace(/^([|·—-]\s*)+/gm, "") // separadores que quedaron colgando
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export async function patchLeadField(
   kommoLeadId: number,
   fieldId: number,
@@ -17,6 +58,7 @@ export async function patchLeadField(
   kommoToken: string
 ): Promise<void> {
   const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
+  const safe = sanitizeForKommoField(value);
   const res = await fetch(url, {
     method: "PATCH",
     headers: {
@@ -27,7 +69,7 @@ export async function patchLeadField(
       custom_fields_values: [
         {
           field_id: fieldId,
-          values: [{ value }],
+          values: [{ value: safe }],
         },
       ],
     }),

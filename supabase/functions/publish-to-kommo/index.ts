@@ -55,10 +55,15 @@ async function getConfig(): Promise<KommoConfig | null> {
 // publishFrom: línea de corte; si está, se ignoran los drafts anteriores
 // (borradores de validación viejos que NO deben dispararse al ir a producción).
 async function pickPending(publishFrom: string | null, limit = 10) {
+  // El embed DEBE nombrar el FK: hay dos relaciones entre drafts y messages
+  // (drafts.message_id y messages.answered_by_draft_id). Sin desambiguar,
+  // PostgREST responde PGRST201 ("more than one relationship was found") y esta
+  // query falla SIEMPRE — es decir, la publicación nunca llegaba a enviar nada.
+  // Acá queremos el mensaje que ORIGINÓ el draft: drafts.message_id.
   let q = supabase
     .from("drafts")
     .select(
-      "id, message_id, body, status, agent_metadata, messages(lead_id, leads(kommo_lead_id, display_name))"
+      "id, message_id, body, status, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
     )
     .eq("status", "approved")
     .is("sent_at", null);

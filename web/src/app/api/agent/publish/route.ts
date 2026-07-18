@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { toReviewMode, fromReviewMode, asReviewMode, type ReviewMode } from "@/lib/review-mode";
 
 // Gate de encendido y publicación del agente (Módulo "Agente" → tarjeta
 // "Encendido y publicación"). Consolida en un solo lugar los tres switches que
@@ -20,8 +21,6 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 //     (publishing_enabled=true Y salesbot_id cargado Y publish_from null).
 //     Como el disparo se reparte entre este route (setea publishing) y
 //     /api/settings/kommo (setea salesbot), ambos hacen el chequeo idempotente.
-
-type ReviewMode = "todo" | "normal" | "sin";
 
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
@@ -52,22 +51,17 @@ export async function POST(request: Request) {
       : current?.publishing_enabled ?? false;
 
   // review_mode: si viene en el patch se usa; si no, se deriva del estado actual.
-  const currentReview: ReviewMode =
-    current?.bypass_review && current?.publishing_enabled
-      ? "sin"
-      : current?.auto_reply_mode === "review_only"
-        ? "todo"
-        : "normal";
-  const reviewRaw = typeof body.review_mode === "string" ? body.review_mode : currentReview;
-  const reviewMode: ReviewMode =
-    reviewRaw === "todo" || reviewRaw === "sin" ? reviewRaw : "normal";
+  const currentReview: ReviewMode = toReviewMode({
+    publishing_enabled: current?.publishing_enabled === true,
+    bypass_review: current?.bypass_review === true,
+    auto_reply_mode: (current?.auto_reply_mode as string | null) ?? null,
+  });
+  const reviewMode = asReviewMode(body.review_mode, currentReview);
 
   const update: Record<string, unknown> = {
     agent_enabled: agentEnabled,
     publishing_enabled: publishing,
-    auto_reply_mode: reviewMode === "todo" ? "review_only" : "auto",
-    // bypass solo puede quedar true con publishing on.
-    bypass_review: reviewMode === "sin" && publishing,
+    ...fromReviewMode(reviewMode, publishing),
   };
 
   // Go-live: estampar publish_from la primera vez que quede habilitado para

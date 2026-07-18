@@ -15,7 +15,7 @@
 
 import { useEffect, useState } from "react";
 import { AgentPromptAssistant } from "@/components/agent-prompt-assistant";
-import { KommoWebhookPanel } from "@/components/kommo-webhook-panel";
+import { KommoWebhookPanel } from "@/components/kommo/webhook-panel";
 import { VerticalsAssistant } from "@/components/verticals-assistant";
 import { Button } from "@/components/ui/button";
 import { inputCls, labelCls } from "@/components/ui/styles";
@@ -582,7 +582,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                   />
                   <p className={hintCls}>
                     Podés editarlo en detalle desde{" "}
-                    <a className="underline" href="/agent">
+                    <a className="underline" href="/settings?tab=agente">
                       /agent
                     </a>{" "}
                     en cualquier momento.
@@ -867,7 +867,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                   <p className="mt-1 text-xs text-neutral-500">
                     El campo de Kommo donde el agente escribe y el salesbot que envía la
                     respuesta se configuran después, en{" "}
-                    <a className="underline" href="/config/kommo">
+                    <a className="underline" href="/settings?tab=conexiones">
                       Config → Kommo
                     </a>
                     . Acá alcanza con conectar la cuenta.

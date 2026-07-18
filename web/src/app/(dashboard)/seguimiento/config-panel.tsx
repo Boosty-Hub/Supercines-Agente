@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { TIMEZONES, formatBusinessHours, type DayRange } from "../agent/business-hours-panel";
+import { TIMEZONES, formatBusinessHours, type DayRange } from "../settings/agente/business-hours-panel";
 import { StageSelector } from "./stage-selector";
 import { UserSelector } from "./user-selector";
 
@@ -170,7 +170,7 @@ export function ConfigPanel({ config }: { config: Config }) {
         <div className="rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-600">
           🕐 Los seguimientos se envían dentro del{" "}
           <span className="font-medium">horario laboral</span> configurado en{" "}
-          <a href="/agent?tab=filtros" className="font-medium text-neutral-800 underline">
+          <a href="/settings?tab=agente&sec=filtros" className="font-medium text-neutral-800 underline">
             Agente → Filtros
           </a>
           : {tzLabel} · {formatBusinessHours(config)}.

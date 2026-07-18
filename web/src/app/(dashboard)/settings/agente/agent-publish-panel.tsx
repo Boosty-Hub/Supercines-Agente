@@ -1,11 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Switch } from "./action-ui";
+import { Switch } from "@/components/ui";
 import { AgentOffConfig } from "./agent-off";
 import type { AgentOff } from "./filters-panel";
 
-export type ReviewMode = "todo" | "normal" | "sin";
+// El tri-estado y su mapeo a columnas viven en @/lib/review-mode (compartido
+// con /api/agent/publish, que antes repetía el mismo derive).
+export type { ReviewMode } from "@/lib/review-mode";
+import type { ReviewMode } from "@/lib/review-mode";
 
 export type PublishState = {
   agentEnabled: boolean;

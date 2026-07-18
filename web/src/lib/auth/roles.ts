@@ -23,7 +23,8 @@ export function getRole(
 // switches, Kommo, herramientas, seguimiento, ajustes), el setup y la gestión de
 // usuarios. Todo lo demás (operación + contenido/calidad) es editor-friendly.
 const ADMIN_ONLY_PREFIXES = [
-  // Páginas
+  // Páginas. /agent, /config y /tools ya solo redirigen a /settings, pero se
+  // dejan listadas para que un editor no llegue ni al redirect.
   "/agent",
   "/config",
   "/tools",

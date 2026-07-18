@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Switch } from "./action-ui";
+import { Switch } from "@/components/ui";
 import { Button, inputCls, textareaCls } from "@/components/ui";
 import { KommoFieldSelect } from "@/components/kommo/field-select";
 

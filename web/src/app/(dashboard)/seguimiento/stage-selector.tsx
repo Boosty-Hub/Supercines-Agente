@@ -6,10 +6,7 @@
 // Si Kommo no está conectado o la lectura falla, cae a mostrar las etapas
 // guardadas como chips para no perder la configuración.
 
-import { useEffect, useState } from "react";
-
-type Stage = { id: number; name: string; color?: string };
-type Pipeline = { id: number; name: string; statuses: Stage[] };
+import { useKommoPipelines, type KommoPipeline as Pipeline } from "@/components/kommo/use-kommo-pipelines";
 
 export function StageSelector({
   value,
@@ -18,41 +15,16 @@ export function StageSelector({
   value: number[];
   onChange: (ids: number[]) => void;
 }) {
-  const [pipelines, setPipelines] = useState<Pipeline[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch("/api/kommo/pipelines", { cache: "no-store" });
-        const j = await res.json();
-        if (cancelled) return;
-        if (!j.ok) {
-          setError(j.error ?? "No se pudieron leer las etapas de Kommo.");
-          setPipelines(null);
-        } else if (!j.configured) {
-          setError("Kommo todavía no está conectado.");
-          setPipelines(null);
-        } else {
-          setPipelines((j.pipelines ?? []) as Pipeline[]);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Error de red");
-          setPipelines(null);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Mismo hook compartido que usa el selector de etapas ignoradas del agente:
+  // acá había una segunda copia del fetch + estado, con sus propios tipos.
+  const state = useKommoPipelines();
+  const loading = state.loading;
+  const error = state.error
+    ? state.error
+    : !state.configured
+      ? "Kommo todavía no está conectado."
+      : null;
+  const pipelines: Pipeline[] | null = error ? null : state.pipelines;
 
   const selected = new Set(value);
   function toggle(id: number) {

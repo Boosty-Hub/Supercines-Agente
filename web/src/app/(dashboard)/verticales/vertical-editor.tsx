@@ -196,7 +196,7 @@ function VerticalAiAssist({
       <p className="text-[11px] text-neutral-400">
         💡 Si tu negocio lo pide, la IA puede incluir acciones en el CRM (mover de etapa, guardar
         datos) usando los nombres reales de Kommo. Activá esas acciones en{" "}
-        <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+        <a href="/settings?tab=agente&sec=acciones" className="font-medium text-violet-700 underline">
           Agente → Acciones
         </a>
         .

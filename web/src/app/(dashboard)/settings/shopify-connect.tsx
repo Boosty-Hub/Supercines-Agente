@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge, Button, ConfirmDialog, inputCls as sharedInputCls } from "@/components/ui";
-import { useShopifyScopes, ShopifyScopesSummary } from "@/app/(dashboard)/agent/shopify-scopes-badge";
+import { useShopifyScopes, ShopifyScopesSummary } from "./agente/shopify-scopes-badge";
 
 type Mode = "credentials" | "legacy";
 
@@ -94,7 +94,7 @@ export function ShopifyConnect({
           <p className="text-xs text-neutral-500">
             Conectá la tienda para que el agente pueda buscar productos, ver pedidos y crear links
             de pago. Después activás cada capacidad en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-neutral-700 underline">
+            <a href="/settings?tab=agente&sec=acciones" className="font-medium text-neutral-700 underline">
               Agente → Acciones
             </a>
             .

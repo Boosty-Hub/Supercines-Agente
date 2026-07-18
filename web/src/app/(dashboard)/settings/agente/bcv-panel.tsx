@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Switch } from "./action-ui";
+import { Switch } from "@/components/ui";
 import { Button, ConfirmDialog, inputCls } from "@/components/ui";
 
 export function BcvPanel({

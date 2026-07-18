@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3, MessageSquare, ChevronRight,
+  Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
 
@@ -52,9 +52,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Configuración",
     adminOnly: true,
     items: [
-      { href: "/agent", label: "Agente", icon: Bot },
-      { href: "/config/kommo", label: "Kommo", icon: MessageSquare },
-      { href: "/tools", label: "Herramientas", icon: Wrench },
+      // Agente, Kommo y Herramientas viven dentro de Ajustes (pestañas).
       { href: "/seguimiento", label: "Seguimiento", icon: Repeat },
       { href: "/usuarios", label: "Usuarios", icon: Users },
       { href: "/settings", label: "Ajustes", icon: Settings },

@@ -16,6 +16,28 @@ export type ScopesState = {
   reload: () => void;
 };
 
+type ScopesPayload = { scopes: string[] | null; error: string | null; shopName?: string };
+
+// Cache a nivel de módulo. Con los módulos unificados, la tarjeta de conexión
+// (Conexiones) y el panel de Acciones se montan en la misma página: sin esto
+// serían dos mediciones idénticas contra Shopify en cada carga. `reload()`
+// invalida el cache para que el reintento manual sí vuelva a medir.
+let inflight: Promise<ScopesPayload> | null = null;
+
+function loadScopes(): Promise<ScopesPayload> {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    const res = await fetch("/api/shopify/scopes", { cache: "no-store" });
+    const j = await res.json();
+    if (!j.ok) return { scopes: null, error: j.error ?? "No se pudieron leer los permisos." };
+    return { scopes: (j.scopes ?? []) as string[], error: null, shopName: j.shopName };
+  })().catch((e) => {
+    inflight = null;
+    return { scopes: null, error: e instanceof Error ? e.message : "Error de red" };
+  });
+  return inflight;
+}
+
 export function useShopifyScopes(enabled: boolean): ScopesState {
   const [loading, setLoading] = useState(false);
   const [scopes, setScopes] = useState<string[] | null>(null);
@@ -23,34 +45,26 @@ export function useShopifyScopes(enabled: boolean): ScopesState {
   const [shopName, setShopName] = useState<string | undefined>();
   const [nonce, setNonce] = useState(0);
 
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const reload = useCallback(() => {
+    inflight = null; // forzar una medición nueva
+    setNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    (async () => {
-      try {
-        const res = await fetch("/api/shopify/scopes", { cache: "no-store" });
-        const j = await res.json();
+    loadScopes()
+      .then((p) => {
         if (cancelled) return;
-        if (!j.ok) {
-          setScopes(null);
-          setError(j.error ?? "No se pudieron leer los permisos.");
-        } else {
-          setScopes(j.scopes ?? []);
-          setShopName(j.shopName);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setScopes(null);
-          setError(e instanceof Error ? e.message : "Error de red");
-        }
-      } finally {
+        setScopes(p.scopes);
+        setError(p.error);
+        setShopName(p.shopName);
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };

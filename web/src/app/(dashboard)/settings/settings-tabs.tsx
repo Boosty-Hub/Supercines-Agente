@@ -1,59 +1,87 @@
 "use client";
 
-// Pestañas de Configuración (segmented control), mismo patrón que /agent.
-// Reemplaza el scroll vertical largo de grupos: cada grupo vive en su pestaña.
-// El contenido de cada slot se renderiza en el server (forms con action=, datos
-// de Supabase) y se pasa como prop; acá solo alternamos cuál se muestra.
-// Se mantienen los tres montados (CSS hidden) para no perder lo tipeado en los
-// forms al cambiar de pestaña.
+// Pestañas de Ajustes — el único módulo de configuración del dashboard.
+//
+// Absorbió las páginas sueltas /agent, /config/kommo y /tools. Cada slot se
+// renderiza en el server (forms con action=, datos de Supabase) y llega como
+// prop; acá solo se decide cuál se muestra.
+//
+// Los cuatro slots quedan MONTADOS (ocultos con CSS) para no perder lo tipeado
+// al cambiar de pestaña. Eso es seguro porque los fetches de cliente
+// (/api/kommo/fields, /api/shopify/scopes) están cacheados a nivel de módulo:
+// se piden una vez por carga de página, no una vez por panel.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { SegmentedControl } from "@/components/ui";
 
-export type SettingsTab = "conexiones" | "sistema" | "integrar";
+export type SettingsTab = "agente" | "conexiones" | "herramientas" | "sistema";
 
 const TABS: { id: SettingsTab; label: string }[] = [
+  { id: "agente", label: "Agente" },
   { id: "conexiones", label: "Conexiones" },
+  { id: "herramientas", label: "Herramientas" },
   { id: "sistema", label: "Sistema" },
-  { id: "integrar", label: "Integrar" },
 ];
+
+const IS_TAB = (v: string | null): v is SettingsTab =>
+  v === "agente" || v === "conexiones" || v === "herramientas" || v === "sistema";
 
 export function SettingsTabs({
   initialTab,
+  agente,
   conexiones,
+  herramientas,
   sistema,
-  integrar,
 }: {
   initialTab: SettingsTab;
+  agente: React.ReactNode;
   conexiones: React.ReactNode;
+  herramientas: React.ReactNode;
   sistema: React.ReactNode;
-  integrar: React.ReactNode;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const router = useRouter();
+  const params = useSearchParams();
+
+  // Enlaces entrantes (?tab=...) desde otros módulos y desde las rutas viejas
+  // que ahora redirigen acá.
+  const urlTab = params.get("tab");
+  useEffect(() => {
+    if (IS_TAB(urlTab) && urlTab !== tab) setTab(urlTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTab]);
+
+  function select(next: SettingsTab) {
+    setTab(next);
+    // Reflejar la pestaña en la URL sin recargar, para que sea compartible y
+    // para que el botón "atrás" funcione como se espera.
+    const qs = new URLSearchParams(Array.from(params.entries()));
+    qs.set("tab", next);
+    qs.delete("sec"); // el ancla de sección solo aplica a la carga inicial
+    router.replace(`/settings?${qs.toString()}`, { scroll: false });
+  }
+
+  const slots: Record<SettingsTab, React.ReactNode> = {
+    agente,
+    conexiones,
+    herramientas,
+    sistema,
+  };
 
   return (
     <div className="space-y-6">
-      <div className="inline-flex gap-1 rounded-lg bg-neutral-100 p-1">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            aria-pressed={tab === t.id}
-            className={
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors " +
-              (tab === t.id
-                ? "bg-white text-neutral-900 shadow-sm"
-                : "text-neutral-600 hover:text-neutral-900")
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div className={tab === "conexiones" ? "" : "hidden"}>{conexiones}</div>
-      <div className={tab === "sistema" ? "" : "hidden"}>{sistema}</div>
-      <div className={tab === "integrar" ? "" : "hidden"}>{integrar}</div>
+      <SegmentedControl
+        items={TABS}
+        value={tab}
+        onChange={select}
+        aria-label="Secciones de Ajustes"
+      />
+      {TABS.map((t) => (
+        <div key={t.id} className={tab === t.id ? "" : "hidden"}>
+          {slots[t.id]}
+        </div>
+      ))}
     </div>
   );
 }

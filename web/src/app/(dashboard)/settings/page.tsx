@@ -1,116 +1,330 @@
+// Ajustes — el único módulo de configuración.
+//
+// Absorbió las páginas sueltas /agent, /config/kommo y /tools. Antes eran tres
+// cascadas de queries independientes (y dos SELECT distintos a la MISMA fila de
+// kommo_publish_config, más dos llamadas a getShopifyStatus). Acá se hace un
+// solo Promise.all y los datos se reparten a las cuatro pestañas.
+
 import { headers } from "next/headers";
+import { configValues } from "@/lib/runtime-config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { configValue } from "@/lib/runtime-config";
 import { getShopifyStatus } from "@/lib/shopify";
-import { Button, PageShell, SectionCard, inputCls } from "@/components/ui";
-import { UpdatesPanel } from "./updates-panel";
-import { ShopifyConnect } from "./shopify-connect";
+import { Badge, PageShell, SectionCard } from "@/components/ui";
+import { toReviewMode } from "@/lib/review-mode";
+
 import { SettingsTabs, type SettingsTab } from "./settings-tabs";
+import { AgenteTab, type AgenteSection } from "./agente/agente-tab";
+import { AgentForm } from "./agente/agent-form";
+import { AgentPublishPanel, type PublishState } from "./agente/agent-publish-panel";
+import type { Rule, VerticalLite } from "./agente/filters-panel";
+import type { CommentsConfig } from "./agente/comments-panel";
+import { KommoSection } from "./conexiones/kommo-section";
+import { ToolEditor, type AgentTool } from "./herramientas/tool-editor";
+import { ShopifyConnect } from "./shopify-connect";
+import { UpdatesPanel } from "./updates-panel";
 import { EmbedCodePanel } from "./embed-code-panel";
+import { AlertsForm } from "./sistema/alerts-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: { alerts_saved?: string; tab?: string };
+  searchParams: {
+    tab?: string;
+    sec?: string;
+    saved?: string;
+    sync?: string;
+    error?: string;
+    alerts_saved?: string;
+  };
 }) {
+  const cfg = await configValues([
+    "SYSTEM_PROMPT",
+    "OPERATOR_NAME",
+    "AGENT_NAME",
+    "NEXT_PUBLIC_AGENT_LABEL",
+    "ANTHROPIC_AGENT_ID",
+    "ANTHROPIC_AGENT_VERSION",
+    "BCV_RATE_URL",
+    "OPENAI_API_KEY",
+    "AUTO_UPDATE_ENABLED",
+  ]);
+
   const supabase = createSupabaseServerClient();
-  const { data: alertCfg } = await supabase
-    .from("alert_config")
-    .select("webhook_url, webhook_enabled")
-    .eq("is_active", true)
-    .single();
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, shopifyStatus] =
+    await Promise.all([
+      supabase
+        .from("agent_skip_rules")
+        .select("id, pattern, match_type, case_sensitive, enabled, description")
+        .order("created_at", { ascending: true }),
+      // Fila singleton de configuración: un solo SELECT para toda la página
+      // (antes /agent pedía 40 columnas y /config/kommo repetía la consulta
+      // para pedir otras 2).
+      supabase
+        .from("kommo_publish_config")
+        .select(
+          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
+        )
+        .eq("is_active", true)
+        .maybeSingle(),
+      supabase.from("verticals").select("id, slug, name, ignore").order("slug"),
+      // Canales realmente vistos en mensajes (para mostrarlos como opciones).
+      supabase.from("messages").select("source").not("source", "is", null).limit(1000),
+      // Horario laboral (single source of truth compartida con Seguimiento).
+      supabase
+        .from("follow_up_config")
+        .select("timezone, business_hours, business_hours_start, business_hours_end, active_days")
+        .eq("is_active", true)
+        .maybeSingle(),
+      supabase
+        .from("kommo_credentials")
+        .select("subdomain, account_id, token_expires_at")
+        .eq("is_active", true)
+        .maybeSingle(),
+      supabase
+        .from("alert_config")
+        .select("webhook_url, webhook_enabled")
+        .eq("is_active", true)
+        .maybeSingle(),
+      supabase
+        .from("agent_tools")
+        .select("*")
+        .order("tool_type", { ascending: false }) // 'system' > 'http'
+        .order("created_at", { ascending: true }),
+      getShopifyStatus(),
+    ]);
 
-  const shopifyStatus = await getShopifyStatus();
-  const autoUpdateEnabled = (await configValue("AUTO_UPDATE_ENABLED")) !== "0";
+  const p = pubRes.data;
 
-  // URL base del panel — se detecta automáticamente, sin variable de entorno
+  // ── Datos: pestaña Agente ─────────────────────────────────────────────────
+  const rules = (rulesRes.data ?? []) as Rule[];
+  const verticals = (vertRes.data ?? []) as VerticalLite[];
+  const limits = {
+    cooldown: p?.response_cooldown_seconds ?? 0,
+    max: p?.max_responses_per_lead ?? 0,
+    window: p?.cooldown_window_hours ?? 24,
+  };
+  const channels = {
+    seen: Array.from(
+      new Set(
+        ((seenRes.data ?? []) as { source: string | null }[])
+          .map((m) => m.source)
+          .filter((s): s is string => Boolean(s))
+      )
+    ),
+    ignored: (p?.ignored_channels ?? []) as string[],
+  };
+  const media = {
+    images: p?.respond_to_images === true,
+    documents: p?.respond_to_documents === true,
+    audio: p?.respond_to_audio === true,
+  };
+  const publish: PublishState = {
+    agentEnabled: p?.agent_enabled !== false, // default ON
+    publishing: p?.publishing_enabled === true,
+    reviewMode: toReviewMode({
+      publishing_enabled: p?.publishing_enabled === true,
+      bypass_review: p?.bypass_review === true,
+      auto_reply_mode: (p?.auto_reply_mode as string | null) ?? null,
+    }),
+  };
+  const crm = {
+    enabled: p?.crm_actions_enabled === true,
+    moveStage: p?.crm_can_move_stage === true,
+    updateLead: p?.crm_can_update_lead === true,
+    updateContact: p?.crm_can_update_contact === true,
+  };
+  const shopify = {
+    enabled: p?.shopify_actions_enabled === true,
+    search: p?.shopify_can_search === true,
+    orders: p?.shopify_can_orders === true,
+    checkout: p?.shopify_can_checkout === true,
+  };
+  const comments: CommentsConfig = {
+    comment_reply_enabled: p?.comment_reply_enabled === true,
+    comment_salesbot_id: (p?.comment_salesbot_id as number | null) ?? null,
+    comment_field_id: (p?.comment_field_id as number | null) ?? null,
+    comment_reply_rules: (p?.comment_reply_rules as string | null) ?? null,
+    comment_instructions: (p?.comment_instructions as string | null) ?? null,
+    comment_source_ids: ((p?.comment_source_ids ?? []) as number[]).map(Number),
+  };
+
+  // ── Datos: pestaña Herramientas ───────────────────────────────────────────
+  const tools = (toolsRes.data ?? []) as AgentTool[];
+  const enabledHttpCount = tools.filter((t) => t.tool_type === "http" && t.enabled).length;
+
+  // ── Datos: pestaña Sistema ────────────────────────────────────────────────
   const host = headers().get("host") ?? "tu-dominio.com";
   const proto = headers().get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
   const baseUrl = `${proto}://${host}`;
 
-  const alertsSaved = searchParams.alerts_saved === "1";
+  // ── Estado de la vista ────────────────────────────────────────────────────
+  const provisioned = Boolean(cfg.ANTHROPIC_AGENT_ID);
+  const saved = searchParams.saved === "1" || searchParams.alerts_saved === "1";
+  const sync = searchParams.sync;
+  const errorMsg = searchParams.error;
 
-  // Pestaña inicial: tras guardar alertas caemos en Sistema para ver la
-  // confirmación; si no, respetamos ?tab.
   const initialTab: SettingsTab =
-    alertsSaved || searchParams.tab === "sistema"
-      ? "sistema"
-      : searchParams.tab === "integrar"
-        ? "integrar"
-        : "conexiones";
+    searchParams.tab === "conexiones"
+      ? "conexiones"
+      : searchParams.tab === "herramientas"
+        ? "herramientas"
+        : searchParams.tab === "sistema" || searchParams.alerts_saved === "1"
+          ? "sistema"
+          : "agente";
 
-  // ── Slot: Conexiones ──────────────────────────────────────────────────────
-  const conexiones = (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <ShopifyConnect connected={shopifyStatus.configured} domain={shopifyStatus.domain} />
-    </div>
-  );
+  const initialSection: AgenteSection =
+    searchParams.sec === "filtros"
+      ? "filtros"
+      : searchParams.sec === "acciones"
+        ? "acciones"
+        : "identidad";
 
-  // ── Slot: Integrar ───────────────────────────────────────────────────────
-  const integrar = (
-    <SectionCard
-      title="Integrar en tu app"
-      description="Embebé el dashboard dentro de cualquier app existente con una sola línea de código."
+  return (
+    <PageShell
+      title="Ajustes"
+      description="Todo lo que configura al agente: su identidad y comportamiento, las conexiones, sus herramientas y el sistema."
     >
-      <EmbedCodePanel baseUrl={baseUrl} />
-    </SectionCard>
-  );
-
-  // ── Slot: Sistema ─────────────────────────────────────────────────────────
-  const sistema = (
-    <div className="space-y-4">
-      {alertsSaved && (
+      {/* Un solo banner de guardado para toda la página (antes había tres, uno
+          por módulo, con tres flags distintos de querystring). */}
+      {saved && sync === "ok" && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          ✓ Configuración de alertas guardada
+          ✓ Guardado y sincronizado con Anthropic
+          {cfg.ANTHROPIC_AGENT_VERSION ? ` (v${cfg.ANTHROPIC_AGENT_VERSION})` : ""}.
+        </div>
+      )}
+      {saved && sync === "pending" && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ✓ Guardado en la plataforma. El agente todavía NO está aprovisionado —
+          completá el <a className="font-medium underline" href="/setup">setup</a> para
+          crearlo en Anthropic con este prompt.
+        </div>
+      )}
+      {saved && sync === "error" && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          ✓ Guardado en la plataforma, pero la sincronización con Anthropic falló:{" "}
+          <span className="font-mono">{errorMsg}</span>
+        </div>
+      )}
+      {saved && !sync && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          ✓ Configuración guardada
+        </div>
+      )}
+      {!saved && errorMsg && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          ✗ {errorMsg}
         </div>
       )}
 
-      <UpdatesPanel autoUpdateEnabled={autoUpdateEnabled} />
-
-      <SectionCard
-        title="Alertas"
-        description="Webhook opcional para recibir alertas en Slack/Discord/Zapier."
-      >
-        <form action="/api/settings/alerts" method="post" className="space-y-4">
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-neutral-700">Webhook URL</label>
-            <input
-              type="url"
-              name="webhook_url"
-              defaultValue={alertCfg?.webhook_url ?? ""}
-              placeholder="https://hooks.slack.com/services/... o https://discord.com/api/webhooks/..."
-              className={inputCls + " font-mono"}
-            />
-            <p className="text-xs text-neutral-500">
-              Compatible con Slack (campo &quot;text&quot;) y Discord (campo &quot;embeds&quot;). Para email, usá un Zap entrante.
-            </p>
-          </div>
-          <div className="space-y-2 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
-            <label className="flex items-center gap-3 text-sm">
-              <input
-                type="checkbox"
-                name="webhook_enabled"
-                defaultChecked={alertCfg?.webhook_enabled ?? false}
-                className="h-5 w-5 rounded border-neutral-300 text-brand focus:ring-brand"
-              />
-              <span className="font-medium text-neutral-900">Webhook habilitado</span>
-            </label>
-          </div>
-          <Button type="submit" variant="primary">Guardar</Button>
-        </form>
-      </SectionCard>
-    </div>
-  );
-
-  return (
-    <PageShell title="Ajustes" width="narrow">
       <SettingsTabs
         initialTab={initialTab}
-        conexiones={conexiones}
-        sistema={sistema}
-        integrar={integrar}
+        // ── Agente ────────────────────────────────────────────────────────
+        agente={
+          <AgenteTab
+            initialSection={initialSection}
+            rules={rules}
+            limits={limits}
+            verticals={verticals}
+            channels={channels}
+            ignoredStageIds={(p?.ignored_stage_ids ?? []) as number[]}
+            debounce={(p?.response_debounce_seconds ?? 45) as number}
+            freshness={(p?.answer_max_age_hours ?? 1) as number}
+            media={media}
+            hasOpenaiKey={Boolean(cfg.OPENAI_API_KEY)}
+            crm={crm}
+            shopify={shopify}
+            shopifyConnected={shopifyStatus.configured}
+            bcvEnabled={p?.bcv_rate_enabled === true}
+            bcvHasCustomSource={Boolean(cfg.BCV_RATE_URL)}
+            businessHours={fuRes.data ?? null}
+            comments={comments}
+          >
+            <div className="space-y-6">
+              <AgentPublishPanel
+                initial={publish}
+                agentOff={{
+                  fieldId: (p?.agent_off_field_id as number | null) ?? null,
+                  fieldName: (p?.agent_off_field_name as string | null) ?? null,
+                }}
+              />
+
+              <SectionCard
+                title="Estado en Anthropic"
+                action={
+                  <Badge color={provisioned ? "green" : "amber"}>
+                    {provisioned ? "Aprovisionado" : "Pendiente"}
+                  </Badge>
+                }
+              >
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+                    <p className="text-xs uppercase tracking-wide text-neutral-500">Agent ID</p>
+                    <p className="mt-1 break-all font-mono text-xs text-neutral-900">
+                      {cfg.ANTHROPIC_AGENT_ID ?? "(no configurado — corré /setup)"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+                    <p className="text-xs uppercase tracking-wide text-neutral-500">Versión</p>
+                    <p className="mt-1 font-mono text-sm text-neutral-900">
+                      {cfg.ANTHROPIC_AGENT_VERSION ? `v${cfg.ANTHROPIC_AGENT_VERSION}` : "—"}
+                    </p>
+                  </div>
+                </div>
+              </SectionCard>
+
+              <AgentForm
+                initial={{
+                  operatorName: cfg.OPERATOR_NAME ?? "",
+                  agentName: cfg.AGENT_NAME ?? "",
+                  agentLabel: cfg.NEXT_PUBLIC_AGENT_LABEL ?? "",
+                  systemPrompt: cfg.SYSTEM_PROMPT ?? "",
+                }}
+              />
+            </div>
+          </AgenteTab>
+        }
+        // ── Conexiones ────────────────────────────────────────────────────
+        conexiones={
+          <div className="space-y-4">
+            <KommoSection
+              data={{
+                credentials: {
+                  subdomain: (credRes.data?.subdomain as string | null) ?? null,
+                  accountId: (credRes.data?.account_id as number | null) ?? null,
+                  expiresAt: (credRes.data?.token_expires_at as string | null) ?? null,
+                },
+                publish: {
+                  responseFieldId: (p?.response_custom_field_id as number | null) ?? null,
+                  salesbotId: (p?.salesbot_id as number | null) ?? null,
+                },
+              }}
+            />
+            <ShopifyConnect
+              connected={shopifyStatus.configured}
+              domain={shopifyStatus.domain}
+            />
+          </div>
+        }
+        // ── Herramientas ──────────────────────────────────────────────────
+        herramientas={<ToolEditor tools={tools} enabledHttpCount={enabledHttpCount} />}
+        // ── Sistema ───────────────────────────────────────────────────────
+        sistema={
+          <div className="space-y-4">
+            <UpdatesPanel autoUpdateEnabled={cfg.AUTO_UPDATE_ENABLED !== "0"} />
+            <AlertsForm
+              webhookUrl={(alertRes.data?.webhook_url as string | null) ?? ""}
+              enabled={alertRes.data?.webhook_enabled === true}
+            />
+            <SectionCard
+              title="Integrar en tu app"
+              description="Embebé el dashboard dentro de cualquier app existente con una sola línea de código."
+            >
+              <EmbedCodePanel baseUrl={baseUrl} />
+            </SectionCard>
+          </div>
+        }
       />
     </PageShell>
   );

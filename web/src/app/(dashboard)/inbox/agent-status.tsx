@@ -33,7 +33,7 @@ export function computeAgentStatus(input: {
       tone: "red",
       label: "Agente apagado",
       detail: "El interruptor general está apagado: el agente no responde a NINGÚN lead.",
-      fixHref: "/config/kommo",
+      fixHref: "/settings?tab=conexiones",
       fixLabel: "Encender en Kommo",
     };
   }
@@ -43,7 +43,7 @@ export function computeAgentStatus(input: {
       label: "Etapa ignorada",
       detail:
         "Este lead está en una etapa que el agente tiene configurada para ignorar — no le genera respuesta. Movelo de etapa o sacá esa etapa de la lista de ignoradas.",
-      fixHref: "/agent?tab=filtros",
+      fixHref: "/settings?tab=agente&sec=filtros",
       fixLabel: "Ver etapas ignoradas",
     };
   }
@@ -53,7 +53,7 @@ export function computeAgentStatus(input: {
       label: "Modo validación",
       detail:
         "El agente responde y guarda el borrador, pero NO lo envía al cliente (publicación apagada).",
-      fixHref: "/config/kommo",
+      fixHref: "/settings?tab=conexiones",
       fixLabel: "Activar publicación",
     };
   }
@@ -63,7 +63,7 @@ export function computeAgentStatus(input: {
       label: "Falta el Salesbot",
       detail:
         "El agente genera la respuesta pero no puede entregarla: falta configurar el Salesbot ID de Kommo.",
-      fixHref: "/config/kommo",
+      fixHref: "/settings?tab=conexiones",
       fixLabel: "Configurar Salesbot",
     };
   }

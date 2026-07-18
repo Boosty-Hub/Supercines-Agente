@@ -2,8 +2,28 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { AgentTool } from "./page";
 import { Modal, Button, ConfirmDialog, Badge } from "@/components/ui";
+
+// El tipo vivía en la vieja tools/page.tsx (hoy un redirect a Ajustes), así que
+// pasa a vivir junto al editor que lo usa.
+export type AgentTool = {
+  id: string;
+  name: string;
+  description: string;
+  tool_type: "system" | "http";
+  enabled: boolean;
+  http_method: string | null;
+  url_template: string | null;
+  headers: Array<{ name: string; value: string }>;
+  body_template: unknown | null;
+  input_schema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+  timeout_ms: number;
+  created_at: string;
+};
 
 // Known runtime_config keys the operator might reference in headers.
 // Extend this list as new secrets are added to runtime_config.
@@ -903,7 +923,7 @@ function SystemToolCard({ tool }: { tool: AgentTool }) {
       <div className="shrink-0">
         {isManaged ? (
           <a
-            href="/agent?tab=acciones"
+            href="/settings?tab=agente&sec=acciones"
             className="inline-flex items-center rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-200"
           >
             Configurar →
@@ -952,7 +972,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Acciones en el CRM
             </h3>
             <a
-              href="/agent?tab=acciones"
+              href="/settings?tab=agente&sec=acciones"
               className="text-xs font-medium text-violet-700 hover:underline"
             >
               Activar / configurar →
@@ -961,7 +981,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
           <p className="text-xs text-neutral-500">
             El agente puede operar Kommo (mover de etapa, completar datos) cuando una vertical o su
             voz se lo indica. El interruptor de seguridad está en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+            <a href="/settings?tab=agente&sec=acciones" className="font-medium text-violet-700 underline">
               Agente → Acciones
             </a>
             .
@@ -981,7 +1001,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Tienda Shopify
             </h3>
             <a
-              href="/agent?tab=acciones"
+              href="/settings?tab=agente&sec=acciones"
               className="text-xs font-medium text-violet-700 hover:underline"
             >
               Activar / configurar →
@@ -994,7 +1014,7 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
               Configuración
             </a>{" "}
             y activá las capacidades en{" "}
-            <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+            <a href="/settings?tab=agente&sec=acciones" className="font-medium text-violet-700 underline">
               Agente → Acciones
             </a>
             .

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { KommoFieldPicker, type KommoFieldLite } from "@/components/kommo-field-picker";
+import { KommoFieldPicker, type KommoFieldLite } from "@/components/kommo/field-select";
 import { CollapsibleSection } from "@/components/collapsible-section";
 
 // Apagar el agente para un lead puntual desde la ficha de Kommo. Vive en

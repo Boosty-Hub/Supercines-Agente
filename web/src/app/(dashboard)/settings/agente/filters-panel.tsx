@@ -2,44 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, ConfirmDialog } from "@/components/ui";
+import { Button, ConfirmDialog, Switch } from "@/components/ui";
 import { CollapsibleSection } from "@/components/collapsible-section";
+import {
+  useKommoPipelines,
+  type KommoPipeline,
+  type KommoStage,
+} from "@/components/kommo/use-kommo-pipelines";
 
-// ---------------------------------------------------------------------------
-// Switch reutilizable (estilo iOS).
-// ---------------------------------------------------------------------------
-export function Switch({
-  checked,
-  onChange,
-  disabled,
-  busy,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  busy?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled || busy}
-      onClick={() => onChange(!checked)}
-      className={
-        "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 " +
-        (checked ? "bg-emerald-500" : "bg-neutral-300")
-      }
-    >
-      <span
-        className={
-          "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform " +
-          (checked ? "translate-x-[1.375rem]" : "translate-x-0.5")
-        }
-      />
-    </button>
-  );
-}
+// El Switch canónico vive en @/components/ui — acá estaba la copia original de
+// la que se sacó aquel. Se eliminó para no mantener dos veces el mismo widget.
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -704,15 +676,10 @@ function ChannelsSection({ channels }: { channels: ChannelsData }) {
 // ---------------------------------------------------------------------------
 // Sección: etapas de Kommo (selector visual, fetch en vivo)
 // ---------------------------------------------------------------------------
-type KommoStage = { id: number; name: string; color: string | null };
-type KommoPipeline = { id: number; name: string; statuses: KommoStage[] };
-
 function StagesSection({ ignoredStageIds }: { ignoredStageIds: number[] }) {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [configured, setConfigured] = useState(true);
-  const [pipelines, setPipelines] = useState<KommoPipeline[]>([]);
+  // Embudos vía hook compartido: un solo fetch por página, tipos de lib/kommo.
+  const { loading, error, configured, pipelines } = useKommoPipelines();
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -721,28 +688,10 @@ function StagesSection({ ignoredStageIds }: { ignoredStageIds: number[] }) {
   // el array entero. Acá aplicamos el cambio al instante y resync por valor.
   const [ignoredLocal, setIgnoredLocal] = useState<number[]>(ignoredStageIds);
 
+  // Con un solo embudo, abrirlo de entrada (antes se hacía dentro del fetch).
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await fetch("/api/kommo/pipelines");
-        const j = await res.json();
-        if (!alive) return;
-        if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`);
-        setConfigured(j.configured);
-        const pls = (j.pipelines ?? []) as KommoPipeline[];
-        setPipelines(pls);
-        if (pls.length === 1) setExpanded(new Set([pls[0].id]));
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+    if (pipelines.length === 1) setExpanded(new Set([pipelines[0].id]));
+  }, [pipelines]);
 
   // Resync local ← prop solo cuando cambia el VALOR (no en cada render), para
   // reflejar cambios externos (ej. la IA) sin pisar un toggle optimista en curso.

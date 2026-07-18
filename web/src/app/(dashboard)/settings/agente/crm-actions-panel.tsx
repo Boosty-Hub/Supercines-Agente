@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Switch, CapabilityCard } from "./action-ui";
+import { Switch } from "@/components/ui";
+import { CapabilityCard } from "./action-ui";
 
 export type CrmFlags = {
   enabled: boolean; // master

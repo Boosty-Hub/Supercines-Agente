@@ -20,16 +20,6 @@ import {
   type KommoStageLite,
   type KommoFieldLite,
 } from "../_shared/kommo.ts";
-import {
-  searchProducts,
-  listCollections,
-  findOrders,
-  createCheckoutLink,
-  resolveShopifyCreds,
-  type ShopifyCreds,
-  type ShopifyProduct,
-  type ShopifyOrder,
-} from "../_shared/shopify.ts";
 import { getBcvRate } from "../_shared/exchange.ts";
 import {
   isBusinessHours,
@@ -389,122 +379,8 @@ async function runCrmTool(
   return `Tool CRM desconocida: "${name}".`;
 }
 
-// ---------------- Shopify Tools (internas, gate por config) ----------------
-// MÓDULO 4 — el agente consulta y vende sobre Shopify POR NOMBRE: buscar
-// productos (categoría/talla/color/más vendidos), ver categorías, consultar
-// pedidos y crear links de pago. Siempre declaradas; se ejecutan solo si el
-// operador activó la capacidad (gate runtime en kommo_publish_config).
-
-type ShopifyGate = {
-  enabled: boolean; // master
-  search: boolean; // buscar_producto + ver_categorias
-  orders: boolean; // consultar_pedido
-  checkout: boolean; // crear_link_pago
-};
-
-const SHOPIFY_TOOL_NAMES = new Set([
-  "buscar_producto",
-  "ver_categorias",
-  "consultar_pedido",
-  "crear_link_pago",
-]);
-
 // Tool interna de tasa de cambio (Módulo 5). Gate simple en kommo_publish_config.
 const BCV_TOOL_NAME = "tasa_bcv";
-
-function formatProducts(products: ShopifyProduct[]): string {
-  return products
-    .slice(0, 8)
-    .map((p) => {
-      const price =
-        p.priceMin === p.priceMax
-          ? `${p.priceMin} ${p.currency}`
-          : `${p.priceMin}–${p.priceMax} ${p.currency}`;
-      const vlist = p.variants
-        .slice(0, 12)
-        .map((v) => {
-          const opt = v.options.map((o) => o.value).join("/") || v.title;
-          const stock = v.available ? (v.qty != null ? `stock ${v.qty}` : "disponible") : "sin stock";
-          return `${opt} (${stock})`;
-        })
-        .join(", ");
-      return `• ${p.title} — ${price}${vlist ? `. Variantes: ${vlist}` : ""}${p.url ? `. Link: ${p.url}` : ""}${p.imageUrl ? `. Foto: ${p.imageUrl}` : ""}`;
-    })
-    .join("\n");
-}
-
-function formatOrders(orders: ShopifyOrder[]): string {
-  return orders
-    .map((o) => {
-      const tr = o.tracking
-        .filter((t) => t.number || t.url)
-        .map((t) => `${t.company ?? "envío"} ${t.number ?? ""}${t.url ? ` (${t.url})` : ""}`.trim())
-        .join("; ");
-      return `Pedido ${o.name} — pago: ${o.financialStatus}, envío: ${o.fulfillmentStatus}, total: ${o.total} ${o.currency}${tr ? `. Seguimiento: ${tr}` : ""}`;
-    })
-    .join("\n");
-}
-
-// Ejecuta una tool de Shopify por nombre. Devuelve un string para el agente.
-async function runShopifyTool(
-  name: string,
-  input: Record<string, unknown>,
-  ctx: { creds: ShopifyCreds; gate: ShopifyGate }
-): Promise<string> {
-  if (!ctx.gate.enabled) {
-    return "Las acciones de Shopify están DESACTIVADAS por el operador. No realices esta acción ni se la menciones al lead.";
-  }
-
-  if (name === "buscar_producto") {
-    if (!ctx.gate.search) return "La consulta de catálogo de Shopify está desactivada por el operador.";
-    const products = await searchProducts(ctx.creds, {
-      consulta: input.consulta ? String(input.consulta) : "",
-      talla: input.talla ? String(input.talla) : undefined,
-      color: input.color ? String(input.color) : undefined,
-      precioMax: typeof input.precio_max === "number" ? input.precio_max : undefined,
-      orden: input.orden ? String(input.orden) : undefined,
-      limit: 8,
-    });
-    if (products.length === 0) return "No encontré productos para esa búsqueda en la tienda.";
-    return formatProducts(products);
-  }
-
-  if (name === "ver_categorias") {
-    if (!ctx.gate.search) return "La consulta de catálogo de Shopify está desactivada por el operador.";
-    const cols = await listCollections(ctx.creds);
-    return cols.length
-      ? `Categorías/colecciones de la tienda: ${cols.join(", ")}.`
-      : "La tienda no tiene colecciones configuradas.";
-  }
-
-  if (name === "consultar_pedido") {
-    if (!ctx.gate.orders) return "La consulta de pedidos de Shopify está desactivada por el operador.";
-    const orders = await findOrders(ctx.creds, {
-      numeroPedido: input.numero_pedido ? String(input.numero_pedido) : undefined,
-      email: input.email ? String(input.email) : undefined,
-      telefono: input.telefono ? String(input.telefono) : undefined,
-    });
-    if (orders.length === 0) return "No encontré pedidos con esos datos.";
-    return formatOrders(orders);
-  }
-
-  if (name === "crear_link_pago") {
-    if (!ctx.gate.checkout) return "La creación de links de pago está desactivada por el operador.";
-    const producto = input.producto ? String(input.producto) : "";
-    if (!producto) return "ERROR_VALIDACION: falta 'producto'.";
-    const r = await createCheckoutLink(ctx.creds, {
-      producto,
-      talla: input.talla ? String(input.talla) : undefined,
-      color: input.color ? String(input.color) : undefined,
-      cantidad: typeof input.cantidad === "number" ? input.cantidad : undefined,
-      email: input.email ? String(input.email) : undefined,
-    });
-    const variante = r.variantTitle && r.variantTitle !== "Default Title" ? ` (${r.variantTitle})` : "";
-    return `Link de pago listo para ${r.productTitle}${variante}: ${r.invoiceUrl}`;
-  }
-
-  return `Tool de Shopify desconocida: "${name}".`;
-}
 
 // ---------------- Debounce + batching ----------------
 // Un lead suele mandar varios mensajes cortados que son una sola idea. En vez
@@ -996,7 +872,6 @@ async function runAgent(opts: {
   kommoLeadId: number | null;
   kommoContactId: number | null;
   crm: CrmGate;
-  shopify: ShopifyGate;
   bcvEnabled: boolean;
   // Campos para registrar lead_stage_events cuando el agente mueve etapas
   currentKommoStageId?: number | null;
@@ -1077,17 +952,6 @@ async function runAgent(opts: {
                 internalLeadId: opts.leadId,
                 currentKommoStageId: opts.currentKommoStageId,
                 draftId: opts.draftId,
-              });
-        } else if (SHOPIFY_TOOL_NAMES.has(ev.name)) {
-          // Tools internas que consultan/venden sobre Shopify. Gate por config.
-          // resolveShopifyCreds maneja token estático legacy o client
-          // credentials grant (token de 24h cacheado en module scope).
-          const creds = await resolveShopifyCreds(opts.cfg);
-          result = !creds
-            ? "Shopify no está conectado; no puedo consultar la tienda."
-            : await runShopifyTool(ev.name, ev.input ?? {}, {
-                creds,
-                gate: opts.shopify,
               });
         } else if (ev.name === BCV_TOOL_NAME) {
           // Tasa USD→VES (BCV). Gate por config; cache 6h en _shared/exchange.
@@ -1183,7 +1047,7 @@ Deno.serve(async (req: Request) => {
   const { data: cfg } = await supabase
     .from("kommo_publish_config")
     .select(
-      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules"
+      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -1252,13 +1116,6 @@ Deno.serve(async (req: Request) => {
     updateContact: cfg?.crm_can_update_contact === true,
   };
 
-  // Gate de Shopify (Módulo 4). Default OFF.
-  const shopify: ShopifyGate = {
-    enabled: cfg?.shopify_actions_enabled === true,
-    search: cfg?.shopify_can_search === true,
-    orders: cfg?.shopify_can_orders === true,
-    checkout: cfg?.shopify_can_checkout === true,
-  };
 
   const batch = await pickLeadBatch(body.message_id, bypass, throttle, ignoredStageIds, debounceMs, maxAgeHours);
   if (!batch) {
@@ -1418,7 +1275,6 @@ Deno.serve(async (req: Request) => {
         kommoLeadId: lead.kommo_lead_id != null ? Number(lead.kommo_lead_id) : null,
         kommoContactId: lead.kommo_contact_id != null ? Number(lead.kommo_contact_id) : null,
         crm,
-        shopify,
         bcvEnabled: cfg?.bcv_rate_enabled === true,
         currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,
         draftId: draft.id,

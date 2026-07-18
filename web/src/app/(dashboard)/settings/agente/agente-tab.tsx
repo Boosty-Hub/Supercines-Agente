@@ -12,7 +12,6 @@ import { useState } from "react";
 import { SegmentedControl } from "@/components/ui";
 import { FiltersPanel, type Rule, type Limits, type VerticalLite, type ChannelsData, type MediaFlags } from "./filters-panel";
 import { CrmActionsPanel, type CrmFlags } from "./crm-actions-panel";
-import { ShopifyActionsPanel, type ShopifyFlags } from "./shopify-actions-panel";
 import { BcvPanel } from "./bcv-panel";
 import { BusinessHoursPanel, type BusinessHours } from "./business-hours-panel";
 import { CommentsPanel, type CommentsConfig } from "./comments-panel";
@@ -36,8 +35,6 @@ export function AgenteTab({
   freshness,
   media,
   crm,
-  shopify,
-  shopifyConnected,
   bcvEnabled,
   bcvHasCustomSource,
   businessHours,
@@ -55,8 +52,6 @@ export function AgenteTab({
   freshness: number;
   media: MediaFlags;
   crm: CrmFlags;
-  shopify: ShopifyFlags;
-  shopifyConnected: boolean;
   bcvEnabled: boolean;
   bcvHasCustomSource: boolean;
   businessHours: BusinessHours | null;
@@ -97,7 +92,6 @@ export function AgenteTab({
 
       <div className={sec === "acciones" ? "space-y-6" : "hidden"}>
         <CrmActionsPanel initial={crm} />
-        <ShopifyActionsPanel initial={shopify} connected={shopifyConnected} />
         <BcvPanel initialEnabled={bcvEnabled} hasCustomSource={bcvHasCustomSource} />
         <CommentsPanel initial={comments} />
       </div>

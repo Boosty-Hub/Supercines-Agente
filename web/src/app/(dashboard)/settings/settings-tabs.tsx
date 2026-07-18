@@ -8,7 +8,7 @@
 //
 // Los cuatro slots quedan MONTADOS (ocultos con CSS) para no perder lo tipeado
 // al cambiar de pestaña. Eso es seguro porque los fetches de cliente
-// (/api/kommo/fields, /api/shopify/scopes) están cacheados a nivel de módulo:
+// (/api/kommo/fields, /api/kommo/pipelines) están cacheados a nivel de módulo:
 // se piden una vez por carga de página, no una vez por panel.
 
 import { useEffect, useState } from "react";

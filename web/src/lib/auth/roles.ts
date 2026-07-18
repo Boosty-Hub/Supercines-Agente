@@ -39,7 +39,6 @@ const ADMIN_ONLY_PREFIXES = [
   "/api/settings",
   "/api/tools",
   "/api/follow-up",
-  "/api/shopify",
   "/api/users",
   "/api/filters",
   "/api/skip-rules",

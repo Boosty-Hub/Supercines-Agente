@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
-import { buildShopifyContext } from "@/lib/shopify-context";
 import { generateObject } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
@@ -63,18 +62,16 @@ export async function POST(request: Request) {
   } | null;
 
   // La IA necesita saber qué puede HACER el agente (operar el CRM + tienda
-  // Shopify) y con qué nombres reales, para escribir esas instrucciones en el
+  // y con qué nombres reales, para escribir esas instrucciones en el
   // system_prompt de la vertical cuando corresponda.
-  const [crmContext, shopifyContext] = await Promise.all([
+  const [crmContext] = await Promise.all([
     buildCrmActionsContext(),
-    buildShopifyContext(),
   ]);
 
   const context = [
     operatorName ? `Operador / marca: ${operatorName}` : "",
     systemPrompt ? `System prompt del agente:\n${systemPrompt}` : "",
     crmContext,
-    shopifyContext,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -132,7 +129,7 @@ Reglas:
 - Si te pasaron una VERTICAL ACTUAL, conservá su intención y solo aplicá el ajuste pedido.
 - Consultas comerciales o de información clara: auto_reply=true, requires_review=false.
 - Temas sensibles (reclamos, pagos, datos personales, soporte crítico): auto_reply=false, requires_review=true.
-- Si el pedido implica una ACCIÓN del agente (mover de etapa o guardar datos en el CRM; o buscar productos, consultar pedidos o vender por la tienda Shopify), incluí esa instrucción dentro del system_prompt usando los nombres EXACTOS (ver capacidades del agente arriba). Si no aplica, no la agregues.
+- Si el pedido implica una ACCIÓN del agente (mover de etapa o guardar datos en el CRM), incluí esa instrucción dentro del system_prompt usando los nombres EXACTOS (ver capacidades del agente arriba). Si no aplica, no la agregues.
 - slug en snake_case. system_prompt en segunda persona dirigido al agente, sin el nombre literal del negocio.`,
     });
     await recordWebUsage({ component: "dashboard_verticales_generate", model: "claude-sonnet-4-6", usage });

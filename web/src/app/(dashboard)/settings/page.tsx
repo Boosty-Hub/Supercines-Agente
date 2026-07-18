@@ -2,13 +2,12 @@
 //
 // Absorbió las páginas sueltas /agent, /config/kommo y /tools. Antes eran tres
 // cascadas de queries independientes (y dos SELECT distintos a la MISMA fila de
-// kommo_publish_config, más dos llamadas a getShopifyStatus). Acá se hace un
+// kommo_publish_config). Acá se hace un
 // solo Promise.all y los datos se reparten a las cuatro pestañas.
 
 import { headers } from "next/headers";
 import { configValues } from "@/lib/runtime-config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getShopifyStatus } from "@/lib/shopify";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
 
@@ -20,7 +19,6 @@ import type { Rule, VerticalLite } from "./agente/filters-panel";
 import type { CommentsConfig } from "./agente/comments-panel";
 import { KommoSection } from "./conexiones/kommo-section";
 import { ToolEditor, type AgentTool } from "./herramientas/tool-editor";
-import { ShopifyConnect } from "./shopify-connect";
 import { UpdatesPanel } from "./updates-panel";
 import { EmbedCodePanel } from "./embed-code-panel";
 import { AlertsForm } from "./sistema/alerts-form";
@@ -52,7 +50,7 @@ export default async function SettingsPage({
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, shopifyStatus] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -64,7 +62,7 @@ export default async function SettingsPage({
       supabase
         .from("kommo_publish_config")
         .select(
-          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
+          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
         )
         .eq("is_active", true)
         .maybeSingle(),
@@ -92,7 +90,6 @@ export default async function SettingsPage({
         .select("*")
         .order("tool_type", { ascending: false }) // 'system' > 'http'
         .order("created_at", { ascending: true }),
-      getShopifyStatus(),
     ]);
 
   const p = pubRes.data;
@@ -134,12 +131,6 @@ export default async function SettingsPage({
     moveStage: p?.crm_can_move_stage === true,
     updateLead: p?.crm_can_update_lead === true,
     updateContact: p?.crm_can_update_contact === true,
-  };
-  const shopify = {
-    enabled: p?.shopify_actions_enabled === true,
-    search: p?.shopify_can_search === true,
-    orders: p?.shopify_can_orders === true,
-    checkout: p?.shopify_can_checkout === true,
   };
   const comments: CommentsConfig = {
     comment_reply_enabled: p?.comment_reply_enabled === true,
@@ -234,8 +225,6 @@ export default async function SettingsPage({
             media={media}
             hasOpenaiKey={Boolean(cfg.OPENAI_API_KEY)}
             crm={crm}
-            shopify={shopify}
-            shopifyConnected={shopifyStatus.configured}
             bcvEnabled={p?.bcv_rate_enabled === true}
             bcvHasCustomSource={Boolean(cfg.BCV_RATE_URL)}
             businessHours={fuRes.data ?? null}
@@ -300,10 +289,6 @@ export default async function SettingsPage({
                   salesbotId: (p?.salesbot_id as number | null) ?? null,
                 },
               }}
-            />
-            <ShopifyConnect
-              connected={shopifyStatus.configured}
-              domain={shopifyStatus.domain}
             />
           </div>
         }

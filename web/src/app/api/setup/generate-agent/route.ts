@@ -1,7 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
-import { buildShopifyContext } from "@/lib/shopify-context";
 import { streamText } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { recordWebUsage } from "@/lib/usage";
@@ -109,8 +108,10 @@ export async function POST(request: Request) {
   // negocio lo implique. No se carga en 'continue' (es solo continuación de texto).
   let crmBlock = "";
   if (mode !== "continue") {
-    const [crm, shop] = await Promise.all([buildCrmActionsContext(), buildShopifyContext()]);
-    crmBlock = `\n\n${[crm, shop].filter(Boolean).join("\n\n")}\n\nSi el negocio implica alguna de esas acciones (CRM o tienda Shopify), incorporá la instrucción dentro de la sección que corresponda (típicamente «## Información y reglas del negocio»), con los nombres exactos. Si no aplica, no la agregues ni inventes campos/etapas/productos.`;
+    const crm = await buildCrmActionsContext();
+    crmBlock = crm
+      ? `\n\n${crm}\n\nSi el negocio implica alguna de esas acciones del CRM, incorporá la instrucción dentro de la sección que corresponda (típicamente «## Información y reglas del negocio»), con los nombres exactos. Si no aplica, no la agregues ni inventes campos ni etapas.`
+      : "";
   }
 
   if (mode === "continue") {

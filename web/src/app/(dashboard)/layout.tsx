@@ -6,7 +6,6 @@ import { getBcvRateCached } from "@/lib/exchange";
 import { getRole } from "@/lib/auth/roles";
 import { getSetupState } from "@/lib/setup-state";
 import { MobileNav, SidebarNav } from "./nav";
-import { UpdatesBanner } from "./updates-banner";
 import { EmbedTabsNav } from "./embed-tabs-nav";
 import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
@@ -44,8 +43,6 @@ export default async function DashboardLayout({
   // capacidad está activa; si la fuente falla, simplemente no hay badge.
   const bcv = pubCfg?.bcv_rate_enabled === true ? await getBcvRateCached() : null;
 
-  // Auto-update: ON salvo que el operador lo apague explícitamente ("0").
-  const autoUpdate = (await configValue("AUTO_UPDATE_ENABLED")) !== "0";
 
   const isEmbed = cookies().get("embed_mode")?.value === "1";
 
@@ -76,7 +73,6 @@ export default async function DashboardLayout({
       <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
-        <UpdatesBanner autoUpdate={autoUpdate} />
         <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
       </div>
       {showSetupDrawer && <SetupDrawer state={setupState} />}

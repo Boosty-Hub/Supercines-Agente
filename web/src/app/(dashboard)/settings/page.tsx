@@ -19,7 +19,6 @@ import type { Rule, VerticalLite } from "./agente/filters-panel";
 import type { CommentsConfig } from "./agente/comments-panel";
 import { KommoSection } from "./conexiones/kommo-section";
 import { ToolEditor, type AgentTool } from "./herramientas/tool-editor";
-import { UpdatesPanel } from "./updates-panel";
 import { EmbedCodePanel } from "./embed-code-panel";
 import { AlertsForm } from "./sistema/alerts-form";
 
@@ -46,7 +45,6 @@ export default async function SettingsPage({
     "ANTHROPIC_AGENT_VERSION",
     "BCV_RATE_URL",
     "OPENAI_API_KEY",
-    "AUTO_UPDATE_ENABLED",
   ]);
 
   const supabase = createSupabaseServerClient();
@@ -297,7 +295,6 @@ export default async function SettingsPage({
         // ── Sistema ───────────────────────────────────────────────────────
         sistema={
           <div className="space-y-4">
-            <UpdatesPanel autoUpdateEnabled={cfg.AUTO_UPDATE_ENABLED !== "0"} />
             <AlertsForm
               webhookUrl={(alertRes.data?.webhook_url as string | null) ?? ""}
               enabled={alertRes.data?.webhook_enabled === true}

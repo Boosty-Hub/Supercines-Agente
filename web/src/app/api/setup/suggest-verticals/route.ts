@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
-import { buildShopifyContext } from "@/lib/shopify-context";
 import { generateObject } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
@@ -55,9 +54,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const [crmContext, shopifyContext] = await Promise.all([
+  const [crmContext] = await Promise.all([
     buildCrmActionsContext(),
-    buildShopifyContext(),
   ]);
 
   const context = [
@@ -65,7 +63,6 @@ export async function POST(request: Request) {
     systemPrompt ? `System prompt del agente:\n${systemPrompt}` : "",
     extra ? `Descripción adicional del negocio:\n${extra}` : "",
     crmContext,
-    shopifyContext,
   ]
     .filter(Boolean)
     .join("\n\n");

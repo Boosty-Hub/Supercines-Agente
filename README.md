@@ -117,14 +117,22 @@ Panel **"Actualizaciones del sistema"**:
 >
 > Como `_shared/*` se bundlea en **todas** las funciones, un cambio en un archivo compartido marca las 9 como `cambió` y se redespliegan todas — es esperado y seguro (las que no usan ese archivo quedan idénticas).
 
-### Tabs de `/settings` (título: **Configuración**)
+### Tabs de `/settings` (título: **Ajustes**)
+
+Ajustes es el único módulo de configuración: absorbió las páginas sueltas
+`/agent`, `/config/kommo` y `/tools`, que hoy solo redirigen acá.
 
 | Tab | Qué hay |
 |-----|---------|
-| **Conexiones** | URL del webhook de Kommo (para copiar al panel de Kommo) + conectar Shopify (opcional). |
-| **Publicación** | Estado actual (agente, publicación/validación, bypass review, Field ID, Salesbot ID) + form de Publicación Kommo (campo destino donde escribe el agente, salesbot, modo de respuesta). |
-| **Sistema** | Actualizaciones del sistema (lo de arriba) + Alertas (webhook Slack/Discord/Zapier). |
-| **Integrar** | Snippet para embeber el dashboard dentro de otra app. |
+| **Agente** | Sub-secciones *Identidad* (encendido y publicación, estado en Anthropic, prompt), *Comportamiento* (horario laboral y filtros: canales, etapas, multimedia, límites, reglas de silencio) y *Acciones* (CRM, tasa BCV, comentarios de Instagram). |
+| **Conexiones** | Conexión con Kommo (subdominio + token), URL del webhook entrante y publicación (campo destino donde escribe el agente + salesbot). |
+| **Herramientas** | Tools HTTP propias del operador y capacidades internas del sistema. |
+| **Sistema** | Actualizaciones, alertas (webhook Slack/Discord/Zapier) y snippet para embeber el dashboard. |
+
+> Esta instancia **no incluye Shopify**: SUPERCINES es una cadena de cines, no
+> vende catálogo. Se eliminaron las tools de tienda, su panel de capacidades y
+> las columnas del gate (migración `0044`). Es una divergencia deliberada
+> respecto del template.
 
 ---
 

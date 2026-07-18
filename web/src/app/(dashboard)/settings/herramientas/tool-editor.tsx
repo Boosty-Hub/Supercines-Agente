@@ -884,13 +884,6 @@ function NewToolButton() {
 // System tools (read-only) — presentación amigable por categoría
 // ---------------------------------------------------------------------------
 const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto"]);
-const SHOPIFY_TOOL_NAMES = new Set([
-  "buscar_producto",
-  "ver_categorias",
-  "consultar_pedido",
-  "crear_link_pago",
-]);
-
 const FRIENDLY: Record<string, { icon: string; title: string }> = {
   search_kb: { icon: "🔎", title: "Búsqueda en la base de conocimiento" },
   agent_toolset_20260401: { icon: "🗂️", title: "Memoria y archivos del agente" },
@@ -905,7 +898,7 @@ const FRIENDLY: Record<string, { icon: string; title: string }> = {
 
 function SystemToolCard({ tool }: { tool: AgentTool }) {
   const meta = FRIENDLY[tool.name];
-  const isManaged = CRM_TOOL_NAMES.has(tool.name) || SHOPIFY_TOOL_NAMES.has(tool.name);
+  const isManaged = CRM_TOOL_NAMES.has(tool.name);
   return (
     <div className="flex items-start justify-between gap-4 rounded-xl border border-neutral-200 bg-white p-4">
       <div className="flex min-w-0 items-start gap-3">
@@ -940,9 +933,8 @@ function SystemToolCard({ tool }: { tool: AgentTool }) {
 
 function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
   const crm = tools.filter((t) => CRM_TOOL_NAMES.has(t.name));
-  const shopify = tools.filter((t) => SHOPIFY_TOOL_NAMES.has(t.name));
   const builtins = tools.filter(
-    (t) => !CRM_TOOL_NAMES.has(t.name) && !SHOPIFY_TOOL_NAMES.has(t.name)
+    (t) => !CRM_TOOL_NAMES.has(t.name)
   );
 
   return (
@@ -994,38 +986,6 @@ function SystemToolsPanel({ tools }: { tools: AgentTool[] }) {
         </div>
       )}
 
-      {shopify.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-400">
-              Tienda Shopify
-            </h3>
-            <a
-              href="/settings?tab=agente&sec=acciones"
-              className="text-xs font-medium text-violet-700 hover:underline"
-            >
-              Activar / configurar →
-            </a>
-          </div>
-          <p className="text-xs text-neutral-500">
-            El agente consulta el catálogo y vende sobre Shopify cuando una vertical o su voz se lo
-            indica. Conectá la tienda en{" "}
-            <a href="/settings" className="font-medium text-violet-700 underline">
-              Configuración
-            </a>{" "}
-            y activá las capacidades en{" "}
-            <a href="/settings?tab=agente&sec=acciones" className="font-medium text-violet-700 underline">
-              Agente → Acciones
-            </a>
-            .
-          </p>
-          <div className="space-y-2">
-            {shopify.map((t) => (
-              <SystemToolCard key={t.id} tool={t} />
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

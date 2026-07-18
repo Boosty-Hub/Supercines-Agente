@@ -1,6 +1,6 @@
 "use client";
 
-// Tarjeta de capacidad de los paneles de Acciones (CRM y Shopify).
+// Tarjeta de capacidad del panel de Acciones del CRM.
 //
 // El Switch vive en @/components/ui (fuente canónica, con prop `tone`). Acá
 // había una tercera copia del mismo componente — se eliminó; `tone="brand"`

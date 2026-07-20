@@ -1,0 +1,6 @@
+﻿{
+    "sessionIdType":  "customKey",
+    "sessionKey":  "=chat_history_id_{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "sessionTTL":  900000,
+    "contextWindowLength":  10
+}

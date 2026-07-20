@@ -1,0 +1,21 @@
+﻿{
+    "method":  "POST",
+    "url":  "https://supercines.kommo.com/api/v4/chats/templates",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "[\n  {\n    \"name\": \"envio_mensaje_10\",\n    \"content\": \"Texto de Prueba\",\n    \"is_editable\": true,\n    \"type\": \"amocrm\"\n  }\n]",
+    "options":  {
+
+                }
+}

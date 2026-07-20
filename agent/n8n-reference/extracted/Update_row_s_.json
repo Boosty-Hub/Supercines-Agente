@@ -1,0 +1,110 @@
+﻿{
+    "operation":  "update",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "UicV1nEkxoxPfqOL",
+                        "mode":  "list",
+                        "cachedResultName":  "session kommo",
+                        "cachedResultUrl":  "/projects/o9GoROJntbHUgG4B/datatables/UicV1nEkxoxPfqOL"
+                    },
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyName":  "user_name",
+                                           "keyValue":  "Canguro Venezuela"
+                                       }
+                                   ]
+                },
+    "columns":  {
+                    "mappingMode":  "defineBelow",
+                    "value":  {
+                                  "account_id":  "={{ $json.response.chats.session.account.id }}",
+                                  "access_token":  "={{ $json.response.chats.session.access_token }}",
+                                  "user_name":  "={{ $json.response.chats.session.user.name }}",
+                                  "user_avatar":  "={{ $json.response.chats.session.user.avatar }}",
+                                  "created_at":  "={{ $json.response.chats.session.created_at }}",
+                                  "expired_at":  "={{ $json.response.chats.session.expired_at }}",
+                                  "refresh_token":  "={{ $json.response.chats.session.refresh_token }}"
+                              },
+                    "matchingColumns":  [
+
+                                        ],
+                    "schema":  [
+                                   {
+                                       "id":  "account_id",
+                                       "displayName":  "account_id",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "access_token",
+                                       "displayName":  "access_token",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "user_name",
+                                       "displayName":  "user_name",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "user_avatar",
+                                       "displayName":  "user_avatar",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "created_at",
+                                       "displayName":  "created_at",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "expired_at",
+                                       "displayName":  "expired_at",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "refresh_token",
+                                       "displayName":  "refresh_token",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   }
+                               ],
+                    "attemptToConvertTypes":  false,
+                    "convertFieldsToString":  false
+                },
+    "options":  {
+
+                }
+}

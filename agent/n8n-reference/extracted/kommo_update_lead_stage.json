@@ -1,0 +1,18 @@
+﻿{
+    "toolDescription":  "=## ðŸ§­ Tool: Movimiento de Lead en el Embudo (Pipeline)\n\n### ðŸŽ¯ PropÃ³sito de la tool\n\nUsa esta tool **exclusivamente** para **mover un lead a una nueva etapa del embudo** segÃºn su **intenciÃ³n real** y el **estado de la conversaciÃ³n**.\n\nEsta acciÃ³n define **quiÃ©n lo atiende**, **dÃ³nde se atiende** y **en quÃ© momento comercial se encuentra el cliente**.\n\n---\n\n## ðŸ§© Reglas generales (OBLIGATORIAS)\n\n- **Importante:** Solo usarla cuando el cliente haya mostrado intenciÃ³n clara de compra o contrataciÃ³n.\n* Siempre debes pasar un **ID vÃ¡lido** incluido en `etapas_disponibles` unicamente estos ids puedes usar:\nEtapas del pipeline actual del lead: {{ $json.etapas_disponibles }},\n- **Mapeo de status_id por sede:**\n  - La Granja (Valencia): `64424315`\n  - Los Aviadores (Maracay): `74328936`\n  - La Cascada (Carrizal/Los Teques): `63393843`\n  - Puente Real (Barcelona): `63393843`\n  - Playa Mar (Puerto Cabello): `63393843`\n* **Nunca regreses un lead a la etapa â€œIncomingâ€** si ya fue clasificado.\n* Si el lead estÃ¡ en una etapa incorrecta:\n\n  1. Clasifica correctamente el caso.\n  2. Luego mueve el lead a la etapa correcta.\n* El movimiento de etapa **no es automÃ¡tico**: debe responder a una **decisiÃ³n comercial clara, Ejemplo cuando hay una intencion de compra clara de parte del lead**.\n\n- nunca lo mueves a la misma etapa en la que se encuentra el lead o a incoming.\n si vez que da error al llamar la tool, verifica el status_id e intenta nuevamente.\n---",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $json.lead_id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\"status_id\": {{ $fromAI(\u0027status_id\u0027, `id de la nueva etapa a la que se va a pasar el lead, nunca jamas usar el lead_id  solo el status_id de las etapas disponibles`, \u0027number\u0027) }}}",
+    "options":  {
+                    "response":  {
+                                     "response":  {
+                                                      "neverError":  true,
+                                                      "responseFormat":  "json"
+                                                  }
+                                 }
+                }
+}

@@ -1,0 +1,54 @@
+﻿{
+    "operation":  "update",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "tLsmzB5WGI92l4Ce",
+                        "mode":  "list",
+                        "cachedResultName":  "promociones",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/tLsmzB5WGI92l4Ce"
+                    },
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyValue":  "0"
+                                       }
+                                   ]
+                },
+    "columns":  {
+                    "mappingMode":  "defineBelow",
+                    "value":  {
+                                  "COMBOS_TEMATICOS":  "## ðŸŽ¤ COMBOS TEMÃTICOS ESPECIALES ACTIVOS  ### Combo Super Pop â€” Michael Jackson - **Contenido:** Cotufa mediana + refresco mediano + chocolate BIANCHI + llavero del Rey del Pop - **Precio:** $9.90 - **VersiÃ³n activa:** EdiciÃ³n llavero (versiÃ³n con sombrero agotada) - **Estado:** âœ… Activo",
+                                  "PROMOCIONES_SEMANALES":  "## ðŸ—“ï¸ PROMOCIONES SEMANALES DE BOLETERÃA  \n PromociÃ³n \n Descuento \n CondiciÃ³n \n \n-----------\n-----------\n-----------\n \n Lunes de Cine \n 50% off \n Solo lunes, todas las sucursales \n \n Martes DÃºo (DÃºo DinÃ¡mico) \n 40% off \n Compra 2 boletos o mÃ¡s, solo martes, todas las sucursales \n \n MiÃ©rcoles 20% \n 20% off \n Todos los miÃ©rcoles, todas las sucursales \n \n Super Friends (3+1) \n 4to boleto GRATIS \n Compra 3 boletos, vÃ¡lido jueves a viernes, todas las sucursales \n \n Boleto NiÃ±os \n 50% off \n Menores de 14 aÃ±os, hasta las 4:59 PM, lunes a domingo, taquilla y web \n \n Tercera Edad \n 50% off \n Mayores de 60 aÃ±os, todos los dÃ­as, taquilla y web \n"
+                              },
+                    "matchingColumns":  [
+
+                                        ],
+                    "schema":  [
+                                   {
+                                       "id":  "PROMOCIONES_SEMANALES",
+                                       "displayName":  "PROMOCIONES_SEMANALES",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "COMBOS_TEMATICOS",
+                                       "displayName":  "COMBOS_TEMATICOS",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   }
+                               ],
+                    "attemptToConvertTypes":  false,
+                    "convertFieldsToString":  false
+                },
+    "options":  {
+
+                }
+}

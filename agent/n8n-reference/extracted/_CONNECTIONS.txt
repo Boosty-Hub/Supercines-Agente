@@ -1,0 +1,110 @@
+﻿Webhook --[main:0]--> Switch
+Switch --[main:0]--> incoming
+Switch --[main:2]--> incoming
+Switch --[main:3]--> incoming
+Switch --[main:4]--> incoming
+DataImage --[main:0]--> setData
+setData --[main:0]--> Push Message
+type message Whatsap --[main:0]--> HTTP Request1
+type message Whatsap --[main:1]--> HTTP Request1
+type message Whatsap --[main:2]--> Analyze image1
+type message Whatsap --[main:3]--> No Operation, do nothing4
+type message Whatsap --[main:4]--> Analyze document
+type message Whatsap --[main:5]--> Analyze image
+DataText --[main:0]--> setData
+No Operation, do nothing4 --[main:0]--> DataText
+DataAudio --[main:0]--> setData
+Analyze image1 --[main:0]--> DataImage
+DataPdf --[main:0]--> setData
+Analyze document --[main:0]--> DataPdf
+DataImage1 --[main:0]--> setData
+Analyze image --[main:0]--> DataImage1
+etapas --[main:0]--> mentioned?
+etapas --[main:1]--> apagar agente1
+apagar agente --[main:0]--> Pipeline
+apagar agente --[main:1]--> incoming?
+WebhookData --[main:0]--> apagar agente
+get_lead1 --[main:0]--> WebhookData
+Get contacts --[main:0]--> get_lead
+get_lead --[main:0]--> WebhookData
+Pipeline --[main:0]--> etapas
+incoming? --[main:0]--> por atender
+por atender --[main:0]--> No Operation, do nothing
+Redis --[main:0]--> If3
+Wait --[main:0]--> Redis
+Push Message --[main:0]--> Wait
+Unir Mensajes --[main:0]--> Redis5
+Unir Mensajes --[main:0]--> userMessage
+If3 --[main:0]--> Unir Mensajes
+If3 --[main:1]--> No Operation, do nothing1
+apagar agente1 --[main:0]--> No Operation, do nothing
+COMENTARIOS RRSS1 --[main:0]--> HTTP Request
+incoming --[main:0]--> get_lead1
+incoming --[main:1]--> Get contacts
+AI Agent --[main:0]--> message
+AI Agent --[main:1]--> retry
+data --[main:0]--> AI Agent
+kommo_update_lead_stage --[ai_tool:0]--> AI Agent
+Redis Chat Memory --[ai_memory:0]--> AI Agent
+kommo_update_lead_nota --[ai_tool:0]--> AI Agent
+transferir_a_asesor --[ai_tool:0]--> AI Agent
+OpenAI Chat Model --[ai_languageModel:0]--> AI Agent
+set_price --[ai_tool:0]--> AI Agent
+OpenAI Chat Model1 --[ai_languageModel:0]--> Respons Parser
+Respons Parser --[main:0]--> Edit Fields
+Structured Output Parser --[ai_outputParser:0]--> Respons Parser
+send message1 --[main:1]--> get_lead2
+If18 --[main:0]--> send message4
+If18 --[main:1]--> No Operation, do nothing5
+If17 --[main:0]--> send message3
+If17 --[main:1]--> No Operation, do nothing3
+If16 --[main:0]--> send message2
+If16 --[main:1]--> No Operation, do nothing2
+add response --[main:0]--> response
+If --[main:0]--> If18
+If --[main:0]--> If17
+If --[main:0]--> If16
+If --[main:0]--> send message1
+If --[main:1]--> create session kommo
+Update row(s) --[main:0]--> send message1
+Update row(s) --[main:0]--> If16
+Update row(s) --[main:0]--> If17
+Update row(s) --[main:0]--> If18
+message --[main:0]--> RespuestaFormateada
+message --[main:1]--> retry1
+comentario --[main:0]--> add response
+Loop Over Items --[main:1]--> add msj variable
+Split Out --[main:0]--> Loop Over Items
+Edit Fields --[main:0]--> Split Out
+create session kommo --[main:0]--> Update row(s)
+create session kommo --[main:1]--> create sesion B
+Get Token --[main:0]--> If
+If4 --[main:0]--> comentario
+If4 --[main:1]--> COMENTARIOS RRSS
+get_lead2 --[main:0]--> If4
+create sesion B --[main:0]--> If5
+If5 --[main:0]--> Update row(s)
+COMENTARIOS RRSS --[main:0]--> comentario
+OpenAI Chat Model3 --[ai_languageModel:0]--> AI Agent
+OpenAI Chat Model2 --[ai_languageModel:0]--> Respons Parser
+HTTP Request1 --[main:0]--> Transcribe a recording
+Transcribe a recording --[main:0]--> DataAudio
+get Etapas pipeline --[main:0]--> data
+userMessage --[main:0]--> Get promociones
+add msj variable --[main:0]--> Wait1
+response bot --[main:0]--> Loop Over Items
+Wait1 --[main:0]--> response bot
+modificar_plantilla --[main:0]--> Wait2
+RespuestaFormateada --[main:0]--> If1
+Code in JavaScript --[main:0]--> modificar_plantilla
+Wait2 --[main:0]--> enviar_salesbot
+If1 --[main:0]--> Code in JavaScript
+If1 --[main:1]--> retry1
+If1 --[main:1]--> If1
+When clicking â€˜Execute workflowâ€™ --[main:0]--> HTTP Request3
+get_Sipnosis --[ai_tool:0]--> AI Agent
+Get promociones --[main:0]--> get Etapas pipeline
+mentioned? --[main:0]--> text?
+mentioned? --[main:1]--> apagar agente1
+text? --[main:0]--> type message Whatsap
+consultar_cartelera --[ai_tool:0]--> AI Agent

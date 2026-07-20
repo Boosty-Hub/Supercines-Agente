@@ -1,0 +1,19 @@
+﻿{
+    "method":  "POST",
+    "url":  "https://api.openai.com/v1/responses",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Authorization",
+                                                    "value":  "Bearer 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"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\n  \"model\": \"gpt-5\",\n  \"input\": \"Precios de {{ $fromAI(\u0027Question\u0027, `query para consultar en el rag`, \u0027string\u0027) }}\",\n  \"tools\": [\n    {\n      \"type\": \"file_search\",\n      \"vector_store_ids\": [\n        \"vs_699df5c8a88c8191878e03e8c27a3add\"\n      ]\n    }\n  ]\n}",
+    "options":  {
+
+                }
+}

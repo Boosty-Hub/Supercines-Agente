@@ -1,0 +1,13 @@
+﻿{
+    "toolDescription":  "=llama esta tool siempre que tengas el valor total de la cotizacion del cliente enviando el valor total como price. siempre agrega el presupuesto en esta tool, antes de cambiar etapa, trata de tener un valor claro y establecer el precio de lo que esta preguntando el cliente.\n\nsiempre se debe tener claro el monto de la posible venta al mover a las etapas siguientes y establecerlo.\n",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"price\": {{ Math.round($fromAI(\u0027price\u0027, \u0027precio total de la cotizacion\u0027, \u0027number\u0027)) }}\n  }\n]\n",
+    "options":  {
+
+                }
+}

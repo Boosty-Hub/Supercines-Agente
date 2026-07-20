@@ -1,0 +1,12 @@
+﻿{
+    "method":  "PATCH",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804781,\n        \"values\": [\n          {\n            \"value\": true\n          }\n        ]\n      }\n    ]\n  }\n]",
+    "options":  {
+
+                }
+}

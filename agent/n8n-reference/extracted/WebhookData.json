@@ -1,0 +1,141 @@
+﻿{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "34a84db7-df6c-467c-88f6-a40137eb4267",
+                                                "name":  "subdomain",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"account[subdomain]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "be73f2b3-c061-47d9-80af-790056c5a104",
+                                                "name":  "account_id",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"account[id]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "2b650ba2-8ed9-49df-a787-e2fef6eb1fde",
+                                                "name":  "origin",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "26042674-69a1-4115-934e-1c5da9e4cf79",
+                                                "name":  "message.chat_id",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][chat_id]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "577aaef7-0cbe-4826-9cba-2acf583b90d5",
+                                                "name":  "message.talk_id",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][talk_id]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "49986db9-2f37-40f9-b214-e4130733ed64",
+                                                "name":  "message.text",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][text]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6c20d62f-e86f-4c77-b6ff-909fd95d027c",
+                                                "name":  "message.type",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][type]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "7a9b2f4b-e97b-4f4b-89ba-a9928c2fb1cc",
+                                                "name":  "contact.id",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][contact_id]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "febe78dc-3ed0-4fbc-9666-a43fe4d875e7",
+                                                "name":  "contact.name",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][author][name]\u0027] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6f93b2f9-42b1-4a2f-9f00-094a51f92530",
+                                                "name":  "author.id",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][author][id]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "a93f4f31-845a-4142-9947-5c490aff043a",
+                                                "name":  "lead.id",
+                                                "value":  "={{ $json._embedded.leads[0].id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "aa814f98-41a8-48f9-b3a8-a5ce1634ca35",
+                                                "name":  "lead.name",
+                                                "value":  "={{ $json._embedded.leads[0].name }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "134c9283-9a6a-40bd-a23b-0c22c536a0be",
+                                                "name":  "lead.entity_type",
+                                                "value":  "=lead",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "1ea1dc20-ff52-4443-9d1f-24b87e37d228",
+                                                "name":  "lead.element_type",
+                                                "value":  "=2",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6892e3ba-2b83-4adb-8909-126c91a4b872",
+                                                "name":  "lead.element_id",
+                                                "value":  "={{ $json._embedded.leads[0].id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "47263229-5ba2-4ee9-a563-e15f42b03486",
+                                                "name":  "lead.tags",
+                                                "value":  "={{ $json._embedded.leads[0]._embedded.tags }}",
+                                                "type":  "array"
+                                            },
+                                            {
+                                                "id":  "53df4dd1-75b6-45d7-8983-0a90bdb73b3a",
+                                                "name":  "lead.status_id",
+                                                "value":  "={{ $json._embedded.leads[0].status_id }}",
+                                                "type":  "number"
+                                            },
+                                            {
+                                                "id":  "87431610-d389-47f5-bed9-063e0457be2f",
+                                                "name":  "message.attachment.type",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][attachment][type]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "02e7c87a-f072-49c6-9c23-5659be4fb4c5",
+                                                "name":  "message.attachment.link",
+                                                "value":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][attachment][link]\"] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "f8c0f3c6-7621-4908-82cb-ff417a7b8ae8",
+                                                "name":  "apagar_agente",
+                                                "value":  "={{   $json._embedded?.leads?.[0]?.custom_fields_values     ?.find(f =\u003e f.field_id === 2804781)     ?.values?.[0]?.value === true }}",
+                                                "type":  "boolean"
+                                            },
+                                            {
+                                                "id":  "109f59ac-b265-4518-b8e6-4c91ab58874b",
+                                                "name":  "lead.pipeline_id",
+                                                "value":  "={{ $json._embedded.leads[0].pipeline_id }}",
+                                                "type":  "number"
+                                            },
+                                            {
+                                                "id":  "390ef5f1-73af-4ea5-b9d7-dee648df9927",
+                                                "name":  "lead.redes-cine",
+                                                "value":  7847023,
+                                                "type":  "number"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}

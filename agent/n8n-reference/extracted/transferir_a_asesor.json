@@ -1,0 +1,13 @@
+﻿{
+    "toolDescription":  "=## ðŸ” Tool: Transferir conversaciÃ³n a un asesor\n\n### ðŸŽ¯ PropÃ³sito de la tool\n\nUsa esta tool **exclusivamente** para **transferir la conversaciÃ³n a un asesor** cuando el cliente **ya mostrÃ³ una intenciÃ³n de compra clara** y el lead estÃ¡ **correctamente calificado**.\n\nEl objetivo es que el asesor **no tenga que volver a preguntar lo bÃ¡sico** y pueda **cerrar o continuar el proceso sin fricciÃ³n**.\n\n---\n\n## âœ… CondiciÃ³n obligatoria para transferir\n\n**SOLO puedes transferir** si se cumple **todo** lo siguiente:\n\n* El cliente **expresÃ³ intenciÃ³n de compra clara**\n* Ya se definiÃ³ **quÃ© va a comprar**.\n* Ya tienes **precio confirmado** (si aplica).\n* Ya tienes los **datos mÃ­nimos del lead**:\n\nSi **falta uno de estos puntos**, **NO transfieras**.\n\n---\n\n## âŒ CuÃ¡ndo NO transferir\n\n* Preguntas exploratorias o comparaciones.\n* Solicitudes de fotos o informaciÃ³n general.\n* Dudas sin decisiÃ³n.\n* Clientes â€œmirando opcionesâ€.\n* Leads sin datos bÃ¡sicos.\n\n---\n",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804781,\n        \"values\": [\n          {\n            \"value\": true\n          }\n        ]\n      }\n    ]\n  }\n]",
+    "options":  {
+
+                }
+}

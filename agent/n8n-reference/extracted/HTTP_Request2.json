@@ -1,0 +1,33 @@
+﻿{
+    "method":  "POST",
+    "url":  "https://google.serper.dev/search",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-API-KEY",
+                                                    "value":  "99816eb7c4b967a153c3d5a3f9d37665ac2b3ae3"
+                                                },
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "q",
+                                                  "value":  "Sipnosis de la pelicula BALLENA ASESINA"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}

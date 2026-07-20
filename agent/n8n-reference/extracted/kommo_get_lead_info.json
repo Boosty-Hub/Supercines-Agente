@@ -1,0 +1,9 @@
+﻿{
+    "toolDescription":  "Usa esta tool para obtener todos detalles actuales del lead.",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}

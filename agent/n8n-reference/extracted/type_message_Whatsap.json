@@ -1,0 +1,156 @@
+﻿{
+    "rules":  {
+                  "values":  [
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "leftValue":  "={{ $json.message.attachment.type }}",
+                                                                               "rightValue":  "voice",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals"
+                                                                                            },
+                                                                               "id":  "38cdad62-0d9c-45bc-860e-9e03d107ba58"
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "audio"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "b9adfa9a-a4ce-4bbf-8e62-56430ad364a3",
+                                                                               "leftValue":  "={{ $json.message.attachment.type }}",
+                                                                               "rightValue":  "audio",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "audio"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "71778507-22f2-4e0f-99d7-fdd87ed1f26b",
+                                                                               "leftValue":  "={{ $json.message.attachment.type }}",
+                                                                               "rightValue":  "file",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "image"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "82df4052-c480-44a2-9d09-c195d4bc6879",
+                                                                               "leftValue":  "={{ $json.message.text }}",
+                                                                               "rightValue":  "text",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "notEmpty",
+                                                                                                "singleValue":  true
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "text"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "d9c1a8cf-af4e-4bca-a66c-184829c009d8",
+                                                                               "leftValue":  "={{ $json.message.attachment.type }}",
+                                                                               "rightValue":  "document",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "document"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  2
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "a2d28039-4c46-4eca-a333-4523aa29227b",
+                                                                               "leftValue":  "={{ $json.message.attachment.type }}",
+                                                                               "rightValue":  "picture",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "picture"
+                                 }
+                             ]
+              },
+    "options":  {
+
+                }
+}

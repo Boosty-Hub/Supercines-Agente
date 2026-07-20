@@ -1,0 +1,173 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFile",
+        "fileToWatch": {
+          "__rl": true,
+          "value": "1hw1zmpWQ-rG-mTl9quHDbOAkBlEVXiyfGcd6vc9JXh0",
+          "mode": "list",
+          "cachedResultName": "# 📋 DOCUMENTO DE PROMOCIONES — SUPERCINES",
+          "cachedResultUrl": "https://docs.google.com/document/d/1hw1zmpWQ-rG-mTl9quHDbOAkBlEVXiyfGcd6vc9JXh0/edit?usp=drivesdk"
+        }
+      },
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c985bcbe-6c0b-4398-9ac8-af1d99c2c872",
+      "name": "Google Drive Trigger",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "O5hFcx7EOtjmwnwB",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parser de Documento de Promociones - Supercines\n// Input:  items[0].json.data  (markdown)\n// Output: objeto estructurado listo para el agente MUVITO\n\nconst raw = $input.first().json.data;\n\n// ---------- Helpers ----------\n\n// Limpia markdown inline: **bold**, *italic*, escapes \\. \\+ etc.\nfunction clean(text) {\n  if (text == null) return '';\n  return String(text)\n    .replace(/\\\\([._+\\-*])/g, '$1')   // \\. \\+ \\- \\_ \\* → . + - _ *\n    .replace(/\\*\\*(.+?)\\*\\*/g, '$1')   // **bold**\n    .replace(/\\*(.+?)\\*/g, '$1')       // *italic*\n    .replace(/`([^`]+)`/g, '$1')       // `code`\n    .trim();\n}\n\n// Parsea un bloque de tabla markdown a array de objetos {col: valor}\nfunction parseTable(block) {\n  const lines = block.split('\\n')\n    .map(l => l.trim())\n    .filter(l => l.startsWith('|') && l.endsWith('|'));\n\n  if (lines.length < 2) return [];\n\n  const splitRow = row =>\n    row.slice(1, -1).split('|').map(c => clean(c));\n\n  const headers = splitRow(lines[0]);\n  // lines[1] es el separador :---- | :---- → lo descartamos\n  const dataLines = lines.slice(2);\n\n  return dataLines.map(line => {\n    const cells = splitRow(line);\n    const obj = {};\n    headers.forEach((h, i) => { obj[h] = cells[i] ?? ''; });\n    return obj;\n  });\n}\n\n// Convierte una tabla \"Campo | Valor\" en un objeto plano\nfunction tableToObject(rows) {\n  const obj = {};\n  rows.forEach(r => {\n    const key = r['Campo'];\n    const val = r['Valor'];\n    if (key) obj[key] = val;\n  });\n  return obj;\n}\n\n// Extrae el bloque de tabla que sigue inmediatamente después de un encabezado\n// dado (regex). Devuelve string con las líneas de tabla, o null.\nfunction extractTableAfter(text, headerRegex) {\n  const match = text.match(headerRegex);\n  if (!match) return null;\n\n  const after = text.slice(match.index + match[0].length);\n  const lines = after.split('\\n');\n  const tableLines = [];\n  let started = false;\n\n  for (const line of lines) {\n    const trimmed = line.trim();\n    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {\n      tableLines.push(trimmed);\n      started = true;\n    } else if (started && trimmed === '') {\n      // primer línea vacía después de empezar la tabla → fin\n      break;\n    } else if (started) {\n      // línea no-tabla después de iniciar → fin\n      break;\n    }\n    // antes de iniciar, ignoramos líneas vacías y otras\n  }\n\n  return tableLines.length ? tableLines.join('\\n') : null;\n}\n\n// Extrae TODAS las tablas dentro de una sección (entre dos encabezados #)\nfunction extractAllTablesInSection(text, sectionRegex, nextSectionRegex) {\n  const start = text.match(sectionRegex);\n  if (!start) return [];\n\n  let section = text.slice(start.index + start[0].length);\n  if (nextSectionRegex) {\n    const end = section.match(nextSectionRegex);\n    if (end) section = section.slice(0, end.index);\n  }\n\n  // Encontrar bloques de tabla consecutivos\n  const lines = section.split('\\n');\n  const blocks = [];\n  let current = [];\n\n  for (const line of lines) {\n    const trimmed = line.trim();\n    const isTableLine = trimmed.startsWith('|') && trimmed.endsWith('|');\n    if (isTableLine) {\n      current.push(trimmed);\n    } else if (current.length) {\n      blocks.push(current.join('\\n'));\n      current = [];\n    }\n  }\n  if (current.length) blocks.push(current.join('\\n'));\n\n  return blocks;\n}\n\n// ---------- Parseo ----------\n\nconst result = {\n  promociones_semanales: [],\n  descuentos_permanentes: [],\n  cashea: {},\n  combos_activos: [],\n  instrucciones: [],\n};\n\n// 1. Promociones semanales\nconst tbl1 = extractTableAfter(raw, /#\\s*\\*?\\*?1\\\\?\\.\\s*Promociones semanales[^\\n]*\\*?\\*?/i);\nif (tbl1) {\n  result.promociones_semanales = parseTable(tbl1).map(r => ({\n    promocion: r['Promoción'],\n    descuento: r['Descuento'],\n    condicion: r['Condición'],\n  }));\n}\n\n// 2. Descuentos permanentes\nconst tbl2 = extractTableAfter(raw, /#\\s*\\*?\\*?2\\\\?\\.\\s*Descuentos permanentes[^\\n]*\\*?\\*?/i);\nif (tbl2) {\n  result.descuentos_permanentes = parseTable(tbl2).map(r => ({\n    categoria: r['Categoría'],\n    descuento: r['Descuento'],\n    condiciones: r['Condiciones'],\n    canal: r['Canal'],\n  }));\n}\n\n// 3. CASHEA\nconst tbl3 = extractTableAfter(raw, /#\\s*\\*?\\*?3\\\\?\\.\\s*CASHEA\\*?\\*?/i);\nif (tbl3) {\n  result.cashea = tableToObject(parseTable(tbl3));\n}\n\n// 4. Combos temáticos (puede haber varios + plantilla)\nconst comboBlocks = extractAllTablesInSection(\n  raw,\n  /#\\s*\\*?\\*?4\\\\?\\.\\s*Combos tem[áa]ticos[^\\n]*\\*?\\*?/i,\n  /#\\s*\\*?\\*?5\\\\?\\./i\n);\n\n// Detectar plantilla: la tabla cuyo \"Nombre del combo\" o valores son \"—\"\nfor (const block of comboBlocks) {\n  const rows = parseTable(block);\n  if (!rows.length) continue;\n  // Solo procesar tablas Campo|Valor\n  if (!('Campo' in rows[0]) || !('Valor' in rows[0])) continue;\n\n  const obj = tableToObject(rows);\n  const valores = Object.values(obj).join('').replace(/—/g, '').trim();\n  const esPlantilla = valores === '' || valores.toLowerCase().includes('activo / inactivo');\n  if (esPlantilla) continue; // descartamos la plantilla vacía\n\n  // Solo incluir combos con Estado = Activo (case-insensitive)\n  const estado = (obj['Estado'] || '').toLowerCase();\n  if (estado && estado !== 'activo') continue;\n\n  result.combos_activos.push({\n    nombre: obj['Nombre Combo'] || obj['Nombre del combo'] || '',\n    contenido: obj['Contenido'] || '',\n    precio: obj['Precio'] || '',\n    version_activa: obj['Versión activa'] || '',\n    estado: obj['Estado'] || '',\n    nota: obj['Nota'] || '',\n  });\n}\n\n// 5. Instrucciones (lista con bullets)\nconst instrMatch = raw.match(/#\\s*\\*?\\*?5\\\\?\\.\\s*Instrucciones[^\\n]*\\*?\\*?([\\s\\S]*)/i);\nif (instrMatch) {\n  const instrSection = instrMatch[1];\n  const bulletLines = instrSection.split('\\n')\n    .map(l => l.trim())\n    .filter(l => l.startsWith('* '));\n\n  result.instrucciones = bulletLines.map(l => clean(l.slice(2)));\n}\n\n// ---------- Resumen en texto plano (útil para inyectar al prompt del agente) ----------\n\nconst lines = [];\nlines.push('=== PROMOCIONES SEMANALES ===');\nresult.promociones_semanales.forEach(p => {\n  lines.push(`- ${p.promocion} | ${p.descuento} | ${p.condicion}`);\n});\n\nlines.push('\\n=== DESCUENTOS PERMANENTES ===');\nresult.descuentos_permanentes.forEach(d => {\n  lines.push(`- ${d.categoria} | ${d.descuento} | ${d.condiciones} | Canal: ${d.canal}`);\n});\n\nlines.push('\\n=== CASHEA ===');\nObject.entries(result.cashea).forEach(([k, v]) => lines.push(`- ${k}: ${v}`));\n\nlines.push('\\n=== COMBOS ACTIVOS ===');\nresult.combos_activos.forEach(c => {\n  lines.push(`- ${c.nombre}`);\n  lines.push(`  Contenido: ${c.contenido}`);\n  lines.push(`  Precio: ${c.precio}`);\n  lines.push(`  Versión activa: ${c.version_activa}`);\n  if (c.nota) lines.push(`  Nota: ${c.nota}`);\n});\n\nresult.resumen_texto = lines.join('\\n');\n\nreturn [{ json: result }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "9d8e1c06-df46-4d59-bc85-cdd4b4246c81",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "url": "=https://docs.google.com/feeds/download/documents/export/Export?id={{ $json.id }}&exportFormat=markdown",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        224,
+        0
+      ],
+      "id": "861012f4-4556-45ea-9f73-ca62145589e9",
+      "name": "get docs",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "ccfORnfBVmAO02bB",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "C6ubYzp14ldiTNMd",
+          "mode": "list",
+          "cachedResultName": "Promocion",
+          "cachedResultUrl": "/projects/p5qlnbxzSZ6NTinC/datatables/C6ubYzp14ldiTNMd"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "2"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "resumen_texto": "={{ $json.resumen_texto }}"
+          },
+          "matchingColumns": [
+            "resumen_texto"
+          ],
+          "schema": [
+            {
+              "id": "resumen_texto",
+              "displayName": "resumen_texto",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        0
+      ],
+      "id": "e2dc2895-3b9e-4c3c-aacd-8458b656a394",
+      "name": "Upsert row(s)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Drive Trigger": {
+      "main": [
+        [
+          {
+            "node": "get docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Upsert row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get docs": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c9d0c6b9-0b24-479d-9acc-e84402d3f3c0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2f7a07fdd4ca6a1790e8442fdbff1b50f1fac241de20150c301f2a178b36de48"
+  },
+  "id": "TOIdEohq5eNNYzqD",
+  "tags": []
+}

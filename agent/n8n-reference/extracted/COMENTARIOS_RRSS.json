@@ -1,0 +1,12 @@
+﻿{
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\"status_id\": 98719651 }",
+    "options":  {
+
+                }
+}

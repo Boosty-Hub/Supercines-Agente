@@ -1,0 +1,15 @@
+﻿{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "37944990-d4c8-4415-aa2e-5e4623a179db",
+                                                "name":  "message_content",
+                                                "value":  "={{ JSON.stringify($json.message) }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}

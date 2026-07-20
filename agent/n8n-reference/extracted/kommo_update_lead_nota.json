@@ -1,0 +1,13 @@
+﻿{
+    "toolDescription":  "=Actualiza Ãºnicamente la nota o resumen de la conversaciÃ³n del lead en Kommo. Se usa despuÃ©s de una interacciÃ³n para registrar los puntos clave de la charla.",
+    "method":  "POST",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/notes",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"entity_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"note_type\": \"common\",\n    \"params\": {\n      \"text\": {{ JSON.stringify($fromAI(\u0027nota\u0027, `Resumen con los detalles mÃ¡s importantes de la conversaciÃ³n con el lead. FORMATO: texto plano (string) con mÃ¡ximo 250 caracteres, sin saltos de lÃ­nea.`, \u0027string\u0027).replace(\u0027\"\u0027,\u0027\u0027) )}}\n    }\n  }\n]\n",
+    "options":  {
+
+                }
+}

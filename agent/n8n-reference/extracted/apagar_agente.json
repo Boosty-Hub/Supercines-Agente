@@ -1,0 +1,36 @@
+﻿{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "loose",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "9b5d2e17-e58f-471e-984b-0b1e99173635",
+                                              "leftValue":  "={{ $(\u0027WebhookData\u0027).item.json.apagar_agente }}",
+                                              "rightValue":  "",
+                                              "operator":  {
+                                                               "type":  "boolean",
+                                                               "operation":  "false",
+                                                               "singleValue":  true
+                                                           }
+                                          },
+                                          {
+                                              "id":  "1f1c7f9f-a669-4c3a-bfd2-2507cb551c8b",
+                                              "leftValue":  "={{ $json.lead.id }}",
+                                              "rightValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][entity_id]\u0027] }}",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "looseTypeValidation":  true,
+    "options":  {
+
+                }
+}

@@ -1,0 +1,7 @@
+﻿{
+    "chatId":  "-1003041021670",
+    "text":  "=ðŸš¨ *Alerta de error en n8n*\n\nðŸ¢ *Proyecto / Cuenta:*  \nCANGURO\n\nðŸ”— *EjecuciÃ³n:*  \n{{ $execution.resumeUrl}} \n\nâŒ *Error detectado:*  \nError Create Session Kommo\n\nðŸ§© *Ãšltimo nodo ejecutado:*  \nCreate Session Kommo",
+    "additionalFields":  {
+                             "appendAttribution":  false
+                         }
+}

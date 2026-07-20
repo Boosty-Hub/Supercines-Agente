@@ -1,0 +1,21 @@
+﻿{
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804996,\n        \"values\": [\n          {\n            \"value\": {{ JSON.stringify($json.output.replace(/[\\p{Emoji_Presentation}\\p{Extended_Pictographic}]/gu, \u0027\u0027)  )}}\n          }\n        ]\n      }\n    ]\n  }\n]\n",
+    "options":  {
+
+                }
+}

@@ -1,0 +1,6 @@
+﻿{
+    "url":  "={{ $json.message.attachment.link }}",
+    "options":  {
+
+                }
+}

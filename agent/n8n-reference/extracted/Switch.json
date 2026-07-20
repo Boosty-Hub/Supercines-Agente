@@ -1,0 +1,157 @@
+﻿{
+    "rules":  {
+                  "values":  [
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "instagram_business",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals"
+                                                                                            },
+                                                                               "id":  "2ee50a7f-85d2-4cc9-b966-41066c331a0f"
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "instagram_business"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "f1647796-f776-441b-bd2a-8a4587d25d54",
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "waba",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "waba"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "0a3dcb51-4d6b-4183-a2c0-9bdda2cd157e",
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "facebook",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "facebook"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "8972f7a8-9a9d-45c5-a0db-414d4d16c8e0",
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "tiktok_kommo",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "tiktok_kommo"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "7ad06367-97fc-45cb-8ff4-8b3c3e5eddd6",
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "onlinechat",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "equals",
+                                                                                                "name":  "filter.operator.equals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "onlinechat"
+                                 },
+                                 {
+                                     "conditions":  {
+                                                        "options":  {
+                                                                        "caseSensitive":  true,
+                                                                        "leftValue":  "",
+                                                                        "typeValidation":  "strict",
+                                                                        "version":  3
+                                                                    },
+                                                        "conditions":  [
+                                                                           {
+                                                                               "id":  "19f2825b-8bae-4107-9fa0-d27a6206ce9d",
+                                                                               "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                                                               "rightValue":  "onlinechat2",
+                                                                               "operator":  {
+                                                                                                "type":  "string",
+                                                                                                "operation":  "notEquals"
+                                                                                            }
+                                                                           }
+                                                                       ],
+                                                        "combinator":  "and"
+                                                    },
+                                     "renameOutput":  true,
+                                     "outputKey":  "otro"
+                                 }
+                             ]
+              },
+    "options":  {
+
+                }
+}

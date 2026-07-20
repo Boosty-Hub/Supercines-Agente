@@ -1,0 +1,37 @@
+﻿{
+    "method":  "POST",
+    "url":  "=https://supercines.amocrm.com/ajax/v1/chats/session",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-Requested-With",
+                                                    "value":  "XMLHttpRequest"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "contentType":  "form-urlencoded",
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "request[chats][session][action]",
+                                                  "value":  "create"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 },
+                    "response":  {
+                                     "response":  {
+                                                      "responseFormat":  "json"
+                                                  }
+                                 }
+                }
+}

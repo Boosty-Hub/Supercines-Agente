@@ -1,0 +1,18 @@
+﻿{
+    "operation":  "get",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "C6ubYzp14ldiTNMd",
+                        "mode":  "list",
+                        "cachedResultName":  "Promocion",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/C6ubYzp14ldiTNMd"
+                    },
+    "matchType":  "allConditions",
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyValue":  "2"
+                                       }
+                                   ]
+                }
+}

@@ -1,0 +1,33 @@
+﻿{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "9f69a465-0cc7-43dd-97d7-aaee90bacbe3",
+                                                "name":  "nombre",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.name.split(\u0027 \u0027)[0] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "82031891-32ae-4442-b883-fad57ad08c79",
+                                                "name":  "phone_number",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "8c4da55a-b196-497b-a9ef-c0ce734b8847",
+                                                "name":  "mensaje",
+                                                "value":  "=\u003ctext\u003e{{ $(\u0027WebhookData\u0027).item.json.message_text }}\u003c/text\u003e\n\u003cimg\u003e{{ $json.content.parts[0].text }}\u003c/img\u003e",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "8a4d2988-720e-46c1-9927-90f62d5ddd72",
+                                                "name":  "tags",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.tags }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}

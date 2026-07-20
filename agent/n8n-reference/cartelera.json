@@ -1,0 +1,305 @@
+{
+  "name": "cartelera",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "sede_name"
+            }
+          ]
+        }
+      },
+      "id": "e48ec99d-a73a-47f7-a430-c6dc7d2538f1",
+      "typeVersion": 1.1,
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        4960,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://supercines.com.ve/api/bot/cartelera",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "nombre",
+              "value": "={{ $json.sede_name }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5216,
+        368
+      ],
+      "id": "f61d29fa-0a3b-49f7-bfc5-acc91fda715f",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "cartelera_por_dia",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        5424,
+        368
+      ],
+      "id": "11e8c333-fd12-4b18-a975-4e15e9577606",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "00c00feb-9091-46b2-8c8c-c90900b1e237",
+              "leftValue": "={{ $json.fecha }}",
+              "rightValue": "={{ new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] }}",
+              "operator": {
+                "type": "dateTime",
+                "operation": "before"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5632,
+        368
+      ],
+      "id": "6467f515-6e46-477a-bbc4-a1b22806225b",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "91458d21-9078-4446-bf4f-46e5532b70d7",
+              "name": "cartelera",
+              "value": "={{ $json.cartelera }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        6096,
+        368
+      ],
+      "id": "89f9c850-bc93-4782-855f-e91ac333bc38",
+      "name": "data"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      cartelera: items.map(item => {\n        const data = item.json;\n\n        return {\n          fecha: data.fecha,\n          dia_semana: data.dia_semana,\n          peliculas: (data.peliculas || []).map(p => ({\n            nombre: p.nombre,\n            idioma: p.idioma,\n            censura: p.censura,\n            fechaEstreno: p.fechaEstreno,\n            horarios: (p.horarios || []).map(h => h.hora)\n          }))\n        };\n      })\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5840,
+        368
+      ],
+      "id": "a0b119f9-90ab-4a73-84a2-91d787a8bf22",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "get_cartelera",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        4960,
+        592
+      ],
+      "id": "7b6406c8-41d9-40c2-afa4-777aad76358d",
+      "name": "Webhook",
+      "webhookId": "1eb2414f-5c14-4229-9984-2357d6d96119"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4a6516e2-6442-4ed0-8eff-61f87f5eb60a",
+              "name": "sede_name",
+              "value": "={{ $json.body.sede_name }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        5104,
+        592
+      ],
+      "id": "57ac64c4-6c57-4914-8faa-e53f48967f3f",
+      "name": "Edit Fields"
+    }
+  ],
+  "pinData": {
+    "Start": [
+      {
+        "json": {
+          "sede_name": "La Granja"
+        }
+      }
+    ],
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "webhook.supercines.boosty.digital",
+            "user-agent": "node",
+            "content-length": "27",
+            "accept": "*/*",
+            "accept-encoding": "br, gzip, deflate",
+            "accept-language": "*",
+            "content-type": "application/json",
+            "sec-fetch-mode": "cors",
+            "x-forwarded-for": "129.222.203.196",
+            "x-forwarded-host": "webhook.supercines.boosty.digital",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "58cb4010e4e3",
+            "x-real-ip": "129.222.203.196"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "sede_name": "La Cascada'"
+          },
+          "webhookUrl": "https://webhook.supercines.boosty.digital/webhook/get_cartelera",
+          "executionMode": "production"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "8267da40-c1c3-4b66-bf12-bf2f113b1261",
+  "meta": {
+    "instanceId": "2f7a07fdd4ca6a1790e8442fdbff1b50f1fac241de20150c301f2a178b36de48"
+  },
+  "id": "XnZf73PzRoFj8V4y",
+  "tags": []
+}

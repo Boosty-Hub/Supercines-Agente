@@ -1,0 +1,21 @@
+﻿{
+    "method":  "POST",
+    "url":  "https://supercines.kommo.com/api/v2/salesbot/run",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"bot_id\": 57439,\n    \"entity_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"entity_type\": \"lead\"\n  }\n] ",
+    "options":  {
+
+                }
+}

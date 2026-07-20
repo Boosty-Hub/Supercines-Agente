@@ -1,0 +1,560 @@
+﻿
+########## NODE: Analyze image1 [@n8n/n8n-nodes-langchain.googleGemini] ##########
+{
+    "resource":  "image",
+    "operation":  "analyze",
+    "modelId":  {
+                    "__rl":  true,
+                    "value":  "models/gemini-2.0-flash",
+                    "mode":  "list",
+                    "cachedResultName":  "models/gemini-2.0-flash"
+                },
+    "text":  "=ActÃºa como un **experto en anÃ¡lisis de imÃ¡genes e interpretaciÃ³n visual**, con conocimientos en **visiÃ³n por computadora, OCR y anÃ¡lisis contextual multimodal**.  \nTu tarea es **analizar cualquier tipo de imagen proporcionada**, sin importar su naturaleza (fotografÃ­a, captura de pantalla, documento, grÃ¡fico, escena, etc.), e **identificar informaciÃ³n relevante y estructurada en formato JSON**.\n\nTu salida debe ser clara, organizada y adecuada al contenido detectado en la imagen.\n\n---\n\n### ðŸ§© **Estructura de salida esperada (JSON)**\n\n```json\n{\n  \"tipo_de_imagen\": \"FotografÃ­a / Documento / GrÃ¡fico / Captura de pantalla / Otro\",\n  \"descripcion_general\": \"Breve descripciÃ³n general de lo que muestra la imagen.\",\n  \"elementos_detectados\": [\n    {\n      \"tipo\": \"Persona / Texto / VehÃ­culo / Animal / Producto / Edificio / Logo / Otro\",\n      \"descripcion\": \"DescripciÃ³n breve de cada elemento importante identificado.\",\n      \"texto_extraido\": \"Solo si la imagen contiene texto legible mediante OCR.\",\n      \"posibles_significados\": \"InterpretaciÃ³n o contexto que podrÃ­a tener el elemento (opcional).\"\n    }\n  ],\n  \"informacion_textual\": {\n    \"texto_detectado\": \"Texto principal encontrado (si aplica)\",\n    \"idioma\": \"Idioma detectado o \u0027no aplica\u0027\",\n    \"palabras_clave\": [\"lista\", \"de\", \"palabras\", \"relevantes\"]\n  },\n  \"contexto_probable\": \"Escenario o situaciÃ³n que representa la imagen (por ejemplo: \u0027evento deportivo\u0027, \u0027factura\u0027, \u0027paisaje urbano\u0027, \u0027memes de redes sociales\u0027, etc.)\",\n  \"datos_especiales\": {\n    \"personas_detectadas\": \"nÃºmero estimado\",\n    \"objetos_principales\": [\"lista de objetos relevantes\"],\n    \"ubicacion_probable\": \"si hay indicios geogrÃ¡ficos o contexto cultural\",\n    \"fecha_detectada\": \"si la imagen o texto tiene fecha visible (dd-mm-yyyy)\"\n  },\n  \"errores_o_advertencias\": [\n    \"Si falta informaciÃ³n importante o la imagen estÃ¡ borrosa, indÃ­calo aquÃ­.\"\n  ]\n}\n```\n\n---\n\n### ðŸ§© **Instrucciones adicionales**\n\n1. Si la imagen contiene texto (por ejemplo, un cartel, una conversaciÃ³n de WhatsApp, un post de redes sociales, etc.), **extrae y resume el contenido textual** con precisiÃ³n.  \n2. Si no hay texto, enfoca el anÃ¡lisis en **objetos, personas, entorno y contexto visual**.  \n3. Cuando sea posible, **propÃ³n una interpretaciÃ³n probable del propÃ³sito de la imagen** (por ejemplo: â€œFoto publicitariaâ€, â€œRecuerdo personalâ€, â€œComprobante bancarioâ€, â€œCaptura de pantalla de red socialâ€, etc.).  \n4. Si la imagen no tiene contenido legible o claro, indÃ­calo con:  \n   `\"advertencia\": \"La imagen no contiene texto ni elementos fÃ¡cilmente identificables.\"`  \n5. Siempre responde en **JSON vÃ¡lido** y asegÃºrate de que pueda ser procesado automÃ¡ticamente.\n\n---\n\n### ðŸ’¬ **Ejemplo de salida (para una foto de una vaca en el campo)**\n\n```json\n{\n  \"tipo_de_imagen\": \"FotografÃ­a\",\n  \"descripcion_general\": \"Imagen de una vaca en un campo verde con Ã¡rboles y cielo despejado.\",\n  \"elementos_detectados\": [\n    {\n      \"tipo\": \"Animal\",\n      \"descripcion\": \"Vaca adulta de color marrÃ³n y blanco, en posiciÃ³n de pie sobre pasto.\",\n      \"posibles_significados\": \"Actividad ganadera o fotografÃ­a rural.\"\n    },\n    {\n      \"tipo\": \"Entorno\",\n      \"descripcion\": \"Campo verde con vegetaciÃ³n natural y cielo azul.\",\n      \"posibles_significados\": \"Ambiente de naturaleza o ganaderÃ­a.\"\n    }\n  ],\n  \"informacion_textual\": {\n    \"texto_detectado\": \"No aplica\",\n    \"idioma\": \"No aplica\",\n    \"palabras_clave\": [\"vaca\", \"campo\", \"ganado\", \"naturaleza\"]\n  },\n  \"contexto_probable\": \"FotografÃ­a rural o ganadera.\",\n  \"datos_especiales\": {\n    \"personas_detectadas\": 0,\n    \"objetos_principales\": [\"vaca\", \"pasto\", \"Ã¡rboles\"],\n    \"ubicacion_probable\": \"Zona rural de AmÃ©rica Latina\",\n    \"fecha_detectada\": \"No visible\"\n  },\n  \"errores_o_advertencias\": []\n}\n```\n",
+    "imageUrls":  "={{ $json.message.attachment.link }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: Analyze document [@n8n/n8n-nodes-langchain.googleGemini] ##########
+{
+    "resource":  "document",
+    "modelId":  {
+                    "__rl":  true,
+                    "value":  "models/gemini-2.0-flash",
+                    "mode":  "list",
+                    "cachedResultName":  "models/gemini-2.0-flash"
+                },
+    "text":  "=## ðŸ§  **Prompt: Agente Analizador de Documentos (PDF, DOCX, TXT, etc.)**\n\nActÃºa como un **asistente experto en anÃ¡lisis y estructuraciÃ³n de documentos**, con amplios conocimientos en **procesamiento de texto, OCR y detecciÃ³n semÃ¡ntica**.\nTu funciÃ³n **no es interpretar ni clasificar el contenido**, sino **extraerlo, estructurarlo y describirlo de forma neutral y detallada**, para que otro agente posterior pueda procesarlo o entenderlo.\n\nEl documento que recibirÃ¡s puede ser de cualquier tipo (por ejemplo: factura, carta, contrato, informe, certificado, reporte, etc.).\nDebes analizarlo cuidadosamente, extraer su contenido textual y metadatos, y entregar la salida en formato **JSON estructurado y limpio**.\n\n---\n\n### ðŸ“„ **Estructura esperada de salida (JSON)**\n\n```json\n{\n  \"tipo_de_archivo\": \"PDF / DOCX / TXT / Otro\",\n  \"nombre_original\": \"nombre_del_archivo.ext\",\n  \"paginas_detectadas\": numero_total_de_paginas,\n  \"contenido_extraido\": [\n    {\n      \"pagina\": 1,\n      \"texto\": \"Texto completo extraÃ­do de la pÃ¡gina 1\",\n      \"bloques_detectados\": [\n        {\n          \"tipo\": \"TÃ­tulo / PÃ¡rrafo / Tabla / Firma / Imagen / Otro\",\n          \"texto\": \"Contenido o descripciÃ³n del bloque\",\n          \"posicion_relativa\": \"Superior / Inferior / Izquierda / Derecha / Centro\"\n        }\n      ]\n    }\n  ],\n  \"metadatos_documento\": {\n    \"idioma_detectado\": \"es / en / otro\",\n    \"formato_texto\": \"con_imagenes / solo_texto / texto_y_tablas\",\n    \"tamaÃ±o_aproximado\": \"en_kb\",\n    \"fecha_creacion\": \"si estÃ¡ disponible en metadatos\",\n    \"autor_documento\": \"si se detecta en metadatos\"\n  },\n  \"texto_consolidado\": \"Texto completo del documento concatenado y limpio.\",\n  \"resumen_basico\": \"Resumen automÃ¡tico de mÃ¡ximo 3 lÃ­neas del contenido textual.\",\n  \"errores_o_advertencias\": [\n    \"Si el texto estÃ¡ incompleto, ilegible o no se pudo extraer correctamente, indÃ­calo aquÃ­.\"\n  ]\n}\n```\n\n---\n\n### âš™ï¸ **Instrucciones adicionales**\n\n1. **Extrae todo el texto posible** del documento, incluso si estÃ¡ dentro de imÃ¡genes (OCR).\n2. **No interpretes el contenido** (no digas si es una factura, contrato, etc.), solo descrÃ­belo de manera general.\n3. MantÃ©n la **estructura JSON vÃ¡lida** y asegÃºrate de que sea procesable por sistemas automatizados.\n4. Si el archivo no contiene texto o es ilegible, responde con una advertencia clara, por ejemplo:\n\n   ```json\n   { \"error\": \"El documento no contiene texto legible o estÃ¡ vacÃ­o.\" }\n   ```\n5. Si el documento tiene varias pÃ¡ginas, **organiza el texto por pÃ¡gina y por bloques visuales**, manteniendo su orden lÃ³gico.\n\n---\n\n### ðŸ’¬ **Ejemplo de salida (para un PDF de 2 pÃ¡ginas con texto y tablas)**\n\n```json\n{\n  \"tipo_de_archivo\": \"PDF\",\n  \"nombre_original\": \"informe_financiero_2024.pdf\",\n  \"paginas_detectadas\": 2,\n  \"contenido_extraido\": [\n    {\n      \"pagina\": 1,\n      \"texto\": \"Informe financiero del aÃ±o 2024. Resultados consolidados por trimestre...\",\n      \"bloques_detectados\": [\n        {\n          \"tipo\": \"TÃ­tulo\",\n          \"texto\": \"Informe Financiero 2024\",\n          \"posicion_relativa\": \"Superior\"\n        },\n        {\n          \"tipo\": \"Tabla\",\n          \"texto\": \"Ingresos | Gastos | Utilidad | Enero | Febrero...\",\n          \"posicion_relativa\": \"Centro\"\n        }\n      ]\n    },\n    {\n      \"pagina\": 2,\n      \"texto\": \"Conclusiones y proyecciones para el aÃ±o siguiente...\",\n      \"bloques_detectados\": [\n        {\n          \"tipo\": \"PÃ¡rrafo\",\n          \"texto\": \"El crecimiento proyectado para 2025 es del 8%...\",\n          \"posicion_relativa\": \"Centro\"\n        },\n        {\n          \"tipo\": \"Firma\",\n          \"texto\": \"Firma digital: Carlos GÃ³mez, CFO\",\n          \"posicion_relativa\": \"Inferior derecha\"\n        }\n      ]\n    }\n  ],\n  \"metadatos_documento\": {\n    \"idioma_detectado\": \"es\",\n    \"formato_texto\": \"texto_y_tablas\",\n    \"tamaÃ±o_aproximado\": \"320 KB\",\n    \"fecha_creacion\": \"15-04-2024\",\n    \"autor_documento\": \"Departamento Financiero\"\n  },\n  \"texto_consolidado\": \"Informe financiero del aÃ±o 2024. Resultados consolidados por trimestre... Conclusiones y proyecciones para el aÃ±o siguiente...\",\n  \"resumen_basico\": \"Documento con resultados financieros de 2024 y proyecciones para 2025. Incluye tablas de ingresos y firma digital.\",\n  \"errores_o_advertencias\": []\n}\n```\n\n",
+    "documentUrls":  "={{ $json.messages[0].file.body }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: Analyze image [@n8n/n8n-nodes-langchain.googleGemini] ##########
+{
+    "resource":  "image",
+    "operation":  "analyze",
+    "modelId":  {
+                    "__rl":  true,
+                    "value":  "models/gemini-2.0-flash",
+                    "mode":  "list",
+                    "cachedResultName":  "models/gemini-2.0-flash"
+                },
+    "text":  "=ActÃºa como un **experto en anÃ¡lisis de imÃ¡genes e interpretaciÃ³n visual**, con conocimientos en **visiÃ³n por computadora, OCR y anÃ¡lisis contextual multimodal**.  \nTu tarea es **analizar cualquier tipo de imagen proporcionada**, sin importar su naturaleza (fotografÃ­a, captura de pantalla, documento, grÃ¡fico, escena, etc.), e **identificar informaciÃ³n relevante y estructurada en formato JSON**.\n\nTu salida debe ser clara, organizada y adecuada al contenido detectado en la imagen.\n\n---\n\n### ðŸ§© **Estructura de salida esperada (JSON)**\n\n```json\n{\n  \"tipo_de_imagen\": \"FotografÃ­a / Documento / GrÃ¡fico / Captura de pantalla / Otro\",\n  \"descripcion_general\": \"Breve descripciÃ³n general de lo que muestra la imagen.\",\n  \"elementos_detectados\": [\n    {\n      \"tipo\": \"Persona / Texto / VehÃ­culo / Animal / Producto / Edificio / Logo / Otro\",\n      \"descripcion\": \"DescripciÃ³n breve de cada elemento importante identificado.\",\n      \"texto_extraido\": \"Solo si la imagen contiene texto legible mediante OCR.\",\n      \"posibles_significados\": \"InterpretaciÃ³n o contexto que podrÃ­a tener el elemento (opcional).\"\n    }\n  ],\n  \"informacion_textual\": {\n    \"texto_detectado\": \"Texto principal encontrado (si aplica)\",\n    \"idioma\": \"Idioma detectado o \u0027no aplica\u0027\",\n    \"palabras_clave\": [\"lista\", \"de\", \"palabras\", \"relevantes\"]\n  },\n  \"contexto_probable\": \"Escenario o situaciÃ³n que representa la imagen (por ejemplo: \u0027evento deportivo\u0027, \u0027factura\u0027, \u0027paisaje urbano\u0027, \u0027memes de redes sociales\u0027, etc.)\",\n  \"datos_especiales\": {\n    \"personas_detectadas\": \"nÃºmero estimado\",\n    \"objetos_principales\": [\"lista de objetos relevantes\"],\n    \"ubicacion_probable\": \"si hay indicios geogrÃ¡ficos o contexto cultural\",\n    \"fecha_detectada\": \"si la imagen o texto tiene fecha visible (dd-mm-yyyy)\"\n  },\n  \"errores_o_advertencias\": [\n    \"Si falta informaciÃ³n importante o la imagen estÃ¡ borrosa, indÃ­calo aquÃ­.\"\n  ]\n}\n```\n\n---\n\n### ðŸ§© **Instrucciones adicionales**\n\n1. Si la imagen contiene texto (por ejemplo, un cartel, una conversaciÃ³n de WhatsApp, un post de redes sociales, etc.), **extrae y resume el contenido textual** con precisiÃ³n.  \n2. Si no hay texto, enfoca el anÃ¡lisis en **objetos, personas, entorno y contexto visual**.  \n3. Cuando sea posible, **propÃ³n una interpretaciÃ³n probable del propÃ³sito de la imagen** (por ejemplo: â€œFoto publicitariaâ€, â€œRecuerdo personalâ€, â€œComprobante bancarioâ€, â€œCaptura de pantalla de red socialâ€, etc.).  \n4. Si la imagen no tiene contenido legible o claro, indÃ­calo con:  \n   `\"advertencia\": \"La imagen no contiene texto ni elementos fÃ¡cilmente identificables.\"`  \n5. Siempre responde en **JSON vÃ¡lido** y asegÃºrate de que pueda ser procesado automÃ¡ticamente.\n\n---\n\n### ðŸ’¬ **Ejemplo de salida (para una foto de una vaca en el campo)**\n\n```json\n{\n  \"tipo_de_imagen\": \"FotografÃ­a\",\n  \"descripcion_general\": \"Imagen de una vaca en un campo verde con Ã¡rboles y cielo despejado.\",\n  \"elementos_detectados\": [\n    {\n      \"tipo\": \"Animal\",\n      \"descripcion\": \"Vaca adulta de color marrÃ³n y blanco, en posiciÃ³n de pie sobre pasto.\",\n      \"posibles_significados\": \"Actividad ganadera o fotografÃ­a rural.\"\n    },\n    {\n      \"tipo\": \"Entorno\",\n      \"descripcion\": \"Campo verde con vegetaciÃ³n natural y cielo azul.\",\n      \"posibles_significados\": \"Ambiente de naturaleza o ganaderÃ­a.\"\n    }\n  ],\n  \"informacion_textual\": {\n    \"texto_detectado\": \"No aplica\",\n    \"idioma\": \"No aplica\",\n    \"palabras_clave\": [\"vaca\", \"campo\", \"ganado\", \"naturaleza\"]\n  },\n  \"contexto_probable\": \"FotografÃ­a rural o ganadera.\",\n  \"datos_especiales\": {\n    \"personas_detectadas\": 0,\n    \"objetos_principales\": [\"vaca\", \"pasto\", \"Ã¡rboles\"],\n    \"ubicacion_probable\": \"Zona rural de AmÃ©rica Latina\",\n    \"fecha_detectada\": \"No visible\"\n  },\n  \"errores_o_advertencias\": []\n}\n```\n",
+    "imageUrls":  "={{ $json.message.attachment.link }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: get_lead1 [n8n-nodes-kommo.kommo] ##########
+{
+    "resource":  "leads",
+    "filter":  {
+                   "id":  "={{ $json.body[\"message[add][0][entity_id]\"] }}"
+               },
+    "options":  {
+
+                }
+}
+
+########## NODE: Get contacts [n8n-nodes-kommo.kommo] ##########
+{
+    "resource":  "contacts",
+    "filter":  {
+                   "id":  "={{ $json.body[\"message[add][0][contact_id]\"] }}"
+               },
+    "options":  {
+                    "with":  [
+                                 "leads"
+                             ]
+                }
+}
+
+########## NODE: get_lead [n8n-nodes-kommo.kommo] ##########
+{
+    "resource":  "leads",
+    "filter":  {
+                   "id":  "={{ $json._embedded.contacts[0]._embedded.leads[0].id }}"
+               },
+    "options":  {
+
+                }
+}
+
+########## NODE: Redis [n8n-nodes-base.redis] ##########
+{
+    "operation":  "get",
+    "propertyName":  "message",
+    "key":  "=memory_id_{{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: Wait [n8n-nodes-base.wait] ##########
+{
+    "amount":  8
+}
+
+########## NODE: Push Message [n8n-nodes-base.redis] ##########
+{
+    "operation":  "push",
+    "list":  "=memory_id_{{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}",
+    "messageData":  "={{ $json.mensaje }}",
+    "tail":  true
+}
+
+########## NODE: Redis5 [n8n-nodes-base.redis] ##########
+{
+    "operation":  "delete",
+    "key":  "=memory_id_{{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}"
+}
+
+########## NODE: If3 [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  2
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "a7fe6665-ef0d-4ec2-9800-88004951e528",
+                                              "leftValue":  "={{ $json.message?.last() }}",
+                                              "rightValue":  "={{ $(\u0027setData\u0027).item.json.mensaje }}",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "equals",
+                                                               "name":  "filter.operator.equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: data [n8n-nodes-base.set] ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "69a5eaba-3c65-44be-bfd5-e708c1643c1c",
+                                                "name":  "mensaje_usuario",
+                                                "value":  "={{ $(\u0027userMessage\u0027).item.json.message_content.replace(\n      /https?:\\/\\/[^\\s]*lookaside\\.fbsbx\\.com[^\\s]*/gi,\n      \u0027[El usuario enviÃ³ un Sticker/Saludo]\u0027\n    ) \n}}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "5e10c40a-461a-4f4d-82e2-ea915fab6245",
+                                                "name":  "canal_origen",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.origin }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "eb5f8676-277a-4d71-9e41-982437a6c04e",
+                                                "name":  "etapa_actual",
+                                                "value":  "={{ \n(() =\u003e {\n  const data = JSON.parse($json[\"data\"])._embedded.statuses;\n  const statusId = $(\u0027WebhookData\u0027).item.json.lead.status_id;\n  const s = data.find(x =\u003e x.id === statusId);\n  return { id: s.id, name: s.name, pipeline_id: s.pipeline_id };\n})()\n}}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "148b0b88-0264-4472-a17e-9d64f242ef48",
+                                                "name":  "etapas_disponibles",
+                                                "value":  "={{ JSON.parse($json[\"data\"])._embedded.statuses.map(s =\u003e ({ id: s.id, name: s.name })) }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "4cd51e90-dc0c-45eb-905b-f48ae512d53e",
+                                                "name":  "etapas_reclamos",
+                                                "value":  "=[{\"id\":98704395,\"name\":\"reclamo producto\"},{\"id\":98704399,\"name\":\"reclamo servicio tecnico\"},{\"id\":98704403,\"name\":\"reclamo pago\"}]",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "fcc5afe0-ef63-448e-80fc-e3f6e1bc464f",
+                                                "name":  "lead_id",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "31a93a46-c9af-490d-92ae-85e9d7948457",
+                                                "name":  "promociones",
+                                                "value":  "={{ $(\u0027Get promociones\u0027).item.json.resumen_texto }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+########## NODE: retry [n8n-nodes-base.httpRequest] ##########
+{
+    "method":  "POST",
+    "url":  "https://n8n.canguro.boosty.digital/webhook/agente2",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={{ $(\u0027Webhook\u0027).item.json.body }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: If16 [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  2
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "709f4717-003f-4f9f-b841-18d2f2f4ddb4",
+                                              "leftValue":  "={{ $(\u0027Respons Parser\u0027).item.json.output.parte2 }}",
+                                              "rightValue":  "",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "exists",
+                                                               "singleValue":  true
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: message [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "2a0a3ed8-790b-494e-ad63-3acdabbd1f99",
+                                              "leftValue":  "={{ $json.output }}",
+                                              "rightValue":  "",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notEmpty",
+                                                               "singleValue":  true
+                                                           }
+                                          },
+                                          {
+                                              "id":  "ec34cd85-7271-4788-b37a-acd69f4511d1",
+                                              "leftValue":  "={{ $json.output.length }}",
+                                              "rightValue":  20,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "gt"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: Loop Over Items [n8n-nodes-base.splitInBatches] ##########
+{
+    "options":  {
+
+                }
+}
+
+########## NODE: Split Out [n8n-nodes-base.splitOut] ##########
+{
+    "fieldToSplitOut":  "output",
+    "options":  {
+
+                }
+}
+
+########## NODE: Edit Fields [n8n-nodes-base.set] ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "6146f1af-c7bf-4cf9-a1a6-14ecd497153e",
+                                                "name":  "output",
+                                                "value":  "={{ $(\u0027Respons Parser\u0027).item.json.output }}",
+                                                "type":  "object"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+########## NODE: If4 [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "7b9e18bc-2422-4c5c-a18e-bb21adb52416",
+                                              "leftValue":  "={{ $json._embedded.leads[0].status_id }}",
+                                              "rightValue":  98719647,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "263cf2a6-f206-4e74-ab4f-5ff38e82781e",
+                                              "leftValue":  "={{ $json._embedded.leads[0].status_id }}",
+                                              "rightValue":  98719651,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "8291684a-2ced-4333-9bd5-92310185bb0b",
+                                              "leftValue":  "={{ $json._embedded.leads[0].status_id }}",
+                                              "rightValue":  98704403,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "55b9c0ca-4bd0-4a5b-b034-bc484e9f581b",
+                                              "leftValue":  "={{ $json._embedded.leads[0].status_id }}",
+                                              "rightValue":  98704399,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "1a57aa54-72d7-4461-9671-3065b790ce8b",
+                                              "leftValue":  "={{ $json._embedded.leads[0].status_id }}",
+                                              "rightValue":  98704395,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: create sesion B [n8n-nodes-base.httpRequest] ##########
+{
+    "url":  "https://automation.boosty.digital/webhook/sesion-supercines",
+    "options":  {
+
+                }
+}
+
+########## NODE: If5 [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "13b9f1aa-7c52-4b66-ab83-dd85c09d924c",
+                                              "leftValue":  "={{ $json.response.chats.session.access_token }}",
+                                              "rightValue":  "",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "exists",
+                                                               "singleValue":  true
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: retry1 [n8n-nodes-base.httpRequest] ##########
+{
+    "method":  "POST",
+    "url":  "https://webhook.supercines.boosty.digital/webhook/agent-supercines",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={{ $(\u0027Webhook\u0027).item.json.body }}",
+    "options":  {
+
+                }
+}
+
+########## NODE: data1 [n8n-nodes-base.set] ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "69a5eaba-3c65-44be-bfd5-e708c1643c1c",
+                                                "name":  "mensaje_usuario",
+                                                "value":  "={{ \n  $json.message_content\n    .replace(\n      /https?:\\/\\/[^\\s]*lookaside\\.fbsbx\\.com[^\\s]*/gi,\n      \u0027[El usuario enviÃ³ un Sticker/Saludo]\u0027\n    ) \n}}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "5e10c40a-461a-4f4d-82e2-ea915fab6245",
+                                                "name":  "canal_origen",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.origin }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "eb5f8676-277a-4d71-9e41-982437a6c04e",
+                                                "name":  "etapa_actual",
+                                                "value":  "={{ \n(() =\u003e {\n  const data = JSON.parse($json[\"data\"])._embedded.statuses;\n  const statusId = $(\u0027WebhookData\u0027).item.json.lead.status_id;\n  const s = data.find(x =\u003e x.id === statusId);\n  return { id: s.id, name: s.name, pipeline_id: s.pipeline_id };\n})()\n}}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "148b0b88-0264-4472-a17e-9d64f242ef48",
+                                                "name":  "etapas_disponibles",
+                                                "value":  "={{ JSON.parse($json[\"data\"])._embedded.statuses.map(s =\u003e ({ id: s.id, name: s.name })) }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+########## NODE: Wait1 [n8n-nodes-base.wait] ##########
+{
+    "amount":  2
+}
+
+########## NODE: Wait2 [n8n-nodes-base.wait] ##########
+{
+    "amount":  1
+}
+
+########## NODE: If1 [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "23ba0561-c008-4794-8ae7-1d445224e18d",
+                                              "leftValue":  "={{ $json.message }}",
+                                              "rightValue":  "error",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notEquals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: mentioned? [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "d1859d03-e1f8-4bff-b97b-2a53645efffd",
+                                              "leftValue":  "={{ $json.message.text }}",
+                                              "rightValue":  "Mentioned",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notContains"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "bad0bed7-3928-4517-8425-eac8f55b31b9",
+                                              "leftValue":  "={{ $json.message.text }}",
+                                              "rightValue":  "their story",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notContains"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "d7427296-24a2-44e1-aa01-3ac0e8196339",
+                                              "leftValue":  "={{ $json.message.text }}",
+                                              "rightValue":  "AllÃ­ estarÃ© ",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notContains"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "options":  {
+
+                }
+}
+
+########## NODE: text? [n8n-nodes-base.if] ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "d1859d03-e1f8-4bff-b97b-2a53645efffd",
+                                              "leftValue":  "={{ (() =\u003e {\n  const text = $json.message.text || \u0027\u0027;\n\n  // 1. Detecta si es SOLO el link de sticker\n  const onlySticker = /^https?:\\/\\/[^\\s]*lookaside\\.fbsbx\\.com[^\\s]*$/i.test(text.trim());\n\n  // 2. Limpia emojis/sÃ­mbolos y valida si queda texto real\n  const cleanText = text\n    .replace(/https?:\\/\\/[^\\s]*lookaside\\.fbsbx\\.com[^\\s]*/gi, \u0027\u0027)\n    .replace(/[^\\p{L}\\p{N}\\s]/gu, \u0027\u0027)\n    .trim();\n\n  // 3. CondiciÃ³n final\n  return !onlySticker \u0026\u0026 cleanText.length \u003e 1;\n})() }}",
+                                              "rightValue":  "Mentioned",
+                                              "operator":  {
+                                                               "type":  "boolean",
+                                                               "operation":  "true",
+                                                               "singleValue":  true
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "options":  {
+
+                }
+}

@@ -1,0 +1,8 @@
+﻿{
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads/pipelines/{{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }}/statuses",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}

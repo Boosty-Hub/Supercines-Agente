@@ -1,0 +1,21 @@
+﻿{
+    "method":  "POST",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v2/salesbot/run",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"bot_id\": {{ $(\u0027Code in JavaScript\u0027).item.json.salesbot }},\n    \"entity_id\": {{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][entity_id]\u0027] }},\n    \"entity_type\": \"{{ $(\u0027WebhookData\u0027).item.json.lead.entity_type }}\"\n  }\n]",
+    "options":  {
+
+                }
+}

@@ -1,0 +1,30 @@
+﻿{
+    "toolDescription":  "usa esta tool para obtener la sipnosis, reparto o descripcion de una pelicula en especifico...",
+    "method":  "POST",
+    "url":  "https://google.serper.dev/search",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-API-KEY",
+                                                    "value":  "99816eb7c4b967a153c3d5a3f9d37665ac2b3ae3"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "q",
+                                                  "value":  "={{ $fromAI(\u0027parameters0_Value\u0027, `query para buscar buscar en google, para saber datos como sipnosis, o detalles sobre esa pelicula.`, \u0027string\u0027) }}"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}

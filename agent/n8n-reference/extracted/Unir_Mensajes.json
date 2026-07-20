@@ -1,0 +1,15 @@
+﻿{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "b89d5418-df60-419b-84f6-5bc7bc0dd09b",
+                                                "name":  "message",
+                                                "value":  "={{ $(\u0027Redis\u0027).item.json.message.join(\u0027\\n\u0027).replace(/test/gi, \u0027\u0027) }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}

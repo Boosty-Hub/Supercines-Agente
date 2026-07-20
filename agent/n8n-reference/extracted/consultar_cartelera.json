@@ -1,0 +1,33 @@
+﻿{
+    "description":  "obtiene los datos de las peliculas que estan en cartelera",
+    "workflowId":  {
+                       "__rl":  true,
+                       "value":  "XnZf73PzRoFj8V4y",
+                       "mode":  "list",
+                       "cachedResultUrl":  "/workflow/XnZf73PzRoFj8V4y",
+                       "cachedResultName":  "cartelera"
+                   },
+    "workflowInputs":  {
+                           "mappingMode":  "defineBelow",
+                           "value":  {
+                                         "sede_name":  "={{ $fromAI(\u0027sede_name\u0027, `nombre de la sucursal exactamente ejemplo: \u0027La Granja\u0027, \u0027Los Aviadores\u0027, \u0027La Cascada\u0027, \u0027Puente Real\u0027, \u0027Playa Mar\u0027`, \u0027string\u0027) }}"
+                                     },
+                           "matchingColumns":  [
+                                                   "sede_name"
+                                               ],
+                           "schema":  [
+                                          {
+                                              "id":  "sede_name",
+                                              "displayName":  "sede_name",
+                                              "required":  false,
+                                              "defaultMatch":  false,
+                                              "display":  true,
+                                              "canBeUsedToMatch":  true,
+                                              "type":  "string",
+                                              "removed":  false
+                                          }
+                                      ],
+                           "attemptToConvertTypes":  false,
+                           "convertFieldsToString":  false
+                       }
+}

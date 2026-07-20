@@ -1,0 +1,91 @@
+﻿{
+    "method":  "POST",
+    "url":  "=https://amojo.kommo.com/v1/chats/{{ $json.account_id }}/{{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}/messages",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/x-www-form-urlencoded"
+                                                },
+                                                {
+                                                    "name":  "chatId",
+                                                    "value":  "={{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}"
+                                                },
+                                                {
+                                                    "name":  "X-Auth-Token",
+                                                    "value":  "={{ $json.access_token }}"
+                                                },
+                                                {
+                                                    "name":  "X-Requested-With",
+                                                    "value":  "XMLHttpRequest"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "contentType":  "form-urlencoded",
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "silent",
+                                                  "value":  "false"
+                                              },
+                                              {
+                                                  "name":  "priority",
+                                                  "value":  "low"
+                                              },
+                                              {
+                                                  "name":  "crm_entity[id]",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.element_id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_entity[type]",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.element_type }}"
+                                              },
+                                              {
+                                                  "name":  "persona_name",
+                                                  "value":  "={{ $json.user_name }}"
+                                              },
+                                              {
+                                                  "name":  "persona_avatar",
+                                                  "value":  "={{ $json.user_avatar }}"
+                                              },
+                                              {
+                                                  "name":  "text",
+                                                  "value":  "={{ $(\u0027Respons Parser\u0027).item.json.output.parte3 }}"
+                                              },
+                                              {
+                                                  "name":  "recipient_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.author.id }}"
+                                              },
+                                              {
+                                                  "name":  "group_id"
+                                              },
+                                              {
+                                                  "name":  "crm_dialog_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.message.talk_id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_contact_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_account_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.account_id }}"
+                                              },
+                                              {
+                                                  "name":  "skip_link_shortener",
+                                                  "value":  "false"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}

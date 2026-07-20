@@ -1,0 +1,18 @@
+﻿{
+    "operation":  "get",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "KkSKhPCQem6t8NyR",
+                        "mode":  "list",
+                        "cachedResultName":  "sessin Kommo",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/KkSKhPCQem6t8NyR"
+                    },
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyName":  "user_name",
+                                           "keyValue":  "Super Cines"
+                                       }
+                                   ]
+                }
+}

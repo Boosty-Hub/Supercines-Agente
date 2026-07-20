@@ -1,0 +1,21 @@
+﻿{
+    "method":  "PATCH",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/chats/templates",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={{ JSON.stringify([\n  {\n    id: $json.plantilla,\n    content: $(\u0027RespuestaFormateada\u0027).item.json.message\n  }\n]) }}",
+    "options":  {
+
+                }
+}

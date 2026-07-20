@@ -1,0 +1,34 @@
+﻿{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "078ebad1-b65c-4983-b1e1-617bf878d2c2",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  98617647,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "2e0e5267-439d-4897-8f53-5e9664a382f4",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  100320515,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "options":  {
+
+                }
+}

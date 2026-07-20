@@ -1,0 +1,9 @@
+﻿{
+    "method":  "DELETE",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}

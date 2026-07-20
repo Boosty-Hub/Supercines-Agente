@@ -1,0 +1,33 @@
+﻿{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "f4f107ad-f4e3-4616-a1ec-515f7324ba23",
+                                                "name":  "nombre",
+                                                "value":  "={{ $json.nombre }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6f55c6f4-4cb3-4cec-9d31-b956d3fffde0",
+                                                "name":  "phone_number",
+                                                "value":  "={{ $json.phone_number }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "bad14eb8-f005-4d91-bd83-600e6105d974",
+                                                "name":  "mensaje",
+                                                "value":  "={{ $json.mensaje }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "386c6143-4fa4-40dd-9425-e014fe74e9b7",
+                                                "name":  "tags",
+                                                "value":  "={{ $json.tags }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}

@@ -1,0 +1,4 @@
+﻿{
+    "schemaType":  "manual",
+    "inputSchema":  "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"parte1\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la primera parte.\"\n    },\n    \"parte2\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la segunda parte (opcional).\"\n    },\n    \"parte3\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la tercera parte (opcional).\"\n    },\n    \"parte4\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la cuarta parte (opcional, solo si el mensaje es muy largo).\"\n    }\n  },\n  \"required\": [\"parte1\"],\n  \"additionalProperties\": false\n}"
+}

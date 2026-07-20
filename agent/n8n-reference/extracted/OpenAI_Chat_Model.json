@@ -1,0 +1,12 @@
+﻿{
+    "model":  {
+                  "__rl":  true,
+                  "value":  "gpt-5-mini",
+                  "mode":  "list",
+                  "cachedResultName":  "gpt-5-mini"
+              },
+    "responsesApiEnabled":  false,
+    "options":  {
+
+                }
+}

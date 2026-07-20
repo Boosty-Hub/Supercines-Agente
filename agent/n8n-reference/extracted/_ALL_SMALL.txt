@@ -1,0 +1,1118 @@
+﻿
+########## NODE: Respons_Parser ##########
+{
+    "promptType":  "define",
+    "text":  "=### **Mensaje:**  \n\"{{ $json.output }}\" ",
+    "hasOutputParser":  true,
+    "needsFallback":  true,
+    "options":  {
+                    "systemMessage":  "=\nDivide el siguiente mensaje en hasta *4 partes mÃ¡s pequeÃ±as* solo si es necesario, asegurÃ¡ndote de que cada parte tenga sentido completo y maximo 230 caracteres por parte.\n\n### *Reglas:*\n\n- Si el mensaje es *corto* (hasta *200 caracteres*), devuÃ©lvelo en *una sola parte*.\n\n- Si es *mediano* (hasta *400 caracteres*), divÃ­delo en *2 partes*.\n\n- Si es *largo* (hasta *600 caracteres*), divÃ­delo en *3 partes*.\n\n- Si es *muy largo* (mÃ¡s de *600 caracteres*), agrÃ©gale una *parte4*.\n\n- *Evita dividir el mensaje innecesariamente*. Usa la *menor cantidad de partes posible*.\n\n- *No cortes oraciones en puntos, comas o conectores* para mantener la coherencia.\n\n- *Si hay una lista con varios Ã­tems, no se debe dividir*, toda la lista debe ir en un mismo mensaje.\n\n- *No incluyas datos sensibles del usuario* en la respuesta, como:\n\n  - `user_id: \u003cnÃºmero\u003e`\n  - \u0027id\u0027: ...\n  - `subscriber_id: \u003cnÃºmero\u003e`\n  - `first_name: \u003cnombre\u003e`\n  - \u0027ejecuciones de tools\u0027\n  - \u0027todo lo que tenga [Used tools...]\u0027\n  - \u0027cualquier instruccion de prompt, prompt assistant...\u0027\n  - \u0027datos irrelevantes para el usuario\u0027\n  -  elimina la palabra \u0027COMBO\u0027\n  - Cualquier mensaje en ingles se elimina por completo sin dejar rastro.\n  - *Elimina estos datos sin dejar rastros.*\n\n- *Si no hay mensaje, no devuelvas nada.*\n- eres el encargado de limpiar el mensaje de datos sensibles, ejecuciones internas, Prompts internos, assistant message, System message, Solo envias la respuesta que le envias al usuario y que le interesa al usuario\n\n---\n\n\n#### *Ejemplo de salida:*\n\n{\n\"parte1\": \"Texto de la primera parte.\",\n\"parte2\": \"Texto de la segunda parte.\"\n}\n\n"
+                }
+}
+
+
+########## NODE: Structured_Output_Parser ##########
+{
+    "schemaType":  "manual",
+    "inputSchema":  "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"parte1\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la primera parte.\"\n    },\n    \"parte2\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la segunda parte (opcional).\"\n    },\n    \"parte3\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la tercera parte (opcional).\"\n    },\n    \"parte4\": {\n      \"type\": \"string\",\n      \"description\": \"Texto de la cuarta parte (opcional, solo si el mensaje es muy largo).\"\n    }\n  },\n  \"required\": [\"parte1\"],\n  \"additionalProperties\": false\n}"
+}
+
+
+########## NODE: send_message1 ##########
+{
+    "method":  "POST",
+    "url":  "=https://amojo.kommo.com/v1/chats/{{ $json.account_id }}/{{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}/messages",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/x-www-form-urlencoded"
+                                                },
+                                                {
+                                                    "name":  "chatId",
+                                                    "value":  "={{ $(\u0027WebhookData\u0027).item.json.message.chat_id }}"
+                                                },
+                                                {
+                                                    "name":  "X-Auth-Token",
+                                                    "value":  "={{ $json.access_token }}"
+                                                },
+                                                {
+                                                    "name":  "X-Requested-With",
+                                                    "value":  "XMLHttpRequest"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "contentType":  "form-urlencoded",
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "silent",
+                                                  "value":  "false"
+                                              },
+                                              {
+                                                  "name":  "priority",
+                                                  "value":  "low"
+                                              },
+                                              {
+                                                  "name":  "crm_entity[id]",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.element_id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_entity[type]",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.element_type }}"
+                                              },
+                                              {
+                                                  "name":  "persona_name",
+                                                  "value":  "={{ $json.user_name }}"
+                                              },
+                                              {
+                                                  "name":  "persona_avatar",
+                                                  "value":  "={{ $json.user_avatar }}"
+                                              },
+                                              {
+                                                  "name":  "text",
+                                                  "value":  "={{ $(\u0027Respons Parser\u0027).item.json.output.parte1 }}"
+                                              },
+                                              {
+                                                  "name":  "recipient_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.author.id }}"
+                                              },
+                                              {
+                                                  "name":  "group_id"
+                                              },
+                                              {
+                                                  "name":  "crm_dialog_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.message.talk_id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_contact_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.id }}"
+                                              },
+                                              {
+                                                  "name":  "crm_account_id",
+                                                  "value":  "={{ $(\u0027WebhookData\u0027).item.json.account_id }}"
+                                              },
+                                              {
+                                                  "name":  "skip_link_shortener",
+                                                  "value":  "false"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}
+
+
+########## NODE: RespuestaFormateada ##########
+{
+    "jsCode":  "const entrada = $input.first().json.output;\n\nlet parsed = { message: \"\"};\n\ntry {\n  // Verificamos si es un string y parece JSON (entre llaves)\n  if (typeof entrada === \"string\" \u0026\u0026 entrada.trim().startsWith(\"{\") \u0026\u0026 entrada.trim().endsWith(\"}\")) {\n    parsed = JSON.parse(entrada);\n  } else if (typeof entrada === \"object\") {\n    parsed = entrada;\n  } else {\n    // Si es texto plano, lo usamos como message\n    parsed.message = entrada;\n  }\n} catch (error) {\n  // Si algo falla, devuelve un mensaje genÃ©rico\n  parsed.message = \"error\";\n}\n\nreturn parsed;\n"
+}
+
+
+########## NODE: Code_in_JavaScript ##########
+{
+    "jsCode":  "// Generar nÃºmero random entero entre 1 y 5\nconst numeroRandom = Math.floor(Math.random() * 10) + 1;\n\n// Tabla de equivalencias\nconst configuracion = {\n  1: { plantilla: 55961, salesbot: 57463 }, //envio_mensaje_1\n  2: { plantilla: 55963, salesbot: 57465 }, //envio_mensaje_2\n  3: { plantilla: 55965, salesbot: 57467 }, //envio_mensaje_3\n  4: { plantilla: 55967, salesbot: 57469 }, //envio_mensaje_4\n  5: { plantilla: 55969, salesbot: 57471 }, //envio_mensaje_5\n  6: { plantilla: 55971, salesbot: 57473 }, //envio_mensaje_6\n  7: { plantilla: 55973, salesbot: 57475 }, //envio_mensaje_7\n  8: { plantilla: 55975, salesbot: 57477 }, //envio_mensaje_8\n  9: { plantilla: 55977, salesbot: 57479 }, //envio_mensaje_9\n  10: { plantilla: 55979, salesbot: 57481 }, //envio_mensaje_10\n};\n\n// Obtener valores segÃºn el nÃºmero random\nconst resultado = configuracion[numeroRandom];\n\nreturn [\n  {\n    json: {\n      random: numeroRandom,\n      plantilla: resultado.plantilla,\n      salesbot: resultado.salesbot\n    }\n  }\n];\n"
+}
+
+
+########## NODE: consultar_cartelera ##########
+{
+    "description":  "obtiene los datos de las peliculas que estan en cartelera",
+    "workflowId":  {
+                       "__rl":  true,
+                       "value":  "XnZf73PzRoFj8V4y",
+                       "mode":  "list",
+                       "cachedResultUrl":  "/workflow/XnZf73PzRoFj8V4y",
+                       "cachedResultName":  "cartelera"
+                   },
+    "workflowInputs":  {
+                           "mappingMode":  "defineBelow",
+                           "value":  {
+                                         "sede_name":  "={{ $fromAI(\u0027sede_name\u0027, `nombre de la sucursal exactamente ejemplo: \u0027La Granja\u0027, \u0027Los Aviadores\u0027, \u0027La Cascada\u0027, \u0027Puente Real\u0027, \u0027Playa Mar\u0027`, \u0027string\u0027) }}"
+                                     },
+                           "matchingColumns":  [
+                                                   "sede_name"
+                                               ],
+                           "schema":  [
+                                          {
+                                              "id":  "sede_name",
+                                              "displayName":  "sede_name",
+                                              "required":  false,
+                                              "defaultMatch":  false,
+                                              "display":  true,
+                                              "canBeUsedToMatch":  true,
+                                              "type":  "string",
+                                              "removed":  false
+                                          }
+                                      ],
+                           "attemptToConvertTypes":  false,
+                           "convertFieldsToString":  false
+                       }
+}
+
+
+########## NODE: get_Sipnosis ##########
+{
+    "toolDescription":  "usa esta tool para obtener la sipnosis, reparto o descripcion de una pelicula en especifico...",
+    "method":  "POST",
+    "url":  "https://google.serper.dev/search",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-API-KEY",
+                                                    "value":  "99816eb7c4b967a153c3d5a3f9d37665ac2b3ae3"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "q",
+                                                  "value":  "={{ $fromAI(\u0027parameters0_Value\u0027, `query para buscar buscar en google, para saber datos como sipnosis, o detalles sobre esa pelicula.`, \u0027string\u0027) }}"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}
+
+
+########## NODE: get_price2 ##########
+{
+    "method":  "POST",
+    "url":  "https://api.openai.com/v1/responses",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Authorization",
+                                                    "value":  "Bearer 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"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\n  \"model\": \"gpt-5\",\n  \"input\": \"Precios de {{ $fromAI(\u0027Question\u0027, `query para consultar en el rag`, \u0027string\u0027) }}\",\n  \"tools\": [\n    {\n      \"type\": \"file_search\",\n      \"vector_store_ids\": [\n        \"vs_699df5c8a88c8191878e03e8c27a3add\"\n      ]\n    }\n  ]\n}",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: set_price ##########
+{
+    "toolDescription":  "=llama esta tool siempre que tengas el valor total de la cotizacion del cliente enviando el valor total como price. siempre agrega el presupuesto en esta tool, antes de cambiar etapa, trata de tener un valor claro y establecer el precio de lo que esta preguntando el cliente.\n\nsiempre se debe tener claro el monto de la posible venta al mover a las etapas siguientes y establecerlo.\n",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"price\": {{ Math.round($fromAI(\u0027price\u0027, \u0027precio total de la cotizacion\u0027, \u0027number\u0027)) }}\n  }\n]\n",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: transferir_a_asesor ##########
+{
+    "toolDescription":  "=## ðŸ” Tool: Transferir conversaciÃ³n a un asesor\n\n### ðŸŽ¯ PropÃ³sito de la tool\n\nUsa esta tool **exclusivamente** para **transferir la conversaciÃ³n a un asesor** cuando el cliente **ya mostrÃ³ una intenciÃ³n de compra clara** y el lead estÃ¡ **correctamente calificado**.\n\nEl objetivo es que el asesor **no tenga que volver a preguntar lo bÃ¡sico** y pueda **cerrar o continuar el proceso sin fricciÃ³n**.\n\n---\n\n## âœ… CondiciÃ³n obligatoria para transferir\n\n**SOLO puedes transferir** si se cumple **todo** lo siguiente:\n\n* El cliente **expresÃ³ intenciÃ³n de compra clara**\n* Ya se definiÃ³ **quÃ© va a comprar**.\n* Ya tienes **precio confirmado** (si aplica).\n* Ya tienes los **datos mÃ­nimos del lead**:\n\nSi **falta uno de estos puntos**, **NO transfieras**.\n\n---\n\n## âŒ CuÃ¡ndo NO transferir\n\n* Preguntas exploratorias o comparaciones.\n* Solicitudes de fotos o informaciÃ³n general.\n* Dudas sin decisiÃ³n.\n* Clientes â€œmirando opcionesâ€.\n* Leads sin datos bÃ¡sicos.\n\n---\n",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804781,\n        \"values\": [\n          {\n            \"value\": true\n          }\n        ]\n      }\n    ]\n  }\n]",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: kommo_update_lead_stage ##########
+{
+    "toolDescription":  "=## ðŸ§­ Tool: Movimiento de Lead en el Embudo (Pipeline)\n\n### ðŸŽ¯ PropÃ³sito de la tool\n\nUsa esta tool **exclusivamente** para **mover un lead a una nueva etapa del embudo** segÃºn su **intenciÃ³n real** y el **estado de la conversaciÃ³n**.\n\nEsta acciÃ³n define **quiÃ©n lo atiende**, **dÃ³nde se atiende** y **en quÃ© momento comercial se encuentra el cliente**.\n\n---\n\n## ðŸ§© Reglas generales (OBLIGATORIAS)\n\n- **Importante:** Solo usarla cuando el cliente haya mostrado intenciÃ³n clara de compra o contrataciÃ³n.\n* Siempre debes pasar un **ID vÃ¡lido** incluido en `etapas_disponibles` unicamente estos ids puedes usar:\nEtapas del pipeline actual del lead: {{ $json.etapas_disponibles }},\n- **Mapeo de status_id por sede:**\n  - La Granja (Valencia): `64424315`\n  - Los Aviadores (Maracay): `74328936`\n  - La Cascada (Carrizal/Los Teques): `63393843`\n  - Puente Real (Barcelona): `63393843`\n  - Playa Mar (Puerto Cabello): `63393843`\n* **Nunca regreses un lead a la etapa â€œIncomingâ€** si ya fue clasificado.\n* Si el lead estÃ¡ en una etapa incorrecta:\n\n  1. Clasifica correctamente el caso.\n  2. Luego mueve el lead a la etapa correcta.\n* El movimiento de etapa **no es automÃ¡tico**: debe responder a una **decisiÃ³n comercial clara, Ejemplo cuando hay una intencion de compra clara de parte del lead**.\n\n- nunca lo mueves a la misma etapa en la que se encuentra el lead o a incoming.\n si vez que da error al llamar la tool, verifica el status_id e intenta nuevamente.\n---",
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $json.lead_id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\"status_id\": {{ $fromAI(\u0027status_id\u0027, `id de la nueva etapa a la que se va a pasar el lead, nunca jamas usar el lead_id  solo el status_id de las etapas disponibles`, \u0027number\u0027) }}}",
+    "options":  {
+                    "response":  {
+                                     "response":  {
+                                                      "neverError":  true,
+                                                      "responseFormat":  "json"
+                                                  }
+                                 }
+                }
+}
+
+
+########## NODE: kommo_update_lead_nota ##########
+{
+    "toolDescription":  "=Actualiza Ãºnicamente la nota o resumen de la conversaciÃ³n del lead en Kommo. Se usa despuÃ©s de una interacciÃ³n para registrar los puntos clave de la charla.",
+    "method":  "POST",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/notes",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"entity_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"note_type\": \"common\",\n    \"params\": {\n      \"text\": {{ JSON.stringify($fromAI(\u0027nota\u0027, `Resumen con los detalles mÃ¡s importantes de la conversaciÃ³n con el lead. FORMATO: texto plano (string) con mÃ¡ximo 250 caracteres, sin saltos de lÃ­nea.`, \u0027string\u0027).replace(\u0027\"\u0027,\u0027\u0027) )}}\n    }\n  }\n]\n",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: kommo_get_lead_info ##########
+{
+    "toolDescription":  "Usa esta tool para obtener todos detalles actuales del lead.",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Get_promociones ##########
+{
+    "operation":  "get",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "C6ubYzp14ldiTNMd",
+                        "mode":  "list",
+                        "cachedResultName":  "Promocion",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/C6ubYzp14ldiTNMd"
+                    },
+    "matchType":  "allConditions",
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyValue":  "2"
+                                       }
+                                   ]
+                }
+}
+
+
+########## NODE: Unir_Mensajes ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "b89d5418-df60-419b-84f6-5bc7bc0dd09b",
+                                                "name":  "message",
+                                                "value":  "={{ $(\u0027Redis\u0027).item.json.message.join(\u0027\\n\u0027).replace(/test/gi, \u0027\u0027) }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: userMessage ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "37944990-d4c8-4415-aa2e-5e4623a179db",
+                                                "name":  "message_content",
+                                                "value":  "={{ JSON.stringify($json.message) }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Redis_Chat_Memory ##########
+{
+    "sessionIdType":  "customKey",
+    "sessionKey":  "=chat_history_id_{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "sessionTTL":  900000,
+    "contextWindowLength":  10
+}
+
+
+########## NODE: Transcribe_a_recording ##########
+{
+    "resource":  "audio",
+    "operation":  "transcribe",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: create_session_kommo ##########
+{
+    "method":  "POST",
+    "url":  "=https://supercines.amocrm.com/ajax/v1/chats/session",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-Requested-With",
+                                                    "value":  "XMLHttpRequest"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "contentType":  "form-urlencoded",
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "request[chats][session][action]",
+                                                  "value":  "create"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 },
+                    "response":  {
+                                     "response":  {
+                                                      "responseFormat":  "json"
+                                                  }
+                                 }
+                }
+}
+
+
+########## NODE: Get_Token ##########
+{
+    "operation":  "get",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "KkSKhPCQem6t8NyR",
+                        "mode":  "list",
+                        "cachedResultName":  "sessin Kommo",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/KkSKhPCQem6t8NyR"
+                    },
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyName":  "user_name",
+                                           "keyValue":  "Super Cines"
+                                       }
+                                   ]
+                }
+}
+
+
+########## NODE: etapas ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  2
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "0cddcfb1-651e-4204-826e-bf05a513bc46",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  98617651,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "notEquals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "b8b90880-9dd0-4a7b-bf1b-22d1fe4faac0",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  99387011,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "notEquals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: apagar_agente ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "loose",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "9b5d2e17-e58f-471e-984b-0b1e99173635",
+                                              "leftValue":  "={{ $(\u0027WebhookData\u0027).item.json.apagar_agente }}",
+                                              "rightValue":  "",
+                                              "operator":  {
+                                                               "type":  "boolean",
+                                                               "operation":  "false",
+                                                               "singleValue":  true
+                                                           }
+                                          },
+                                          {
+                                              "id":  "1f1c7f9f-a669-4c3a-bfd2-2507cb551c8b",
+                                              "leftValue":  "={{ $json.lead.id }}",
+                                              "rightValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][entity_id]\u0027] }}",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "looseTypeValidation":  true,
+    "options":  {
+
+                }
+}
+
+
+########## NODE: incoming ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  2
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "cb34339c-6fa2-4779-bf8d-fe6039d08661",
+                                              "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][type]\u0027] }}",
+                                              "rightValue":  "incoming",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "equals",
+                                                               "name":  "filter.operator.equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "6466e2d7-943a-44f5-b547-a0dbdbfa5d6e",
+                                              "leftValue":  "={{ $(\u0027Webhook\u0027).item.json.body[\"message[add][0][origin]\"] }}",
+                                              "rightValue":  "onlinechat2",
+                                              "operator":  {
+                                                               "type":  "string",
+                                                               "operation":  "notEquals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "and"
+                   },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Pipeline ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "loose",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "81d772bb-621a-4396-9978-0002c78327f5",
+                                              "leftValue":  "={{ $json.lead.pipeline_id }}",
+                                              "rightValue":  "={{ $json.lead[\u0027redes-cine\u0027] }}",
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "looseTypeValidation":  true,
+    "options":  {
+
+                }
+}
+
+
+########## NODE: incoming_ ##########
+{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "strict",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "078ebad1-b65c-4983-b1e1-617bf878d2c2",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  98617647,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          },
+                                          {
+                                              "id":  "2e0e5267-439d-4897-8f53-5e9664a382f4",
+                                              "leftValue":  "={{ $json.lead.status_id }}",
+                                              "rightValue":  100320515,
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: setData ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "f4f107ad-f4e3-4616-a1ec-515f7324ba23",
+                                                "name":  "nombre",
+                                                "value":  "={{ $json.nombre }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6f55c6f4-4cb3-4cec-9d31-b956d3fffde0",
+                                                "name":  "phone_number",
+                                                "value":  "={{ $json.phone_number }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "bad14eb8-f005-4d91-bd83-600e6105d974",
+                                                "name":  "mensaje",
+                                                "value":  "={{ $json.mensaje }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "386c6143-4fa4-40dd-9425-e014fe74e9b7",
+                                                "name":  "tags",
+                                                "value":  "={{ $json.tags }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: DataText ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "9f69a465-0cc7-43dd-97d7-aaee90bacbe3",
+                                                "name":  "nombre",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.name.split(\u0027 \u0027)[0] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "82031891-32ae-4442-b883-fad57ad08c79",
+                                                "name":  "phone_number",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "8c4da55a-b196-497b-a9ef-c0ce734b8847",
+                                                "name":  "mensaje",
+                                                "value":  "={{ $json.message.text }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "6134f63e-8c5b-4fb7-9953-c298e0c9cfcf",
+                                                "name":  "tags",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.tags }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: DataAudio ##########
+{
+    "assignments":  {
+                        "assignments":  [
+                                            {
+                                                "id":  "9f69a465-0cc7-43dd-97d7-aaee90bacbe3",
+                                                "name":  "nombre",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.name.split(\u0027 \u0027)[0] }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "82031891-32ae-4442-b883-fad57ad08c79",
+                                                "name":  "phone_number",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.contact.id }}",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "8c4da55a-b196-497b-a9ef-c0ce734b8847",
+                                                "name":  "mensaje",
+                                                "value":  "=\u003caudio\u003e{{ $json.text }}\u003c/audio\u003e",
+                                                "type":  "string"
+                                            },
+                                            {
+                                                "id":  "8a4d2988-720e-46c1-9927-90f62d5ddd72",
+                                                "name":  "tags",
+                                                "value":  "={{ $(\u0027WebhookData\u0027).item.json.lead.tags }}",
+                                                "type":  "string"
+                                            }
+                                        ]
+                    },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: add_msj_variable ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804996,\n        \"values\": [\n          {\n            \"value\": {{ JSON.stringify($json.output.replace(/[\\p{Emoji_Presentation}\\p{Extended_Pictographic}]/gu, \u0027\u0027)  )}}\n          }\n        ]\n      }\n    ]\n  }\n]\n",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: enviar_salesbot ##########
+{
+    "method":  "POST",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v2/salesbot/run",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"bot_id\": {{ $(\u0027Code in JavaScript\u0027).item.json.salesbot }},\n    \"entity_id\": {{ $(\u0027Webhook\u0027).item.json.body[\u0027message[add][0][entity_id]\u0027] }},\n    \"entity_type\": \"{{ $(\u0027WebhookData\u0027).item.json.lead.entity_type }}\"\n  }\n]",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: modificar_plantilla ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/chats/templates",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={{ JSON.stringify([\n  {\n    id: $json.plantilla,\n    content: $(\u0027RespuestaFormateada\u0027).item.json.message\n  }\n]) }}",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: response_bot ##########
+{
+    "method":  "POST",
+    "url":  "https://supercines.kommo.com/api/v2/salesbot/run",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"bot_id\": 57439,\n    \"entity_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"entity_type\": \"lead\"\n  }\n] ",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: por_atender ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\"status_id\": 98617651 }",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: COMENTARIOS_RRSS ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "={\"status_id\": 98719651 }",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Api_Boosty ##########
+{
+    "chatId":  "-1003041021670",
+    "text":  "=ðŸš¨ *Alerta de error en n8n*\n\nðŸ¢ *Proyecto / Cuenta:*  \nCANGURO\n\nðŸ”— *EjecuciÃ³n:*  \n{{ $execution.resumeUrl}} \n\nâŒ *Error detectado:*  \nError Create Session Kommo\n\nðŸ§© *Ãšltimo nodo ejecutado:*  \nCreate Session Kommo",
+    "additionalFields":  {
+                             "appendAttribution":  false
+                         }
+}
+
+
+########## NODE: get_Etapas_pipeline ##########
+{
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads/pipelines/{{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }}/statuses",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: apagar_agente1 ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"pipeline_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.pipeline_id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 2804781,\n        \"values\": [\n          {\n            \"value\": true\n          }\n        ]\n      }\n    ]\n  }\n]",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: HTTP_Request ##########
+{
+    "method":  "DELETE",
+    "url":  "=https://{{ $(\u0027WebhookData\u0027).item.json.subdomain }}.kommo.com/api/v4/leads/{{ $(\u0027WebhookData\u0027).item.json.lead.id }}",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: HTTP_Request1 ##########
+{
+    "url":  "={{ $json.message.attachment.link }}",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: HTTP_Request2 ##########
+{
+    "method":  "POST",
+    "url":  "https://google.serper.dev/search",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "X-API-KEY",
+                                                    "value":  "99816eb7c4b967a153c3d5a3f9d37665ac2b3ae3"
+                                                },
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "bodyParameters":  {
+                           "parameters":  [
+                                              {
+                                                  "name":  "q",
+                                                  "value":  "Sipnosis de la pelicula BALLENA ASESINA"
+                                              }
+                                          ]
+                       },
+    "options":  {
+                    "redirect":  {
+                                     "redirect":  {
+
+                                                  }
+                                 }
+                }
+}
+
+
+########## NODE: HTTP_Request3 ##########
+{
+    "method":  "POST",
+    "url":  "https://supercines.kommo.com/api/v4/chats/templates",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "[\n  {\n    \"name\": \"envio_mensaje_10\",\n    \"content\": \"Texto de Prueba\",\n    \"is_editable\": true,\n    \"type\": \"amocrm\"\n  }\n]",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: add_response ##########
+{
+    "method":  "PATCH",
+    "url":  "=https://supercines.kommo.com/api/v4/leads",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "Content-Type",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"custom_fields_values\": [\n      {\n        \"field_id\": 1707608,\n        \"values\": [\n          {\n            \"value\": {{ JSON.stringify($json.message )}}\n          }\n        ]\n      }\n    ]\n  }\n]\n",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: response ##########
+{
+    "method":  "POST",
+    "url":  "https://supercines.kommo.com/api/v2/salesbot/run",
+    "authentication":  "predefinedCredentialType",
+    "nodeCredentialType":  "kommoOAuth2Api",
+    "sendHeaders":  true,
+    "headerParameters":  {
+                             "parameters":  [
+                                                {
+                                                    "name":  "accept",
+                                                    "value":  "application/json"
+                                                }
+                                            ]
+                         },
+    "sendBody":  true,
+    "specifyBody":  "json",
+    "jsonBody":  "=[\n  {\n    \"bot_id\": 66220,\n    \"entity_id\": {{ $(\u0027WebhookData\u0027).item.json.lead.id }},\n    \"entity_type\": \"lead\"\n  }\n] ",
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Update_row_s_1 ##########
+{
+    "operation":  "update",
+    "dataTableId":  {
+                        "__rl":  true,
+                        "value":  "tLsmzB5WGI92l4Ce",
+                        "mode":  "list",
+                        "cachedResultName":  "promociones",
+                        "cachedResultUrl":  "/projects/p5qlnbxzSZ6NTinC/datatables/tLsmzB5WGI92l4Ce"
+                    },
+    "filters":  {
+                    "conditions":  [
+                                       {
+                                           "keyValue":  "0"
+                                       }
+                                   ]
+                },
+    "columns":  {
+                    "mappingMode":  "defineBelow",
+                    "value":  {
+                                  "COMBOS_TEMATICOS":  "## ðŸŽ¤ COMBOS TEMÃTICOS ESPECIALES ACTIVOS  ### Combo Super Pop â€” Michael Jackson - **Contenido:** Cotufa mediana + refresco mediano + chocolate BIANCHI + llavero del Rey del Pop - **Precio:** $9.90 - **VersiÃ³n activa:** EdiciÃ³n llavero (versiÃ³n con sombrero agotada) - **Estado:** âœ… Activo",
+                                  "PROMOCIONES_SEMANALES":  "## ðŸ—“ï¸ PROMOCIONES SEMANALES DE BOLETERÃA  \n PromociÃ³n \n Descuento \n CondiciÃ³n \n \n-----------\n-----------\n-----------\n \n Lunes de Cine \n 50% off \n Solo lunes, todas las sucursales \n \n Martes DÃºo (DÃºo DinÃ¡mico) \n 40% off \n Compra 2 boletos o mÃ¡s, solo martes, todas las sucursales \n \n MiÃ©rcoles 20% \n 20% off \n Todos los miÃ©rcoles, todas las sucursales \n \n Super Friends (3+1) \n 4to boleto GRATIS \n Compra 3 boletos, vÃ¡lido jueves a viernes, todas las sucursales \n \n Boleto NiÃ±os \n 50% off \n Menores de 14 aÃ±os, hasta las 4:59 PM, lunes a domingo, taquilla y web \n \n Tercera Edad \n 50% off \n Mayores de 60 aÃ±os, todos los dÃ­as, taquilla y web \n"
+                              },
+                    "matchingColumns":  [
+
+                                        ],
+                    "schema":  [
+                                   {
+                                       "id":  "PROMOCIONES_SEMANALES",
+                                       "displayName":  "PROMOCIONES_SEMANALES",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   },
+                                   {
+                                       "id":  "COMBOS_TEMATICOS",
+                                       "displayName":  "COMBOS_TEMATICOS",
+                                       "required":  false,
+                                       "defaultMatch":  false,
+                                       "display":  true,
+                                       "type":  "string",
+                                       "readOnly":  false,
+                                       "removed":  false
+                                   }
+                               ],
+                    "attemptToConvertTypes":  false,
+                    "convertFieldsToString":  false
+                },
+    "options":  {
+
+                }
+}
+
+
+########## NODE: OpenAI_Chat_Model ##########
+{
+    "model":  {
+                  "__rl":  true,
+                  "value":  "gpt-5-mini",
+                  "mode":  "list",
+                  "cachedResultName":  "gpt-5-mini"
+              },
+    "responsesApiEnabled":  false,
+    "options":  {
+
+                }
+}
+
+
+########## NODE: OpenAI_Chat_Model1 ##########
+{
+    "model":  {
+                  "__rl":  true,
+                  "value":  "gpt-5-mini",
+                  "mode":  "list",
+                  "cachedResultName":  "gpt-5-mini"
+              },
+    "responsesApiEnabled":  false,
+    "options":  {
+
+                }
+}
+
+
+########## NODE: DeepSeek_Chat_Model ##########
+{
+    "options":  {
+
+                }
+}
+
+
+########## NODE: Webhook ##########
+{
+    "httpMethod":  "POST",
+    "path":  "agent-supercines",
+    "options":  {
+
+                }
+}
+

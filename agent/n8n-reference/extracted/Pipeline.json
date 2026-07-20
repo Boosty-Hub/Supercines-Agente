@@ -1,0 +1,26 @@
+﻿{
+    "conditions":  {
+                       "options":  {
+                                       "caseSensitive":  true,
+                                       "leftValue":  "",
+                                       "typeValidation":  "loose",
+                                       "version":  3
+                                   },
+                       "conditions":  [
+                                          {
+                                              "id":  "81d772bb-621a-4396-9978-0002c78327f5",
+                                              "leftValue":  "={{ $json.lead.pipeline_id }}",
+                                              "rightValue":  "={{ $json.lead[\u0027redes-cine\u0027] }}",
+                                              "operator":  {
+                                                               "type":  "number",
+                                                               "operation":  "equals"
+                                                           }
+                                          }
+                                      ],
+                       "combinator":  "or"
+                   },
+    "looseTypeValidation":  true,
+    "options":  {
+
+                }
+}

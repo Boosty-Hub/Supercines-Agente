@@ -15,7 +15,9 @@ import { configValues, setConfigValues } from "@/lib/runtime-config";
 import {
   buildAgentTools,
   composeSystem,
+  filterToolRowsByGates,
   type AgentToolRow,
+  type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 
@@ -60,7 +62,7 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
     const supabase = createServiceClient();
     const { data, error: fetchErr } = await supabase
       .from("agent_tools")
-      .select("name, description, input_schema")
+      .select("name, description, input_schema, tool_type")
       .eq("enabled", true)
       .order("tool_type", { ascending: false })   // 'system' > 'http'
       .order("created_at", { ascending: true });
@@ -70,14 +72,37 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
       return { version: null, synced: false, error: fetchErr.message };
     }
 
-    const rows = (data ?? []) as AgentToolRow[];
+    // 2b. Fetch the action gates: gated-off system tools are NOT declared
+    //     (their schema costs tokens every turn + invites hallucinated calls).
+    //     select("*") keeps this tolerant to clones whose kommo_publish_config
+    //     lacks newer gate columns. No row → only ungated tools (gates default
+    //     false). A FETCH ERROR aborts the sync instead: pushing a surface with
+    //     the CRM tools silently stripped on a transient DB error would leave
+    //     the agent degraded until the next successful sync.
+    const { data: gateRow, error: gateErr } = await supabase
+      .from("kommo_publish_config")
+      .select("*")
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (gateErr) {
+      console.error("syncAgentTools: failed to fetch kommo_publish_config:", gateErr.message);
+      return { version: null, synced: false, error: gateErr.message };
+    }
+
+    const rows = filterToolRowsByGates(
+      (data ?? []) as AgentToolRow[],
+      (gateRow ?? null) as ToolGateFlags | null
+    );
 
     // 3. Build tools array and substitute system-prompt placeholders.
     const tools = buildAgentTools(rows);
-    const httpRows = rows.filter((r) => r.name !== "agent_toolset_20260401");
+    const httpRows = rows.filter((r) => r.tool_type === "http");
 
     // composeSystem prepends the operator's editable prompt and appends the
     // fixed CORE_SCAFFOLD (machinery + security), then substitutes placeholders.
+    // The declared tool names drive the scaffold's CRM actions block so the
+    // prompt only mentions tools the agent can actually call.
     const system = composeSystem(
       cfg.SYSTEM_PROMPT ?? "",
       {
@@ -85,7 +110,8 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
         masterStoreName: cfg.MEMORY_STORE_MASTER_NAME || "master",
         leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
       },
-      httpRows
+      httpRows,
+      rows.map((r) => r.name)
     );
 
     // 4. Optimistic concurrency: read current version then PATCH.

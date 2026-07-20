@@ -177,6 +177,7 @@ type PublishFilters = {
   media: MediaFlags;
   agentOffFieldId: number | null;
   commentSourceIds: Set<number>;
+  respondToComments: boolean;
 };
 let publishFiltersCache: (PublishFilters & { loadedAt: number }) | null = null;
 
@@ -188,7 +189,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
   const { data, error } = await supabase
     .from("kommo_publish_config")
     .select(
-      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids"
+      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -200,6 +201,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
       media: empty,
       agentOffFieldId: null,
       commentSourceIds: new Set(),
+      respondToComments: false,
       loadedAt: Date.now(),
     };
     return publishFiltersCache;
@@ -220,7 +222,9 @@ async function getPublishFilters(): Promise<PublishFilters> {
   const commentSourceIds = new Set<number>(
     Array.isArray(rawSrcIds) ? rawSrcIds.map(Number).filter((n: number) => Number.isFinite(n)) : []
   );
-  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, loadedAt: Date.now() };
+  // Gate maestro de comentarios (0048): default/columna ausente = OFF.
+  const respondToComments = data?.respond_to_comments === true;
+  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
   return publishFiltersCache;
 }
 
@@ -862,6 +866,21 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       const baseContent =
         text || (media ? `[${media.label}${media.filename ? ` ${media.filename}` : ""}]` : "");
 
+      // Dedupe de webhooks re-entregados (0050): Kommo reintenta la entrega
+      // ante timeout/5xx — sin esta guarda, cada re-entrega creaba una fila
+      // nueva que se clasificaba de nuevo y podía disparar OTRA respuesta al
+      // mismo mensaje. El índice único parcial (mejor esfuerzo, 0050) cierra
+      // la ventana de carrera; esta guarda protege aunque el índice no exista.
+      if (m.id != null && String(m.id) !== "") {
+        const { data: dup } = await supabase
+          .from("messages")
+          .select("id")
+          .eq("kommo_message_id", String(m.id))
+          .limit(1)
+          .maybeSingle();
+        if (dup) continue;
+      }
+
       // Insert message (sin classification al principio)
       const { data: msg, error: msgErr } = await supabase
         .from("messages")
@@ -925,6 +944,17 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (Number.isFinite(talkId) && kommoDomain && kommoToken) {
           const sourceId = await getTalkSourceId(talkId, kommoDomain, kommoToken);
           if (sourceId !== null && filters.commentSourceIds.has(sourceId)) {
+            // Gate maestro de comentarios (respond_to_comments, 0048): apagado
+            // → ignored ANTES de clasificar (cero tokens). OJO: comment_reply_enabled
+            // solo gatea la respuesta PÚBLICA; sin este gate, la respuesta por DM
+            // corría SIEMPRE (gap que quemaba una sesión CMA por comentario).
+            if (!filters.respondToComments) {
+              await supabase
+                .from("messages")
+                .update({ is_comment: true, ignored: true, ignored_reason: "comments_off" })
+                .eq("id", msg.id);
+              continue;
+            }
             await supabase.from("messages").update({ is_comment: true }).eq("id", msg.id);
           }
         }
@@ -1134,7 +1164,12 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 // classification.error y vertical NULL → invisibles para la cola PARA SIEMPRE.
 // El cron pasa cada minuto: reintentamos hasta 10 por ciclo. Adjuntos con URL
 // persistida (0035) se re-clasifican con imagen; sin URL → revisión humana.
+// CAP de reintentos: sin límite, un error persistente (no transitorio) se
+// reintentaba cada minuto PARA SIEMPRE — hasta 14.400 llamadas Haiku/día por
+// hasta 10 mensajes atascados. Tras RECOVER_MAX_ATTEMPTS el mensaje pasa a
+// revisión humana y el prefijo "recover:" lo saca de la cola de reintentos.
 const RECOVER_BATCH = 10;
+const RECOVER_MAX_ATTEMPTS = 5;
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
   try {
@@ -1219,8 +1254,25 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         });
         healed++;
       } catch (e) {
-        // Reintento en el próximo ciclo del cron (fallas transitorias).
-        console.warn("recover classify retry failed:", e instanceof Error ? e.message : String(e));
+        // Falla al reintentar: contar el intento. Transitoria → vuelve al
+        // próximo ciclo del cron; al llegar a RECOVER_MAX_ATTEMPTS se marca
+        // con prefijo "recover:" (sale del select) + revisión humana, para
+        // que un error persistente no queme Haiku cada minuto para siempre.
+        const prevCls = (msg.classification ?? {}) as Record<string, unknown>;
+        const attempts = (Number(prevCls.recover_attempts) || 0) + 1;
+        const update =
+          attempts >= RECOVER_MAX_ATTEMPTS
+            ? {
+                requires_human_review: true,
+                classification: {
+                  ...prevCls,
+                  recover_attempts: attempts,
+                  error: `recover: ${attempts} intentos agotados (${String(prevCls.error ?? "desconocido")})`,
+                },
+              }
+            : { classification: { ...prevCls, recover_attempts: attempts } };
+        await supabase.from("messages").update(update).eq("id", msg.id).is("vertical_id", null);
+        console.warn(`recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`, e instanceof Error ? e.message : String(e));
       }
     }
     if (healed > 0) console.log(`recoverFailedClassifications: ${healed} mensaje(s) recuperados`);

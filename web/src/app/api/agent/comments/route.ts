@@ -23,6 +23,16 @@ export async function POST(request: Request) {
     update.comment_reply_enabled = body.comment_reply_enabled;
   }
 
+  // Gate maestro (0048): responder comentarios (DM). Apagarlo fuerza también
+  // la respuesta pública a OFF (cascada, espejo del master gate de CRM) — por
+  // eso va DESPUÉS del bloque de comment_reply_enabled: la cascada gana.
+  if (typeof body.respond_to_comments === "boolean") {
+    update.respond_to_comments = body.respond_to_comments;
+    if (body.respond_to_comments === false) {
+      update.comment_reply_enabled = false;
+    }
+  }
+
   if (body.comment_salesbot_id !== undefined) {
     const v = body.comment_salesbot_id;
     if (v === null || v === "") {

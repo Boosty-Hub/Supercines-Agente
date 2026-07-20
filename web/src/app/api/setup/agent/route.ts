@@ -5,7 +5,9 @@ import { configValues, setConfigValues } from "@/lib/runtime-config";
 import {
   buildAgentTools,
   composeSystem,
+  filterToolRowsByGates,
   type AgentToolRow,
+  type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 import {
@@ -27,16 +29,33 @@ const DEFAULT_DESCRIPTION =
 const ENV_DESCRIPTION =
   "Environment estándar para el agente. Networking sin restricciones (las llamadas autenticadas se hacen vía custom tools del orchestrator, no desde el container).";
 
-// Helper: fetch all enabled tool rows for the initial agent create call.
-async function fetchEnabledToolRows(): Promise<AgentToolRow[]> {
+// Helper: fetch the tool rows to DECLARE on the initial agent create call —
+// enabled rows minus the system tools whose action gate is OFF (same filter
+// syncAgentTools applies, so create and update produce the same surface).
+async function fetchDeclaredToolRows(): Promise<AgentToolRow[]> {
   const supabase = createServiceClient();
   const { data } = await supabase
     .from("agent_tools")
-    .select("name, description, input_schema")
+    .select("name, description, input_schema, tool_type")
     .eq("enabled", true)
     .order("tool_type", { ascending: false })  // 'system' > 'http'
     .order("created_at", { ascending: true });
-  return (data ?? []) as AgentToolRow[];
+  // DELIBERATE asymmetry with syncAgentTools: there a gate-fetch error ABORTS
+  // (an established agent must not lose its CRM tools on a transient error);
+  // here the wizard's create must still succeed — worst case the agent starts
+  // without gated tools and the next gate toggle / sync reconciles them.
+  const { data: gateRow, error: gateErr } = await supabase
+    .from("kommo_publish_config")
+    .select("*")
+    .eq("is_active", true)
+    .maybeSingle();
+  if (gateErr) {
+    console.error("setup/agent: failed to fetch kommo_publish_config:", gateErr.message);
+  }
+  return filterToolRowsByGates(
+    (data ?? []) as AgentToolRow[],
+    (gateRow ?? null) as ToolGateFlags | null
+  );
 }
 
 // Step 3: create/reconcile the Anthropic Environment + Managed Agent. Idempotent
@@ -79,14 +98,15 @@ export async function POST() {
     );
   }
 
-  // Fetch enabled tool rows from DB (system + http) for the initial tool surface.
-  const toolRows = await fetchEnabledToolRows();
-  const httpRows = toolRows.filter((r) => r.name !== "agent_toolset_20260401");
+  // Fetch the gate-filtered tool rows for the initial tool surface.
+  const toolRows = await fetchDeclaredToolRows();
+  const httpRows = toolRows.filter((r) => r.tool_type === "http");
   const tools = buildAgentTools(toolRows);
 
   // composeSystem = operator's editable prompt + the fixed CORE_SCAFFOLD
   // (machinery + security), with placeholders substituted. Same composition the
-  // sync path uses, so the agent always gets the contract.
+  // sync path uses, so the agent always gets the contract; the declared tool
+  // names drive the scaffold's CRM actions block.
   const system = composeSystem(
     systemPromptRaw!,
     {
@@ -94,7 +114,8 @@ export async function POST() {
       masterStoreName: cfg.MEMORY_STORE_MASTER_NAME || "master",
       leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
     },
-    httpRows
+    httpRows,
+    toolRows.map((r) => r.name)
   );
 
   try {

@@ -304,6 +304,19 @@ Respondé EXACTAMENTE en este formato y nada más:
 
 // ---- Procesar un lead ----
 
+// Sella leads.follow_up_last_skipped_at (0049): saca al lead de
+// follow_up_due_leads por 1h tras un "skip", para no pagar una sesión CMA
+// de re-evaluación en cada barrido de 5 min. Fail-open: si la columna aún
+// no existe (función deployada antes que la migración), el update falla en
+// silencio y el comportamiento vuelve al previo (re-evaluar cada barrido).
+async function stampSkipCooldown(leadId: string): Promise<void> {
+  const { error } = await supabase
+    .from("leads")
+    .update({ follow_up_last_skipped_at: new Date().toISOString() })
+    .eq("id", leadId);
+  if (error) console.warn("stampSkipCooldown:", error.message);
+}
+
 async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   const leadId = row.lead_id;
 
@@ -449,13 +462,20 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   const action = actionMatch?.[1]?.toLowerCase();
 
   if (!action) {
-    // Salida malformada → skip + log (no cambiar estado del lead)
+    // Salida malformada → skip + log. Sella el cooldown igual que un skip:
+    // sin el sello, el lead volvía a evaluarse en el próximo barrido.
     console.warn(`follow-up-scan: malformed output for lead ${leadId}, treating as skip`);
+    await stampSkipCooldown(leadId);
     return;
   }
 
   if (action === "skip") {
-    // No cambia estado; se reintentará en el próximo sweep elegible
+    // Cooldown de skip (0049): antes NO se tocaba ningún estado y el lead
+    // volvía a ser elegible en el PRÓXIMO barrido de 5 min — cada
+    // re-evaluación es una sesión CMA completa (hasta 12/hora por lead, y
+    // ≥5 leads en skip acaparaban el cupo p_limit=5 de cada ciclo). El
+    // sello lo excluye de follow_up_due_leads por 1 hora.
+    await stampSkipCooldown(leadId);
     return;
   }
 
@@ -478,7 +498,10 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
         resolvedVars = parsed as Record<string, string>;
       }
     } catch {
+      // "treating as skip" ⇒ mismo cooldown (0049): un template que produce
+      // JSON roto de forma consistente re-quemaría una sesión CMA por barrido.
       console.warn(`follow-up-scan: failed to parse <variables> JSON for lead ${leadId}, treating as skip`);
+      await stampSkipCooldown(leadId);
       return;
     }
   }
@@ -486,7 +509,10 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   // Verificar que todas las variables requeridas estén presentes
   for (const variable of template.variables) {
     if (!resolvedVars[variable.name]) {
+      // "treating as skip" ⇒ mismo cooldown (0049): una variable irresoluble
+      // es un error de configuración persistente, no transitorio.
       console.warn(`follow-up-scan: missing variable "${variable.name}" for lead ${leadId}, treating as skip`);
+      await stampSkipCooldown(leadId);
       return;
     }
   }

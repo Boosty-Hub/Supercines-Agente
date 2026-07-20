@@ -530,7 +530,11 @@ async function pickLeadBatch(
   throttle?: Throttle,
   ignoredStageIds?: number[],
   debounceMs: number = DEBOUNCE_MS,
-  maxAgeHours = 0
+  maxAgeHours = 0,
+  // Fail-closed como toda la cadena del gate (columna default false,
+  // getPublishFilters false): un caller que omita el flag NO reintroduce
+  // el gasto en comentarios.
+  respondToComments = false
 ): Promise<Batch | null> {
   // --- Camino revisión humana: responder ESE mensaje + pendientes del lead ---
   // Es un override humano explícito (botón de revisión): si alguien pide
@@ -638,7 +642,24 @@ async function pickLeadBatch(
   );
 
   const now = Date.now();
-  for (const [leadId, msgs] of leadsOrdered) {
+  for (const [leadId, msgsAll] of leadsOrdered) {
+    let msgs = msgsAll;
+    // Comentarios apagados (respond_to_comments=false): los mensajes nacidos
+    // de un comentario no se responden. Red de seguridad autoritativa — el
+    // gate primario (cero tokens) está en process-inbound; este cubre el
+    // backlog pre-gate y las carreras de detección. Se marcan ignored para
+    // que los barridos no los re-evalúen; los DMs del mismo lead siguen.
+    if (!respondToComments) {
+      const commentIds = msgs.filter((m) => m.is_comment === true).map((m) => m.id);
+      if (commentIds.length > 0) {
+        await supabase
+          .from("messages")
+          .update({ ignored: true, ignored_reason: "comments_off" })
+          .in("id", commentIds);
+        msgs = msgs.filter((m) => m.is_comment !== true);
+        if (msgs.length === 0) continue;
+      }
+    }
     // Debounce: el último inbound del lead (cualquiera) debe ser más viejo
     // que la ventana — si no, el lead todavía está escribiendo, esperamos.
     const { data: lastIn } = await supabase
@@ -1047,7 +1068,7 @@ Deno.serve(async (req: Request) => {
   const { data: cfg } = await supabase
     .from("kommo_publish_config")
     .select(
-      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules"
+      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules, respond_to_comments"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -1096,6 +1117,11 @@ Deno.serve(async (req: Request) => {
     ? undefined
     : (((cfg?.ignored_stage_ids ?? []) as unknown[]).map(Number).filter((n) => Number.isFinite(n)));
 
+  // Gate maestro de comentarios (0048). Default OFF: los comentarios no se
+  // responden (ni DM ni público). comment_reply_enabled solo suma la
+  // respuesta pública cuando este gate está ON.
+  const respondToComments = cfg?.respond_to_comments === true;
+
   // Debounce configurable: segundos de silencio a esperar antes de responder el
   // batch. Default 45s. No aplica al camino de revisión humana explícita.
   const debounceMs = forceReview
@@ -1117,7 +1143,7 @@ Deno.serve(async (req: Request) => {
   };
 
 
-  const batch = await pickLeadBatch(body.message_id, bypass, throttle, ignoredStageIds, debounceMs, maxAgeHours);
+  const batch = await pickLeadBatch(body.message_id, bypass, throttle, ignoredStageIds, debounceMs, maxAgeHours, respondToComments);
   if (!batch) {
     return new Response(JSON.stringify({ ok: true, picked: null }), {
       status: 200,

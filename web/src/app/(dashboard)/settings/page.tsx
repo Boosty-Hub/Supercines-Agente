@@ -60,7 +60,7 @@ export default async function SettingsPage({
       supabase
         .from("kommo_publish_config")
         .select(
-          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
+          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
         )
         .eq("is_active", true)
         .maybeSingle(),
@@ -131,6 +131,7 @@ export default async function SettingsPage({
     updateContact: p?.crm_can_update_contact === true,
   };
   const comments: CommentsConfig = {
+    respond_to_comments: p?.respond_to_comments === true,
     comment_reply_enabled: p?.comment_reply_enabled === true,
     comment_salesbot_id: (p?.comment_salesbot_id as number | null) ?? null,
     comment_field_id: (p?.comment_field_id as number | null) ?? null,

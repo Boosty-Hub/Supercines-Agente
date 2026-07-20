@@ -871,7 +871,7 @@ ${historyBlock}${header}
 ${block}
 """
 
-Procede según tu system prompt: revisa ${opts.masterPath}/voice/ y ${opts.masterPath}/dreams/ para reglas, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
+Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
 
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }

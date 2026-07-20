@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createDream, listDreams } from "@/lib/memory-list";
+import { createDream, listDreams, triggerDigestRebuild } from "@/lib/memory-list";
 
 type DreamEntry = { path: string; content: string };
 
@@ -73,6 +73,8 @@ export async function POST(request: Request) {
       errors.push({ path: entry.path, error: err instanceof Error ? err.message : String(err) });
     }
   }
+
+  if (inserted > 0) triggerDigestRebuild();
 
   return NextResponse.json({
     ok: true,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { deleteDream } from "@/lib/memory-list";
+import { deleteDream, triggerDigestRebuild } from "@/lib/memory-list";
 
 // Borra un aprendizaje del master Memory Store. Al eliminarse el archivo,
 // el agente deja de leerlo y no lo adopta en próximas respuestas.
@@ -16,6 +16,7 @@ export async function DELETE(
 
   try {
     await deleteDream(params.id);
+    triggerDigestRebuild();
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

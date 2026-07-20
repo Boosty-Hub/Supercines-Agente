@@ -93,3 +93,20 @@ export function parseFrontmatter(content: string): { meta: Record<string, string
   }
   return { meta, body: m[2] };
 }
+
+/**
+ * Dispara la reconsolidación del digest de dreams (runtime_config.DREAMS_DIGEST,
+ * lo construye dreams-run en modo digest_only) tras una mutación del dashboard
+ * (aprobar / borrar / importar). Fire-and-forget: la mutación no depende del
+ * rebuild — si falla, la próxima corrida programada de dreams-run lo repara.
+ * Sin esto, un dream borrado seguiría vigente en el digest hasta 24h.
+ */
+export function triggerDigestRebuild(): void {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) return;
+  fetch(`${url}/functions/v1/dreams-run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ digest_only: true }),
+  }).catch(() => {});
+}

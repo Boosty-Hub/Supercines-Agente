@@ -26,6 +26,7 @@ import {
   KOMMO_LOST_STATUS,
 } from "../_shared/kommo.ts";
 import { captureSessionUsage } from "../_shared/usage.ts";
+import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -593,7 +594,7 @@ Deno.serve(async (req: Request) => {
     const leadsStoreName  = runtimeCfg.getOr("MEMORY_STORE_LEADS_NAME", "leads");
     const masterPath = `/mnt/memory/${masterStoreName}`;
     const leadsPath  = `/mnt/memory/${leadsStoreName}`;
-    const anthropic  = new Anthropic({ apiKey: runtimeCfg.require("ANTHROPIC_API_KEY") });
+    const anthropic  = createAnthropicClient(runtimeCfg.require("ANTHROPIC_API_KEY"), supabase);
     const anthropicKey = runtimeCfg.require("ANTHROPIC_API_KEY");
 
     // SQL gate: retorna leads elegibles (o vacío si config deshabilitada / fuera de horario)

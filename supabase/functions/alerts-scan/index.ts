@@ -251,6 +251,62 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
   });
 }
 
+// Backstop: auto-resuelve alertas provider_credit_exhausted (proveedor
+// 'anthropic') cuando ya se recuperaron. El gate en memoria de
+// _shared/provider-errors.ts (openAlertProviders) vive por invocación de la
+// función Edge — si el cold-start ocurre DESPUÉS de que se recargó el
+// crédito, ni createAnthropicClient() ni transcribeAudio() ven el
+// fallo→éxito dentro de la misma instancia y por lo tanto nunca disparan
+// resolveProviderCreditAlert(). Este barrido cada 5 min cubre ese caso por
+// evidencia directa: si hubo una llamada exitosa a Claude (fila en
+// usage_events) DESPUÉS de que se abrió la alerta, ya se recuperó.
+//
+// NOTA: alerts.acknowledged_by es `uuid references auth.users(id)` (no
+// texto libre — ver 0011_alerts.sql), así que un resolve automático no
+// puede escribir un marcador ahí. Guardamos "auto:recovered" en
+// metadata.resolved_by en su lugar; el estado resuelto/abierto lo sigue
+// derivando 100% acknowledged_at (columna generada `status`).
+async function resolveRecoveredProviderCredit(): Promise<number> {
+  const { data: openAlerts } = await supabase
+    .from("alerts")
+    .select("id, created_at, metadata")
+    .eq("kind", "provider_credit_exhausted")
+    .is("acknowledged_at", null)
+    .eq("metadata->>provider", "anthropic");
+
+  let resolved = 0;
+  for (const alert of (openAlerts ?? []) as Array<{
+    id: string;
+    created_at: string;
+    // deno-lint-ignore no-explicit-any
+    metadata: any;
+  }>) {
+    try {
+      const { data: recovered } = await supabase
+        .from("usage_events")
+        .select("id")
+        .gt("created_at", alert.created_at)
+        .limit(1)
+        .maybeSingle();
+      if (!recovered) continue;
+
+      const prevMeta = alert.metadata ?? {};
+      const { error } = await supabase
+        .from("alerts")
+        .update({
+          acknowledged_at: new Date().toISOString(),
+          metadata: { ...prevMeta, resolved_by: "auto:recovered" },
+        })
+        .eq("id", alert.id);
+      if (error) throw new Error(error.message);
+      resolved++;
+    } catch (err) {
+      console.error("resolveRecoveredProviderCredit:", err instanceof Error ? err.message : String(err));
+    }
+  }
+  return resolved;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "GET") {
     return new Response("alerts-scan OK", { status: 200 });
@@ -261,10 +317,11 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression] = await Promise.all([
+    const [failed, review, regression, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
+      resolveRecoveredProviderCredit(),
     ]);
     const newAlerts = [...failed, ...review, ...regression];
 
@@ -285,6 +342,7 @@ Deno.serve(async (req: Request) => {
           draft_failed: failed.length,
           human_review_needed: review.length,
           outcomes_regression: regression.length,
+          provider_credit_resolved: providerCreditResolved,
         },
       }),
       { status: 200, headers: { "content-type": "application/json" } }

@@ -16,6 +16,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
+import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -344,7 +345,7 @@ Deno.serve(async (req: Request) => {
   try {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
-    const anthropic = new Anthropic({ apiKey: cfg.require("ANTHROPIC_API_KEY") });
+    const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
 
     const graders = await getEnabledGraders();
     const drafts = await getDraftsToEvaluate(body.draft_id);

@@ -14,6 +14,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
+import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -561,7 +562,7 @@ Deno.serve(async (req: Request) => {
     // reconstruirse aunque el análisis nocturno no toque hoy.
     if (body.digest_only === true) {
       const apiKey = cfg.require("ANTHROPIC_API_KEY");
-      const anthropic = new Anthropic({ apiKey });
+      const anthropic = createAnthropicClient(apiKey, supabase);
       const memstoreMaster = cfg.require("ANTHROPIC_MEMORY_MASTER_ID");
       const digestResult = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
       return new Response(JSON.stringify({ ok: true, digest_only: true, ...digestResult }), {
@@ -600,7 +601,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const apiKey = cfg.require("ANTHROPIC_API_KEY");
-    const anthropic = new Anthropic({ apiKey });
+    const anthropic = createAnthropicClient(apiKey, supabase);
     const memstoreMaster = cfg.require("ANTHROPIC_MEMORY_MASTER_ID");
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
     const rawPolicy = cfg.getOr("DREAMS_AUTO_ACTIVATE", "all");

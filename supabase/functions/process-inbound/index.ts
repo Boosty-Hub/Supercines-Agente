@@ -13,6 +13,8 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
+import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -725,8 +727,14 @@ async function transcribeAudio(
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
+    if (isCreditError("openai", res.status, detail)) {
+      await recordProviderCreditAlert(supabase, "openai", { status: res.status, component: "transcribeAudio" });
+    }
     throw new Error(`whisper ${res.status}: ${detail.slice(0, 200)}`);
   }
+  // Transcripción exitosa → si había una alerta de cuota agotada abierta
+  // para OpenAI, se resuelve (gateada — no pega a la DB en cada llamada).
+  await resolveProviderCreditAlert(supabase, "openai");
   const j = (await res.json()) as { text?: unknown };
   const text = typeof j.text === "string" ? j.text.trim() : "";
   return text || null;
@@ -1366,7 +1374,7 @@ Deno.serve(async (req: Request) => {
   try {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
-    const anthropic = new Anthropic({ apiKey: cfg.require("ANTHROPIC_API_KEY") });
+    const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
 
     const result = await processBatch(anthropic, operator);

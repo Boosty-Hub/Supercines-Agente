@@ -27,6 +27,7 @@ import {
   type BusinessHoursConfig,
 } from "../_shared/business-hours.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
+import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -1211,7 +1212,7 @@ Deno.serve(async (req: Request) => {
     const leadsStoreName = runtimeCfg.getOr("MEMORY_STORE_LEADS_NAME", "leads");
     masterPath = `/mnt/memory/${masterStoreName}`;
     leadsPath = `/mnt/memory/${leadsStoreName}`;
-    anthropic = new Anthropic({ apiKey: runtimeCfg.require("ANTHROPIC_API_KEY") });
+    anthropic = createAnthropicClient(runtimeCfg.require("ANTHROPIC_API_KEY"), supabase);
     // Load enabled HTTP tools BEFORE the waitUntil boundary so new tools
     // (pure DB data) work immediately without edge-function redeploy.
     httpTools = await loadHttpTools(supabase);

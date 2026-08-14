@@ -2,14 +2,15 @@
 
 import { focusRing } from "./styles";
 
-export type SwitchTone = "emerald" | "brand";
+export type SwitchTone = "emerald" | "brand" | "sky";
 
 export type SwitchProps = {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
   busy?: boolean;
-  /** Color del estado activo: emerald (default) o brand (neutral-900 por defecto) */
+  /** Color del estado activo: emerald (default), brand (neutral-900) o sky
+   *  (para sub-opciones que dependen de otro switch, ej. "clasificar sin responder"). */
   tone?: SwitchTone;
   "aria-label"?: string;
 };
@@ -17,6 +18,7 @@ export type SwitchProps = {
 const toneCls: Record<SwitchTone, string> = {
   emerald: "bg-emerald-500",
   brand:   "bg-brand",
+  sky:     "bg-sky-500",
 };
 
 /**

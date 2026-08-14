@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+/** "" y espacios en blanco valen NULL: un campo vacío no debe escribirse en Kommo. */
+function strOrNull(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t === "" ? null : t;
+}
+
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
   const {
@@ -20,6 +27,10 @@ export async function POST(request: Request) {
     auto_reply: body.auto_reply === true,
     requires_review: body.requires_review === true,
     ignore: body.ignore === true,
+    // Ruteo al equipo comercial (0052)
+    auto_assign: body.auto_assign === true,
+    kommo_field_name: strOrNull(body.kommo_field_name),
+    kommo_field_value: strOrNull(body.kommo_field_value),
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });

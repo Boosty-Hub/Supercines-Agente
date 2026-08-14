@@ -15,6 +15,7 @@ import { CrmActionsPanel, type CrmFlags } from "./crm-actions-panel";
 import { BcvPanel } from "./bcv-panel";
 import { BusinessHoursPanel, type BusinessHours } from "./business-hours-panel";
 import { CommentsPanel, type CommentsConfig } from "./comments-panel";
+import { RoutingPanel, type Assignee, type RoutingConfig } from "./routing-panel";
 
 export type AgenteSection = "identidad" | "filtros" | "acciones";
 
@@ -39,6 +40,8 @@ export function AgenteTab({
   bcvHasCustomSource,
   businessHours,
   comments,
+  routing,
+  assignees,
   hasOpenaiKey = false,
   children,
 }: {
@@ -56,6 +59,8 @@ export function AgenteTab({
   bcvHasCustomSource: boolean;
   businessHours: BusinessHours | null;
   comments: CommentsConfig;
+  routing: RoutingConfig;
+  assignees: Assignee[];
   hasOpenaiKey?: boolean;
   /** Panel de Identidad (server-rendered: encendido, estado Anthropic, prompt). */
   children: React.ReactNode;
@@ -92,6 +97,7 @@ export function AgenteTab({
 
       <div className={sec === "acciones" ? "space-y-6" : "hidden"}>
         <CrmActionsPanel initial={crm} />
+        <RoutingPanel initialConfig={routing} initialAssignees={assignees} />
         <BcvPanel initialEnabled={bcvEnabled} hasCustomSource={bcvHasCustomSource} />
         <CommentsPanel initial={comments} />
       </div>

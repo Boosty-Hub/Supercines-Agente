@@ -13,13 +13,17 @@ type Vertical = {
   auto_reply: boolean;
   requires_review: boolean;
   ignore: boolean;
+  // Ruteo al equipo comercial (0052)
+  auto_assign: boolean;
+  kommo_field_name: string | null;
+  kommo_field_value: string | null;
 };
 
 export function VerticalRow({ vertical }: { vertical: Vertical }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
-  async function toggle(field: "auto_reply" | "requires_review" | "ignore") {
+  async function toggle(field: "auto_reply" | "requires_review" | "ignore" | "auto_assign") {
     await fetch(`/api/verticales/${vertical.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -108,6 +112,24 @@ export function VerticalRow({ vertical }: { vertical: Vertical }) {
             }
           >
             {vertical.ignore ? "ON" : "OFF"}
+          </button>
+        </td>
+        <td className="px-4 py-3">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggle("auto_assign");
+            }}
+            title="Si está ON, los leads de esta vertical se reparten al equipo comercial (por sede o round robin)"
+            className={
+              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors " +
+              (vertical.auto_assign
+                ? "bg-sky-100 text-sky-700 hover:bg-sky-200"
+                : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200")
+            }
+          >
+            {vertical.auto_assign ? "ON" : "OFF"}
           </button>
         </td>
         <td className="px-4 py-3 text-right">
@@ -235,6 +257,9 @@ function VerticalForm({ vertical, onDone }: { vertical: Vertical; onDone: () => 
   const [name, setName] = useState(vertical.name);
   const [description, setDescription] = useState(vertical.description ?? "");
   const [system_prompt, setSystemPrompt] = useState(vertical.system_prompt);
+  const [autoAssign, setAutoAssign] = useState(vertical.auto_assign);
+  const [fieldName, setFieldName] = useState(vertical.kommo_field_name ?? "");
+  const [fieldValue, setFieldValue] = useState(vertical.kommo_field_value ?? "");
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -247,7 +272,14 @@ function VerticalForm({ vertical, onDone }: { vertical: Vertical; onDone: () => 
     const res = await fetch(`/api/verticales/${vertical.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description, system_prompt }),
+      body: JSON.stringify({
+        name,
+        description,
+        system_prompt,
+        auto_assign: autoAssign,
+        kommo_field_name: fieldName,
+        kommo_field_value: fieldValue,
+      }),
     });
     setBusy(false);
     if (!res.ok) {
@@ -303,6 +335,52 @@ function VerticalForm({ vertical, onDone }: { vertical: Vertical; onDone: () => 
           className={`${inputCls} min-h-[6rem] resize-y font-mono`}
         />
       </div>
+      <div className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-neutral-900">Asignar responsable automáticamente</p>
+            <p className="text-xs text-neutral-500">
+              Cuando un mensaje cae en esta vertical, el lead se reparte al equipo: a la persona
+              cuyo término aparezca en el mensaje (ej: la sede) y, si no aparece ninguno, por
+              round robin. Nunca le saca un lead a quien ya lo está atendiendo.
+            </p>
+          </div>
+          <Switch
+            checked={autoAssign}
+            onChange={setAutoAssign}
+            aria-label="Asignar responsable automáticamente"
+          />
+        </div>
+        {autoAssign && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-neutral-600">
+                Campo de Kommo a completar (opcional)
+              </label>
+              <input
+                value={fieldName}
+                onChange={(e) => setFieldName(e.target.value)}
+                placeholder="Ej: Tipo de Evento"
+                className={inputCls}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-neutral-600">Valor a escribir</label>
+              <input
+                value={fieldValue}
+                onChange={(e) => setFieldValue(e.target.value)}
+                placeholder="Ej: Alquiler de Salas"
+                className={inputCls}
+              />
+            </div>
+            <p className="sm:col-span-2 text-[11px] text-neutral-500">
+              El nombre del campo y el valor tienen que existir en Kommo tal cual (no importan
+              mayúsculas ni acentos). Si el campo es de opciones, el valor debe ser una de ellas.
+              Dejalos vacíos para no escribir nada.
+            </p>
+          </div>
+        )}
+      </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" variant="primary" busy={busy} disabled={busy}>
@@ -343,12 +421,16 @@ export function NewVerticalForm() {
   const [auto_reply, setAutoReply] = useState(true);
   const [requires_review, setRequiresReview] = useState(false);
   const [ignore, setIgnore] = useState(false);
+  const [autoAssign, setAutoAssign] = useState(false);
+  const [fieldName, setFieldName] = useState("");
+  const [fieldValue, setFieldValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function resetState() {
     setSlug(""); setName(""); setDescription(""); setSystemPrompt("");
     setAutoReply(true); setRequiresReview(false); setIgnore(false);
+    setAutoAssign(false); setFieldName(""); setFieldValue("");
     setError(null);
   }
 
@@ -364,7 +446,12 @@ export function NewVerticalForm() {
     const res = await fetch("/api/verticales", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug, name, description, system_prompt, auto_reply, requires_review, ignore }),
+      body: JSON.stringify({
+        slug, name, description, system_prompt, auto_reply, requires_review, ignore,
+        auto_assign: autoAssign,
+        kommo_field_name: fieldName,
+        kommo_field_value: fieldValue,
+      }),
     });
     setBusy(false);
     if (!res.ok) {
@@ -468,11 +555,43 @@ export function NewVerticalForm() {
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-medium text-neutral-900">No clasificar</p>
-                <p className="text-xs text-neutral-500">El agente ignora esta vertical; no responde ni envía a revisión.</p>
+                <p className="text-sm font-medium text-neutral-900">Ignorar</p>
+                <p className="text-xs text-neutral-500">Se clasifica igual, pero el agente no responde ni envía a revisión.</p>
               </div>
-              <Switch checked={ignore} onChange={setIgnore} tone="brand" aria-label="No clasificar" />
+              <Switch checked={ignore} onChange={setIgnore} tone="brand" aria-label="Ignorar" />
             </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-neutral-900">Asignar responsable automáticamente</p>
+                <p className="text-xs text-neutral-500">
+                  Reparte estos leads al equipo comercial: por término (la sede) o, si no aparece
+                  ninguno, en round robin. Se configura el equipo en Ajustes → Agente → Acciones.
+                </p>
+              </div>
+              <Switch checked={autoAssign} onChange={setAutoAssign} tone="sky" aria-label="Asignar responsable automáticamente" />
+            </div>
+            {autoAssign && (
+              <div className="grid gap-3 sm:grid-cols-2 border-t border-neutral-200 pt-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-neutral-600">Campo de Kommo (opcional)</label>
+                  <input
+                    value={fieldName}
+                    onChange={(e) => setFieldName(e.target.value)}
+                    placeholder="Ej: Tipo de Evento"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-neutral-600">Valor a escribir</label>
+                  <input
+                    value={fieldValue}
+                    onChange={(e) => setFieldValue(e.target.value)}
+                    placeholder="Ej: Alquiler de Salas"
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}

@@ -29,7 +29,7 @@ export type Rule = {
 
 export type Limits = { cooldown: number; max: number; window: number };
 export type VerticalLite = { id: string; slug: string; name: string; ignore: boolean };
-export type ChannelsData = { seen: string[]; ignored: string[] };
+export type ChannelsData = { seen: string[]; ignored: string[]; classifyOnly: string[] };
 
 const TYPE_OPTIONS: { value: MatchType; label: string; hint: string }[] = [
   { value: "contains", label: "Palabra o frase", hint: "ganatelo" },
@@ -576,18 +576,26 @@ function ChannelsSection({ channels }: { channels: ChannelsData }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels.ignored.join(",")]);
 
+  // Canales silenciados que igual se clasifican y rutean (0052).
+  const [classifyLocal, setClassifyLocal] = useState<string[]>(channels.classifyOnly);
+  useEffect(() => {
+    setClassifyLocal(channels.classifyOnly);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channels.classifyOnly.join(",")]);
+
   const ignored = new Set(ignoredLocal);
+  const classifyOnly = new Set(classifyLocal);
   const map = new Map<string, { value: string; label: string; note?: string }>();
   for (const p of CHANNEL_PRESETS) map.set(p.value, p);
   for (const s of channels.seen) if (!map.has(s)) map.set(s, { value: s, label: s });
   for (const ig of ignoredLocal) if (!map.has(ig)) map.set(ig, { value: ig, label: ig });
   const items = Array.from(map.values());
 
-  async function persist(next: string[]) {
+  async function persist(nextIgnored: string[], nextClassify: string[]) {
     await fetch("/api/filters/channels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channels: next }),
+      body: JSON.stringify({ channels: nextIgnored, classifyOnly: nextClassify }),
     });
     router.refresh();
   }
@@ -598,8 +606,22 @@ function ChannelsSection({ channels }: { channels: ChannelsData }) {
     const next = Array.from(
       new Set(responds ? ignoredLocal.filter((c) => c !== value) : [...ignoredLocal, value])
     );
+    // Si vuelve a responder, deja de tener sentido marcarlo "solo clasificar".
+    const nextClassify = responds ? classifyLocal.filter((c) => c !== value) : classifyLocal;
     setIgnoredLocal(next); // optimista
-    await persist(next);
+    setClassifyLocal(nextClassify);
+    await persist(next, nextClassify);
+    setBusy(null);
+  }
+
+  // Sub-toggle de un canal silenciado: clasificar y rutear igual, sin responder.
+  async function toggleClassifyOnly(value: string, on: boolean) {
+    setBusy(value);
+    const next = Array.from(
+      new Set(on ? [...classifyLocal, value] : classifyLocal.filter((c) => c !== value))
+    );
+    setClassifyLocal(next); // optimista
+    await persist(ignoredLocal, next);
     setBusy(null);
   }
 
@@ -611,7 +633,7 @@ function ChannelsSection({ channels }: { channels: ChannelsData }) {
     setBusy(v);
     const next = Array.from(new Set([...ignoredLocal, v]));
     setIgnoredLocal(next); // optimista
-    await persist(next);
+    await persist(next, classifyLocal);
     setCustom("");
     setBusy(null);
   }
@@ -630,18 +652,40 @@ function ChannelsSection({ channels }: { channels: ChannelsData }) {
       <div className="space-y-4">
       <div className="divide-y divide-neutral-100">
         {items.map((it) => (
-          <div key={it.value} className="flex items-center justify-between gap-4 py-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-neutral-900">{it.label}</p>
-              <p className="truncate text-xs font-mono text-neutral-400">
-                {it.note ?? it.value}
-              </p>
+          <div key={it.value} className="py-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-neutral-900">{it.label}</p>
+                <p className="truncate text-xs font-mono text-neutral-400">
+                  {it.note ?? it.value}
+                </p>
+              </div>
+              <Switch
+                checked={!ignored.has(it.value)}
+                busy={busy === it.value}
+                onChange={(next) => toggle(it.value, next)}
+              />
             </div>
-            <Switch
-              checked={!ignored.has(it.value)}
-              busy={busy === it.value}
-              onChange={(next) => toggle(it.value, next)}
-            />
+            {ignored.has(it.value) && (
+              <div className="mt-2 flex items-center justify-between gap-4 rounded-lg bg-neutral-50 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-neutral-700">
+                    Clasificar y rutear igual
+                  </p>
+                  <p className="text-[11px] text-neutral-500">
+                    El agente sigue sin escribirle al lead, pero el mensaje se categoriza y el
+                    lead se asigna al equipo comercial.
+                  </p>
+                </div>
+                <Switch
+                  checked={classifyOnly.has(it.value)}
+                  busy={busy === it.value}
+                  tone="sky"
+                  onChange={(next) => toggleClassifyOnly(it.value, next)}
+                  aria-label={`Clasificar y rutear ${it.label} sin responder`}
+                />
+              </div>
+            )}
           </div>
         ))}
       </div>

@@ -13,13 +13,16 @@ type Vertical = {
   auto_reply: boolean;
   requires_review: boolean;
   ignore: boolean;
+  auto_assign: boolean;
+  kommo_field_name: string | null;
+  kommo_field_value: string | null;
 };
 
 export default async function VerticalesPage() {
   const supabase = createSupabaseServerClient();
   const { data: verticals } = await supabase
     .from("verticals")
-    .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore")
+    .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore, auto_assign, kommo_field_name, kommo_field_value")
     .order("slug");
 
   const verticalList = (verticals ?? []) as Vertical[];
@@ -45,7 +48,8 @@ export default async function VerticalesPage() {
                   <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Nombre</th>
                   <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Respuesta automática</th>
                   <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Revisión humana</th>
-                  <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">No clasificar</th>
+                  <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Ignorar</th>
+                  <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Asigna responsable</th>
                   <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400 text-right"></th>
                 </tr>
               </thead>

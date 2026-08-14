@@ -48,7 +48,7 @@ export default async function SettingsPage({
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -60,7 +60,7 @@ export default async function SettingsPage({
       supabase
         .from("kommo_publish_config")
         .select(
-          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
+          "response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, classify_only_channels, routing_enabled, routing_takeover_user_ids, routing_min_confidence, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids, agent_enabled, publishing_enabled, bypass_review, auto_reply_mode, response_custom_field_id, salesbot_id"
         )
         .eq("is_active", true)
         .maybeSingle(),
@@ -88,6 +88,13 @@ export default async function SettingsPage({
         .select("*")
         .order("tool_type", { ascending: false }) // 'system' > 'http'
         .order("created_at", { ascending: true }),
+      // Equipo del ruteo de leads (0052). Si la tabla no existe todavía
+      // (pre-migración) el error se ignora abajo y el panel muestra la lista vacía.
+      supabase
+        .from("routing_assignees")
+        .select("id, kommo_user_id, display_name, match_terms, enabled, sort_order")
+        .order("sort_order")
+        .order("kommo_user_id"),
     ]);
 
   const p = pubRes.data;
@@ -109,7 +116,21 @@ export default async function SettingsPage({
       )
     ),
     ignored: (p?.ignored_channels ?? []) as string[],
+    classifyOnly: (p?.classify_only_channels ?? []) as string[],
   };
+  const routing = {
+    enabled: p?.routing_enabled === true,
+    takeoverUserIds: ((p?.routing_takeover_user_ids ?? []) as number[]).map(Number),
+    minConfidence: Number(p?.routing_min_confidence ?? 0.8),
+  };
+  const assignees = (assigneesRes.data ?? []) as {
+    id: string;
+    kommo_user_id: number;
+    display_name: string | null;
+    match_terms: string[];
+    enabled: boolean;
+    sort_order: number;
+  }[];
   const media = {
     images: p?.respond_to_images === true,
     documents: p?.respond_to_documents === true,
@@ -228,6 +249,8 @@ export default async function SettingsPage({
             bcvHasCustomSource={Boolean(cfg.BCV_RATE_URL)}
             businessHours={fuRes.data ?? null}
             comments={comments}
+            routing={routing}
+            assignees={assignees}
           >
             <div className="space-y-6">
               <AgentPublishPanel

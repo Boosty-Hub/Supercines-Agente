@@ -30,13 +30,13 @@ Google Maps: https://maps.app.goo.gl/R3vbA9c4egCtdDat5
 Correo de gerencia: gerencia.playamar@supercines.com.ve
 
 ## Asesoras de eventos y productos corporativos por sede
-Los contactos de asesoras solo se comparten cuando el cliente muestra interés explícito en un producto corporativo (alquiler de salas, eventos, cumpleaños, funciones privadas, combos corporativos, gift cards en volumen, publicidad en salas, proyecto escolar). Es el cliente quien escribe a la asesora, no al revés.
+Los contactos de asesoras solo se comparten cuando el cliente muestra interés explícito en un producto corporativo (alquiler de salas, eventos, cumpleaños, funciones privadas, combos corporativos, gift cards en volumen, publicidad en salas, proyecto escolar). Es el cliente quien escribe a la asesora, no al revés. NUNCA se comparte el WhatsApp de una asesora para reportes o fallas de la página web, problemas de pago, reclamos, reembolsos ni consultas de boletería: esos casos van al Gerente de turno o al correo de gerencia de la sede.
 - Sedes La Granja y Playa Mar: asesora Franairy Feo, WhatsApp corporativo +58 424-3609571.
 - Sedes Los Aviadores y Unicentro: asesora Karla Herrera, WhatsApp corporativo 0424-3218180.
 - Sedes La Cascada y Puente Real: asesora Laura Frontado, WhatsApp corporativo +58 424-3218200.
 
 ## Descuentos permanentes de boletería
-- Boleto Niños: 50% de descuento para menores de 14 años, válido hasta las 4:59 PM, todos los días, en taquilla y web.
+- Boleto Niños: 50% de descuento para menores de 14 años, válido hasta las 4:59 PM, todos los días, en taquilla y web. La edad límite del descuento de niños es 14 años, NO son 12: los 12 años corresponden a otra regla distinta (acompañamiento de menores para entrar a la sala) y no tienen relación con este descuento.
 - Tercera Edad: 50% de descuento para mayores de 60 años, todos los días, en taquilla y web.
 No existen otras categorías de descuento (por ejemplo, no hay descuento para estudiantes) salvo las promociones semanales vigentes.
 
@@ -51,7 +51,10 @@ Combo Super Pop — Michael Jackson: cotufa mediana + refresco mediano + chocola
 - Proyecto escolar (funciones para instituciones educativas): https://supercines.com.ve/comercializacion/proyecto_escolar
 
 ## Normativas generales de sala
-No se permite el acceso a menores de 12 años sin representante. Prohibido ingresar armas, grabar dentro de las salas, fumar en las instalaciones y el acceso a personas en estado de embriaguez. Al comprar en taquilla, verifica que película, butaca, fecha y hora sean correctos. Si compraste por web con tarjeta, presenta cédula física y el código QR enviado al correo. Solo se permite ingresar con alimentos y bebidas adquiridos dentro del establecimiento.
+Acompañamiento de menores: no se permite el acceso a menores de 12 años sin representante adulto. Esta edad de 12 años es SOLO la norma de acompañamiento para ingresar a la sala; NO es la edad del descuento de niños (el descuento Boleto Niños llega hasta los 14 años). Prohibido ingresar armas, grabar dentro de las salas, fumar en las instalaciones y el acceso a personas en estado de embriaguez. Al comprar en taquilla, verifica que película, butaca, fecha y hora sean correctos. Si compraste por web con tarjeta, presenta cédula física y el código QR enviado al correo. Solo se permite ingresar con alimentos y bebidas adquiridos dentro del establecimiento.
 
 ## Compra por web y app
 Web oficial: https://supercines.com.ve — App oficial (Android): https://play.google.com/store/apps/details?id=com.supercines.supercines_app_v2. Requiere registro con correo electrónico (documento V, E o J). Ante cargos duplicados, contacta a tu entidad bancaria para desconocerlos. El horario de taquilla en todas las sucursales es a partir de las 12:00 PM. Las tarifas se calculan a tasa BCV.
+
+## Reportes y fallas de la página web o la app
+Cualquier reporte, falla, error o queja relacionada con la SuperWeb (supercines.com.ve) o la app —pago rechazado, pago debitado sin recibir el código QR, doble cobro, error al comprar, problemas de cuenta, registro o verificación, botones en gris, venta online suspendida, solicitudes de reembolso— se resuelve por una sola vía: acudir a la taquilla de la sede y hablar con el Gerente o Supervisor de turno, y/o escribir al correo de gerencia de esa sede. Los WhatsApp de las asesoras NO aplican a reportes de la web: las asesoras atienden únicamente eventos y productos corporativos.

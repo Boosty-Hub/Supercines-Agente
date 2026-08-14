@@ -102,6 +102,10 @@ type LeadRow = {
   id: string;
   kommo_lead_id: number;
   display_name: string | null;
+  // Cache local de la etapa. Se compara contra la etapa EN VIVO para decidir si
+  // hay que re-sincronizar. Sin traerlo del select, la comparación era siempre
+  // NaN !== N (true) y el UPDATE corría en cada barrido para cada lead.
+  kommo_stage_id: number | null;
 };
 
 type MessageRow = {
@@ -154,7 +158,7 @@ async function getField(fieldId: string): Promise<FollowUpField | null> {
 async function getLead(leadId: string): Promise<LeadRow | null> {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, kommo_lead_id, display_name")
+    .select("id, kommo_lead_id, display_name, kommo_stage_id")
     .eq("id", leadId)
     .maybeSingle();
   if (error) throw new Error(`getLead: ${error.message}`);

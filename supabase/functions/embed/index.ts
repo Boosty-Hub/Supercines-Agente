@@ -5,6 +5,17 @@
 // POST { "inputs": ["texto 1", "texto 2", ...] }
 // → 200 { "embeddings": [[...], [...]] }
 
+// `Supabase.ai` es un global que inyecta el Edge Runtime de Supabase; no está
+// en los tipos de Deno, así que sin esta declaración `deno check` falla. Es
+// solo tipado: no cambia nada en runtime.
+declare const Supabase: {
+  ai: {
+    Session: new (model: string) => {
+      run(input: string | string[], opts?: { mean_pool?: boolean; normalize?: boolean }): Promise<number[] | number[][]>;
+    };
+  };
+};
+
 const session = new Supabase.ai.Session("gte-small");
 
 Deno.serve(async (req: Request) => {

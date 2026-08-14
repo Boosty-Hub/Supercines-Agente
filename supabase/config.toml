@@ -437,3 +437,9 @@ verify_jwt = false
 
 [functions.follow-up-scan]
 verify_jwt = false
+
+# La llama el agente como custom tool (consultar_cartelera) por URL directa, sin
+# JWT. Faltaba en este archivo: un deploy por CLI la habría publicado con el
+# default verify_jwt = true y la tool habría empezado a devolver 401.
+[functions.cartelera]
+verify_jwt = false

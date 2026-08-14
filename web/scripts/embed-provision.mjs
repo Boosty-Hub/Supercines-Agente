@@ -97,7 +97,10 @@ console.log(`[embed-provision] Wrote ${migrations.length} migrations → src/lib
 // Read all _shared files (included in every function bundle)
 const sharedFiles = existsSync(sharedDir)
   ? readdirSync(sharedDir)
-      .filter((f) => !f.startsWith("."))
+      // Los tests no son parte del runtime: subirlos en CADA bundle de función
+      // es peso muerto y arrastra imports (deno.land/std) que el deployer no
+      // necesita resolver.
+      .filter((f) => !f.startsWith(".") && !f.endsWith(".test.ts"))
       .map((filename) => {
         const body = readFileSync(join(sharedDir, filename), "utf8");
         // In the deploy bundle, _shared/ sits as a SIBLING of the <slug>/ dir

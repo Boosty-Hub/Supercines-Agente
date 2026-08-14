@@ -46,7 +46,18 @@ SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy <fn> --project-ref <
 
 > No hay `pnpm bootstrap`, `pnpm migrate` ni `pnpm user:master`. Esos scripts fueron eliminados. Todo sucede desde el browser vía `/first-run`. Para desarrollo local, el codegen corre automáticamente en `predev`.
 
-No hay tests ni linter más allá de `eslint-config-next`. Verificación de cada cambio del front: `npx tsc --noEmit`. Para Edge Functions no hay typecheck local (Deno); validar desplegando y golpeando la función.
+No hay linter más allá de `eslint-config-next`. Verificación de cada cambio del front: `npx tsc --noEmit`.
+
+Las Edge Functions **sí** se pueden typechequear y testear localmente aunque Deno no esté instalado:
+
+```bash
+npx deno@2 check --node-modules-dir=auto supabase/functions/*/index.ts supabase/functions/_shared/*.ts
+npx deno@2 test  --allow-net --node-modules-dir=auto supabase/functions/_shared/
+```
+
+Hacelo SIEMPRE antes de deployar: el deploy no typechequea, así que un error de tipos llega a producción en silencio.
+
+⚠️ `npx tsc --noEmit` NO sustituye a `pnpm build`. Next valida reglas propias que `tsc` no ve — por ejemplo, un `route.ts` **no puede exportar nada que no sea un handler** (`export function parseTerms` → `"parseTerms" is not a valid Route export field`, con `tsc` en verde). Los helpers compartidos entre rutas van en `src/lib/`, nunca exportados desde un `route.ts`.
 
 ## Arquitectura — el pipeline (lo más importante)
 
@@ -86,7 +97,22 @@ Resiliencia: `pg_cron` barre cada minuto `process-inbound`, `generate-response`,
    - `bypass_review` — si `true` (y `publishing_enabled=true`), el agente responde y publica TODO aunque entre a review. No afecta el botón de revisión humana (forceReview siempre queda `pending`).
    - Combinación de validación inicial: `agent_enabled=true, publishing_enabled=false`.
 
-5. **Migraciones con `${SUPABASE_URL}` placeholder.** Las migraciones que crean cron jobs (0006, 0007, 0009, 0010, 0011, 0013) usan `'${SUPABASE_URL}/functions/v1/<fn>'` en lugar de URLs hardcoded. La sustitución ocurre **en runtime** dentro de `web/src/app/api/provision/migrate/route.ts` antes de ejecutar cada SQL. El placeholder viaja intacto en los archivos `.sql` y en el archivo generado `migrations.generated.ts`. **No reemplazar el placeholder con la URL real en los archivos SQL** — dejá el placeholder para que el repo siga siendo reusable.
+5. **`ignored_channels` ≠ "no clasificar" (migración 0052).** Un canal en `ignored_channels` que además esté en `classify_only_channels` SÍ se clasifica y SÍ se rutea al equipo — solo que el agente no le escribe al lead. La marca `ignored` se aplica **después** de clasificar (`generate-response` filtra por `ignored`, así que igual no responde). Si alguna vez tocás el gate de canal de `process-inbound`, el fallback del `select` de `getPublishFilters` es obligatorio: pedir una columna inexistente hace fallar el select entero y `channels` quedaría vacío → **el agente empezaría a responder en canales silenciados**.
+
+6. **Migraciones con `${SUPABASE_URL}` placeholder.** Las migraciones que crean cron jobs (0006, 0007, 0009, 0010, 0011, 0013) usan `'${SUPABASE_URL}/functions/v1/<fn>'` en lugar de URLs hardcoded. La sustitución ocurre **en runtime** dentro de `web/src/app/api/provision/migrate/route.ts` antes de ejecutar cada SQL. El placeholder viaja intacto en los archivos `.sql` y en el archivo generado `migrations.generated.ts`. **No reemplazar el placeholder con la URL real en los archivos SQL** — dejá el placeholder para que el repo siga siendo reusable.
+
+### Ruteo de leads al equipo comercial (migraciones 0052/0053)
+
+Reparte automáticamente los leads de una vertical entre el equipo de ventas, y estampa un campo del lead en Kommo. Vive en `supabase/functions/_shared/routing.ts` y lo llama `process-inbound` justo después de clasificar (tanto en el hot path como en `recoverFailedClassifications`).
+
+- **Disparador**: `verticals.auto_assign = true`. El campo a completar sale de `verticals.kommo_field_name` / `kommo_field_value`, resueltos **por nombre** (misma filosofía que las tools de 0028). Se edita en `/verticales`.
+- **Decisión**: si el texto del lead contiene un término de `routing_assignees.match_terms` (ej: su sede) → esa persona (`term_match`). Si no → `round_robin` vía la RPC atómica `next_round_robin_assignee(key)`, que serializa la rueda con `SELECT … FOR UPDATE` (sin eso, dos inbounds simultáneos le dan el mismo lead a la misma persona). El match normaliza mayúsculas/acentos y exige límites de palabra — un `includes` pelado hacía que "coro" matcheara dentro de "recordar".
+- **Nunca roba leads**: solo asigna si el responsable EN VIVO en Kommo es `null` o está en `kommo_publish_config.routing_takeover_user_ids` (las cuentas genéricas). Si no se puede leer el responsable, no asigna.
+- **Un lead se rutea una vez** (`leads.routed_at`). Única excepción: si se ruteó por `round_robin` (una suposición, porque no había sede) y un mensaje posterior SÍ nombra la sede, se corrige **una sola vez** — y solo si el responsable sigue siendo el que puso el sistema. Un `term_match` no se toca nunca. Sin esto, el CRM decía una cosa y el agente (que comparte el WhatsApp de la asesora de esa sede) decía otra.
+- **Umbral de confianza (0056)**: `kommo_publish_config.routing_min_confidence` (default 0.80). Si la clasificación viene con menos confianza, se clasifica igual pero NO se toca el CRM ni se marca el lead como ruteado (un mensaje claro posterior sí lo rutea). Motivo real: una charla interna de staff (facturas, un chofer) se clasificó `eventos_corporativo` con 0.65 y le asignó un lead falso a una asesora. Clasificar con dudas es barato y reversible; escribir en el CRM de una persona real, no.
+- **Auditoría**: cada decisión —incluidas las salteadas— queda en `lead_routing_events` con estrategia, término, responsable previo y motivo. Sin eso el round robin es una caja negra ante el primer "a mí no me llegó ninguno".
+- Switches en `kommo_publish_config`: `routing_enabled` (kill switch, default OFF) y `routing_takeover_user_ids`. El equipo se administra en Ajustes → Agente → Acciones → "Ruteo de leads al equipo".
+- **Campos `select` de Kommo**: hay que mandar `enum_id`, no `value` — con un string arbitrario Kommo devuelve 200 y **no guarda nada**. Usá `patchEntityFieldTyped`/`resolveFieldValue` (`_shared/kommo.ts`). `patchLeadField` sigue existiendo solo para campos de texto/textarea.
 
 ### Memoria y aprendizaje (Anthropic Managed Agents)
 
@@ -105,6 +131,8 @@ El system prompt vivo está en `runtime_config.SYSTEM_PROMPT` (DB), editable des
 - `{{OPERATOR_NAME}}` — de `runtime_config.OPERATOR_NAME`.
 - `{{MASTER_PATH}}` / `{{LEADS_PATH}}` — `/mnt/memory/<MEMORY_STORE_*_NAME>`.
 - `{{MEMORY_STORE_MASTER}}` / `{{MEMORY_STORE_LEADS}}` — nombres de los stores.
+
+Además del prompt global, **cada vertical puede tener su propio prompt** (`verticals.system_prompt`, editable en `/verticales`): `generate-response` lo inyecta en el contexto como `instrucciones_de_la_vertical`, por debajo de `aprendizajes_del_operador`. (Hasta agosto 2026 ese campo se editaba pero NINGUNA Edge Function lo leía: las instrucciones por vertical no llegaban nunca al agente.)
 
 La sustitución y la lista de tools viven en `web/src/lib/agent-prompt.ts` (compartidas por `/api/agent` y `/api/setup/agent`). Guardar en `/agent` llama `anthropic.beta.agents.update()` y persiste la versión nueva en `runtime_config.ANTHROPIC_AGENT_VERSION`. `agent/system-prompt.example.md` (commiteado) es el template de partida para copiar/pegar al wizard; el prompt vivo está en `runtime_config.SYSTEM_PROMPT`.
 
@@ -137,6 +165,8 @@ La sustitución y la lista de tools viven en `web/src/lib/agent-prompt.ts` (comp
 | Identidad del agente (operador, nombre, branding) | Dashboard `/agent` o wizard `/setup` (→ `runtime_config`) |
 | Aprovisionar Memory Stores + Agent + Kommo | Dashboard `/setup` (wizard idempotente) |
 | Verticales (categorías de mensajes) | Dashboard `/verticales` (o `supabase/migrations/0002_seed.sql` antes del primer migrate) |
+| Ruteo de leads al equipo (round robin / por término) | Ajustes → Agente → Acciones → "Ruteo de leads al equipo" + toggle por vertical en `/verticales` |
+| Canales que se clasifican pero no se responden | Ajustes → Agente → Comportamiento → Canales → "Clasificar y rutear igual" |
 | Prompts de graders | Dashboard `/outcomes` |
 | Custom field y salesbot de Kommo | Dashboard `/settings` |
 | Modelo (Sonnet vs otro) | Wizard `/setup` (→ `runtime_config.AGENT_MODEL`, default `claude-sonnet-4-6`) |

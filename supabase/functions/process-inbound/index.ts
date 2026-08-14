@@ -15,6 +15,7 @@ import { recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
+import { routeLead } from "../_shared/routing.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -70,6 +71,11 @@ type Vertical = {
   description: string | null;
   requires_review: boolean;
   ignore: boolean;
+  // Ruteo automático al equipo comercial (0052). Fail-open: si la columna no
+  // existe todavía, quedan en false/null y el ruteo no se dispara.
+  auto_assign: boolean;
+  kommo_field_name: string | null;
+  kommo_field_value: string | null;
 };
 let verticalsCache: { items: Vertical[]; loadedAt: number } | null = null;
 
@@ -79,10 +85,27 @@ async function getVerticals(): Promise<Vertical[]> {
   }
   const { data, error } = await supabase
     .from("verticals")
-    .select("id, slug, description, requires_review, ignore")
+    .select("id, slug, description, requires_review, ignore, auto_assign, kommo_field_name, kommo_field_value")
     .order("slug");
-  if (error) throw new Error(`fetch verticals: ${error.message}`);
-  verticalsCache = { items: data ?? [], loadedAt: Date.now() };
+  if (error) {
+    // Pre-migración 0052 las columnas de ruteo no existen: reintentamos con el
+    // select viejo para que la función siga clasificando igual que antes.
+    console.warn("getVerticals: select con ruteo falló, fallback —", error.message);
+    const { data: legacy, error: legacyErr } = await supabase
+      .from("verticals")
+      .select("id, slug, description, requires_review, ignore")
+      .order("slug");
+    if (legacyErr) throw new Error(`fetch verticals: ${legacyErr.message}`);
+    const items = ((legacy ?? []) as Array<Record<string, unknown>>).map((v) => ({
+      ...v,
+      auto_assign: false,
+      kommo_field_name: null,
+      kommo_field_value: null,
+    })) as Vertical[];
+    verticalsCache = { items, loadedAt: Date.now() };
+    return items;
+  }
+  verticalsCache = { items: (data ?? []) as Vertical[], loadedAt: Date.now() };
   return verticalsCache.items;
 }
 
@@ -175,6 +198,9 @@ function firstMatchingSkipRule(text: string, rules: CompiledRule[]): CompiledRul
 type MediaFlags = { images: boolean; documents: boolean; audio: boolean };
 type PublishFilters = {
   channels: Set<string>;
+  // Subconjunto de `channels` que SÍ se clasifica (y se rutea) aunque el agente
+  // no responda ahí. "No le respondo" ≠ "no lo miro" (0052).
+  classifyOnlyChannels: Set<string>;
   stages: Set<number>;
   media: MediaFlags;
   agentOffFieldId: number | null;
@@ -188,17 +214,43 @@ async function getPublishFilters(): Promise<PublishFilters> {
     return publishFiltersCache;
   }
   const empty: MediaFlags = { images: false, documents: false, audio: false };
-  const { data, error } = await supabase
-    .from("kommo_publish_config")
-    .select(
-      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments"
-    )
-    .eq("is_active", true)
-    .maybeSingle();
+  const LEGACY_COLS =
+    "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments";
+
+  // Ventana función-desplegada-antes-que-migración: pedir una columna que no
+  // existe hace fallar el select ENTERO. Sin el reintento con el select viejo,
+  // `channels` quedaría vacío y el agente empezaría a responder en canales
+  // silenciados — el peor fallo posible de todos.
+  let data: Record<string, unknown> | null = null;
+  let error: { message: string } | null = null;
+  {
+    const first = await supabase
+      .from("kommo_publish_config")
+      .select(`${LEGACY_COLS}, classify_only_channels`)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (first.error) {
+      console.warn(
+        "getPublishFilters: select con classify_only_channels falló, fallback —",
+        first.error.message
+      );
+      const retry = await supabase
+        .from("kommo_publish_config")
+        .select(LEGACY_COLS)
+        .eq("is_active", true)
+        .maybeSingle();
+      data = (retry.data ?? null) as Record<string, unknown> | null;
+      error = retry.error;
+    } else {
+      data = (first.data ?? null) as Record<string, unknown> | null;
+    }
+  }
+
   if (error) {
     console.warn("getPublishFilters error — sin filtros:", error.message);
     publishFiltersCache = {
       channels: new Set(),
+      classifyOnlyChannels: new Set(),
       stages: new Set(),
       media: empty,
       agentOffFieldId: null,
@@ -210,6 +262,11 @@ async function getPublishFilters(): Promise<PublishFilters> {
   }
   const channels = new Set(
     ((data?.ignored_channels ?? []) as string[]).map((c) => c.toLowerCase())
+  );
+  // Fail-open: columna ausente (pre-migración 0052) → set vacío = comportamiento
+  // anterior (canal silenciado no se clasifica).
+  const classifyOnlyChannels = new Set(
+    ((data?.classify_only_channels ?? []) as string[]).map((c) => c.toLowerCase())
   );
   const stages = new Set(((data?.ignored_stage_ids ?? []) as number[]).map(Number));
   const media: MediaFlags = {
@@ -226,7 +283,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
   );
   // Gate maestro de comentarios (0048): default/columna ausente = OFF.
   const respondToComments = data?.respond_to_comments === true;
-  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
+  publishFiltersCache = { channels, classifyOnlyChannels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
   return publishFiltersCache;
 }
 
@@ -384,8 +441,9 @@ function extractMedia(m: KommoMessage): ExtractedMedia | null {
 // stageId: número → actualiza kommo_stage_id (para run_stage_ids de follow-up)
 async function upsertLead(
   kommoLeadId: number,
-  opts: { name?: string; channel?: string; contactId?: number; inbound?: boolean; stageId?: number }
-) {
+  opts: { name?: string; channel?: string; contactId?: number; inbound?: boolean; stageId?: number },
+  retried = false
+): Promise<string> {
   const update: Record<string, unknown> = {
     last_message_at: new Date().toISOString(),
   };
@@ -454,7 +512,19 @@ async function upsertLead(
     })
     .select("id")
     .single();
-  if (error || !inserted) throw new Error(`upsert lead: ${error?.message}`);
+  if (error || !inserted) {
+    // Carrera real y frecuente: entre el SELECT de arriba y este INSERT, otra
+    // invocación concurrente —el webhook y el sweep de pg_cron corren en
+    // paralelo— creó el mismo lead. El 23505 reventaba processPayload entero y
+    // la fila de la cola se marcaba 'failed', perdiendo TODOS los mensajes de
+    // ese payload (83 filas así en KIA). Reintentamos una sola vez: en la
+    // segunda pasada el lead ya existe y se toma el camino de update, con toda
+    // su lógica intacta.
+    const isDuplicate =
+      error?.code === "23505" || /duplicate key|unique constraint/i.test(error?.message ?? "");
+    if (isDuplicate && !retried) return await upsertLead(kommoLeadId, opts, true);
+    throw new Error(`upsert lead: ${error?.message}`);
+  }
   return inserted.id as string;
 }
 
@@ -1005,14 +1075,29 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // Canal ignorado: si el mensaje llega por un canal silenciado, el agente
       // no responde. Matchea tanto el canal legible (originToChannel) como el
       // origin crudo de Kommo, para que sirva elijas el que elijas.
+      //
+      // classify_only_channels (0052) parte esto en dos: un canal silenciado que
+      // además está en esa lista SÍ se clasifica y SÍ se rutea al equipo — solo
+      // que el agente no le escribe al lead. La marca `ignored` se aplica igual,
+      // pero DESPUÉS de clasificar (ver classifyOnly más abajo), que es lo que
+      // mantiene a generate-response fuera de este mensaje.
+      let classifyOnly = false;
       if (filters.channels.size > 0) {
         const originLc = (m.origin ?? "").toLowerCase();
-        if (filters.channels.has(channel) || (originLc && filters.channels.has(originLc))) {
-          await supabase
-            .from("messages")
-            .update({ ignored: true, ignored_reason: `channel:${channel}` })
-            .eq("id", msg.id);
-          continue;
+        const silenced =
+          filters.channels.has(channel) || (originLc !== "" && filters.channels.has(originLc));
+        if (silenced) {
+          const classifiable =
+            filters.classifyOnlyChannels.has(channel) ||
+            (originLc !== "" && filters.classifyOnlyChannels.has(originLc));
+          if (!classifiable) {
+            await supabase
+              .from("messages")
+              .update({ ignored: true, ignored_reason: `channel:${channel}` })
+              .eq("id", msg.id);
+            continue;
+          }
+          classifyOnly = true;
         }
       }
 
@@ -1095,6 +1180,18 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         }
         // Vertical marcada "ignorar": guardamos clasificación (para registro y
         // analytics) pero el agente no responde ni manda a revisión humana.
+        // Canal "clasificar sin responder" (0052): la marca `ignored` se aplica
+        // ACÁ, recién después de clasificar. generate-response filtra por
+        // ignored, así que el lead nunca recibe respuesta por este canal — pero
+        // la clasificación y el ruteo al equipo sí ocurrieron.
+        const classifyOnlyPatch = classifyOnly
+          ? { ignored: true, ignored_reason: `channel:${channel}` }
+          : {};
+        // Texto que ve el ruteo: si el mensaje era solo un adjunto, el término
+        // que decide la asignación (la sede) puede estar en la descripción que
+        // produjo el clasificador, no en el texto original.
+        const routingText = typeof extra.content === "string" ? extra.content : text;
+
         if (v?.ignore) {
           await supabase
             .from("messages")
@@ -1106,6 +1203,18 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
               ignored_reason: `vertical:${v.slug}`,
             })
             .eq("id", msg.id);
+          // El ruteo NO depende de que el agente responda: una vertical marcada
+          // "ignorar" con auto_assign sigue repartiendo el lead al equipo.
+          await routeLead({
+            supabase,
+            leadId,
+            kommoLeadId: leadKommoId,
+            messageId: msg.id,
+            text: routingText,
+            vertical: v,
+            kommoDomain,
+            kommoToken,
+          });
           // Captura fail-open de consumo classify (vertical ignorada)
           await recordUsage(supabase, {
             component: "classify", model: classifyModel,
@@ -1128,9 +1237,24 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
             vertical_id: v?.id ?? null,
             classification: cls,
             requires_human_review: needsReview,
+            ...classifyOnlyPatch,
           })
           .eq("id", msg.id);
-        if (!needsReview && v?.id) inboundMessageIds.push(msg.id);
+        // classifyOnly NO entra a la cola de respuesta: se clasificó y se ruteó,
+        // pero el agente no escribe en este canal.
+        if (!classifyOnly && !needsReview && v?.id) inboundMessageIds.push(msg.id);
+        if (v) {
+          await routeLead({
+            supabase,
+            leadId,
+            kommoLeadId: leadKommoId,
+            messageId: msg.id,
+            text: routingText,
+            vertical: v,
+            kommoDomain,
+            kommoToken,
+          });
+        }
         // Captura fail-open de consumo classify
         await recordUsage(supabase, {
           component: "classify", model: classifyModel,
@@ -1183,7 +1307,7 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
   try {
     const { data: rows } = await supabase
       .from("messages")
-      .select("id, lead_id, content, source, media_url, media_kind, classification")
+      .select("id, lead_id, content, source, media_url, media_kind, classification, leads(kommo_lead_id)")
       .eq("direction", "inbound")
       .eq("ignored", false)
       .is("vertical_id", null)
@@ -1197,6 +1321,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
     const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
     const verticals = await getVerticals();
     const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
+    // Mismos filtros que el hot path. Un mensaje de un canal "clasificar sin
+    // responder" llega acá con ignored=false a propósito (para poder
+    // reintentarlo); al recuperarlo hay que volver a ponerle la marca, o
+    // generate-response lo tomaría y le respondería al lead en un canal
+    // silenciado. Ese era el agujero.
+    const filters = await getPublishFilters();
+    const kommoDomain = runtimeCfg.get("KOMMO_API_DOMAIN");
+    const kommoToken = runtimeCfg.get("KOMMO_ACCESS_TOKEN");
     let healed = 0;
 
     for (const msg of rows) {
@@ -1235,6 +1367,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
           extra.content = `[${mediaForClassify.label}] ${cls.media_summary.trim()}`;
         }
+        // ¿Este mensaje viene de un canal silenciado que solo se clasifica?
+        const srcLc = (msg.source ?? "").toLowerCase();
+        const classifyOnly =
+          srcLc !== "" && filters.channels.has(srcLc) && filters.classifyOnlyChannels.has(srcLc);
+        const classifyOnlyPatch = classifyOnly
+          ? { ignored: true, ignored_reason: `channel:${srcLc}` }
+          : {};
+        const routingText = typeof extra.content === "string" ? extra.content : text;
         if (v?.ignore) {
           await supabase
             .from("messages")
@@ -1245,9 +1385,26 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
           const needsReview = cls.requires_human_review || (v?.requires_review ?? false);
           await supabase
             .from("messages")
-            .update({ ...extra, vertical_id: v?.id ?? null, classification: cls, requires_human_review: needsReview })
+            .update({ ...extra, vertical_id: v?.id ?? null, classification: cls, requires_human_review: needsReview, ...classifyOnlyPatch })
             .eq("id", msg.id)
             .is("vertical_id", null);
+        }
+        // Ruteo también en el camino de recuperación: si el primer intento de
+        // clasificar falló, el lead no puede quedarse sin asignar para siempre.
+        if (v && msg.lead_id) {
+          const kommoLeadId = Number(
+            (msg as { leads?: { kommo_lead_id?: number | null } }).leads?.kommo_lead_id ?? NaN
+          );
+          await routeLead({
+            supabase,
+            leadId: msg.lead_id,
+            kommoLeadId: Number.isFinite(kommoLeadId) ? kommoLeadId : null,
+            messageId: msg.id,
+            text: routingText,
+            vertical: v,
+            kommoDomain,
+            kommoToken,
+          });
         }
         await recordUsage(supabase, {
           component: "classify", model: classifyModel,
@@ -1363,6 +1520,37 @@ async function processBatch(anthropic: Anthropic, operator: string): Promise<{ p
   return { processed, failed, messageIds };
 }
 
+// ---- Drenado de la cola ----
+// Una sola invocación drena VARIOS batches en vez de uno. Antes hacía falta una
+// invocación por webhook para sostener el throughput; eso es justamente lo que
+// reventaba el pool de workers bajo ráfaga. Con el drenado en lote,
+// kommo-webhook puede coalescer sus triggers sin que la cola se atrase.
+//
+// Los topes acotan la vida del worker MUY por debajo del wall clock del edge
+// runtime (~400s): un worker que muere a mitad deja filas 'processing', y el
+// reaper de la migración las recupera — pero es mejor no morir.
+const DRAIN_MAX_BATCHES = 5;
+const DRAIN_BUDGET_MS = 60_000;
+
+async function drainQueue(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; batches: number; messageIds: string[] }> {
+  const startedAt = Date.now();
+  let processed = 0;
+  let failed = 0;
+  let batches = 0;
+  const messageIds: string[] = [];
+  for (let i = 0; i < DRAIN_MAX_BATCHES; i++) {
+    if (Date.now() - startedAt > DRAIN_BUDGET_MS) break;
+    const r = await processBatch(anthropic, operator);
+    batches++;
+    processed += r.processed;
+    failed += r.failed;
+    messageIds.push(...r.messageIds);
+    // Cola vacía (o todo lo pendiente ya lo tomó otra invocación) → salir ya.
+    if (r.processed + r.failed === 0) break;
+  }
+  return { processed, failed, batches, messageIds };
+}
+
 Deno.serve(async (req: Request) => {
   // Healthcheck
   if (req.method === "GET") {
@@ -1377,29 +1565,51 @@ Deno.serve(async (req: Request) => {
     const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
 
-    const result = await processBatch(anthropic, operator);
-
-    // Auto-recuperación: reclasificar mensajes que fallaron por errores
-    // transitorios (sin créditos, API caída). Corre en cada ciclo del cron.
-    const recovered = await recoverFailedClassifications(anthropic, operator);
-    // Disparamos generate-response en MODO COLA (sin message_id) para que
-    // aplique el debounce: si el lead sigue escribiendo, generate-response
-    // devuelve picked:null y el cron sweep (cada minuto) lo reintenta cuando
-    // pasó la ventana de silencio, respondiendo todos sus mensajes juntos.
-    if (result.messageIds.length > 0) {
-      const trigger = fetch(`${SUPABASE_URL}/functions/v1/generate-response`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch((e) => console.warn("trigger generate-response failed:", e));
-      // @ts-ignore: EdgeRuntime existe en Supabase
-      if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-        // @ts-ignore
-        EdgeRuntime.waitUntil(trigger);
+    // El trabajo lento (clasificación + API de Kommo por payload) va DENTRO de
+    // waitUntil y respondemos 202 al toque — el mismo invariante que ya cumplían
+    // kommo-webhook→process-inbound y generate-response, y que esta función se
+    // estaba salteando: hacía TODO dentro del request handler, así que quien la
+    // llamaba (el webhook, con su propio waitUntil) quedaba enganchado hasta el
+    // final del batch. Ese encadenamiento es lo que agotaba el pool de workers
+    // en las ráfagas y terminaba con Kommo deshabilitando el endpoint.
+    const slowWork = (async () => {
+      try {
+        const result = await drainQueue(anthropic, operator);
+        // Auto-recuperación: reclasificar mensajes que fallaron por errores
+        // transitorios (sin créditos, API caída). Corre en cada ciclo del cron.
+        const recovered = await recoverFailedClassifications(anthropic, operator);
+        // Disparamos generate-response en MODO COLA (sin message_id) para que
+        // aplique el debounce: si el lead sigue escribiendo, generate-response
+        // devuelve picked:null y el cron sweep lo reintenta cuando pasó la
+        // ventana de silencio, respondiendo todos sus mensajes juntos.
+        if (result.messageIds.length > 0) {
+          // generate-response también responde 202 de inmediato: esperarlo
+          // cuesta milisegundos, no el tiempo de la sesión del agente.
+          await fetch(`${SUPABASE_URL}/functions/v1/generate-response`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          }).catch((e) => console.warn("trigger generate-response failed:", e));
+        }
+        console.log(
+          `drain: ${result.processed} ok, ${result.failed} fail, ${result.batches} batches, ${recovered} recuperados`
+        );
+      } catch (err) {
+        console.error("drain error:", err instanceof Error ? err.message : String(err));
       }
+    })();
+
+    // @ts-ignore: EdgeRuntime existe en Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(slowWork);
+    } else {
+      // Sin waitUntil (dev local): el comportamiento vuelve a ser síncrono.
+      await slowWork;
     }
-    return new Response(JSON.stringify({ ok: true, ...result, recovered }), {
-      status: 200,
+
+    return new Response(JSON.stringify({ ok: true, accepted: true }), {
+      status: 202,
       headers: { "content-type": "application/json" },
     });
   } catch (err) {

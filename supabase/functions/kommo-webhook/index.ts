@@ -45,6 +45,66 @@ function parseFormBracketed(body: string): Record<string, unknown> {
   return result;
 }
 
+// ¿El payload tiene algo que process-inbound sepa procesar?
+// processPayload SOLO mira `leads.add` y `message.add`. Los eventos
+// `leads.update` / `leads.status` son ~64% del tráfico real y no producen
+// NINGÚN efecto — pero cada uno disparaba una invocación completa de
+// process-inbound. Se siguen encolando (trazabilidad); el sweep de pg_cron
+// los marca 'done' dentro del minuto.
+//
+// FAIL-OPEN a propósito: ante cualquier forma que no sepamos inspeccionar
+// (`_raw` de un body que no parseó, un grupo nuevo de Kommo) devolvemos true y
+// disparamos igual. Perder el mensaje de un lead es muchísimo peor que gastar
+// una invocación de más.
+function isActionable(payload: Record<string, unknown>): boolean {
+  if (!payload || typeof payload !== "object") return true;
+  if ("_raw" in payload) return true; // body que no se pudo parsear
+
+  const group = (key: string): Record<string, unknown> | null => {
+    const g = payload[key];
+    return g && typeof g === "object" ? (g as Record<string, unknown>) : null;
+  };
+  const leads = group("leads");
+  const message = group("message");
+  // Ningún grupo conocido → puede ser una forma nueva de Kommo: disparar.
+  if (!leads && !message) return true;
+  return Boolean(leads?.add) || Boolean(message?.add);
+}
+
+// Coalescing del trigger a process-inbound.
+//
+// ANTES: cada webhook disparaba su propio process-inbound y lo mantenía
+// enganchado con EdgeRuntime.waitUntil hasta que TERMINABA de procesar el
+// batch (hasta MAX_BATCH payloads con llamadas al clasificador + API de Kommo
+// → minutos). El worker de kommo-webhook quedaba vivo tanto como el downstream,
+// y con una ráfaga real eso agota el pool de workers → 5xx/546 en el endpoint
+// → Kommo DESHABILITA el webhook (en KIA: apagones de 6 y 4 días seguidos).
+//
+// AHORA: como mucho un trigger cada TRIGGER_COALESCE_MS por instancia. No hace
+// falta uno por webhook — process-inbound drena en lote y el cron barre cada
+// minuto como piso. `lastTriggerAt` es module scope: vive lo que vive la
+// instancia, que es exactamente el alcance que queremos limitar.
+const TRIGGER_COALESCE_MS = 2000;
+let lastTriggerAt = 0;
+
+function triggerProcessInbound(): void {
+  const now = Date.now();
+  if (now - lastTriggerAt < TRIGGER_COALESCE_MS) return;
+  lastTriggerAt = now;
+  // process-inbound responde 202 de inmediato y drena en su propio waitUntil,
+  // así que este fetch resuelve en milisegundos y libera el worker enseguida.
+  const p = fetch(`${SUPABASE_URL}/functions/v1/process-inbound`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  }).catch((e) => console.warn("trigger process-inbound failed:", e));
+  // @ts-ignore: EdgeRuntime existe en Supabase
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+    // @ts-ignore
+    EdgeRuntime.waitUntil(p);
+  }
+}
+
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
   const raw = await req.text();
@@ -104,18 +164,11 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Disparar process-inbound. Usamos waitUntil para garantizar que el fetch
-    // se completa aunque la función ya devolvió respuesta a Kommo.
-    const processPromise = fetch(`${SUPABASE_URL}/functions/v1/process-inbound`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }).catch((e) => console.warn("trigger process-inbound failed:", e));
-    // @ts-ignore: EdgeRuntime existe en Supabase
-    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-      // @ts-ignore
-      EdgeRuntime.waitUntil(processPromise);
-    }
+    // Disparar process-inbound solo si el payload trae trabajo real, y como
+    // mucho una vez cada TRIGGER_COALESCE_MS. Lo demás lo levanta el sweep de
+    // pg_cron. Mantener el endpoint liviano es lo que evita que Kommo lo
+    // deshabilite bajo ráfaga.
+    if (isActionable(payload)) triggerProcessInbound();
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,

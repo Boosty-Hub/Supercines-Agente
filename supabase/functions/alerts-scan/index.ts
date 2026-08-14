@@ -8,6 +8,7 @@
 // Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -307,6 +308,78 @@ async function resolveRecoveredProviderCredit(): Promise<number> {
   return resolved;
 }
 
+// ---- Silencio del webhook de Kommo ----
+// Kommo DESHABILITA un webhook cuyo endpoint le falla de forma sostenida, y no
+// avisa a nadie: en KIA el sistema estuvo mudo 6 días seguidos (jul 30–ago 4) y
+// otros 4 (ago 7–ago 10) sin que saltara nada. Cero webhooks en horario laboral
+// es, por definición, el sistema caído: o Kommo desconectó el hook, o el
+// endpoint no responde. Esta alerta convierte un apagón invisible en un aviso.
+const SILENCE_MINUTES = 90;
+const SILENCE_REALERT_HOURS = 6; // no repetir el aviso más seguido que esto
+
+async function detectInboundSilence(): Promise<AlertInput[]> {
+  // Solo en horario laboral: de madrugada el silencio es normal.
+  const { data: fu } = await supabase
+    .from("follow_up_config")
+    .select("timezone, business_hours, business_hours_start, business_hours_end, active_days")
+    .eq("is_active", true)
+    .maybeSingle();
+  const hours: BusinessHoursConfig = {
+    timezone: (fu?.timezone as string) || "America/Caracas",
+    business_hours: (fu?.business_hours as BusinessHoursConfig["business_hours"]) ?? null,
+    business_hours_start: Number(fu?.business_hours_start ?? 9),
+    business_hours_end: Number(fu?.business_hours_end ?? 20),
+    active_days: ((fu?.active_days as number[] | null) ?? [1, 2, 3, 4, 5, 6]).map(Number),
+  };
+  if (!isBusinessHours(hours)) return [];
+
+  const now = Date.now();
+
+  // No repetir: una sola alerta cada SILENCE_REALERT_HOURS mientras dure el corte.
+  const { data: recent } = await supabase
+    .from("alerts")
+    .select("id")
+    .eq("kind", "inbound_silence")
+    .gte("created_at", new Date(now - SILENCE_REALERT_HOURS * 3600 * 1000).toISOString())
+    .limit(1);
+  if (recent && recent.length > 0) return [];
+
+  const since = new Date(now - SILENCE_MINUTES * 60 * 1000).toISOString();
+  const { count: recentCount, error } = await supabase
+    .from("inbound_queue")
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", since);
+  // Fail-open: si la consulta falla no inventamos un apagón.
+  if (error) {
+    console.warn("detectInboundSilence:", error.message);
+    return [];
+  }
+  if ((recentCount ?? 0) > 0) return [];
+
+  // Guarda anti-falso-positivo: si la cuenta nunca tuvo tráfico (instalación
+  // nueva, cliente pausado), el silencio no es una anomalía.
+  const weekAgo = new Date(now - 7 * 24 * 3600 * 1000).toISOString();
+  const { count: weekCount } = await supabase
+    .from("inbound_queue")
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", weekAgo);
+  if ((weekCount ?? 0) === 0) return [];
+
+  return [
+    {
+      kind: "inbound_silence",
+      severity: "critical",
+      title: "Sin mensajes de Kommo hace más de 90 minutos",
+      description:
+        `No llegó NINGÚN webhook de Kommo en los últimos ${SILENCE_MINUTES} minutos, en pleno horario laboral. ` +
+        `Lo más probable es que Kommo haya deshabilitado el webhook. Revisá en Kommo → Ajustes → Integraciones ` +
+        `que el hook a /functions/v1/kommo-webhook siga activo y reconectalo si hace falta.`,
+      ref_table: "inbound_queue",
+      metadata: { silence_minutes: SILENCE_MINUTES, events_last_7d: weekCount ?? 0 },
+    },
+  ];
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "GET") {
     return new Response("alerts-scan OK", { status: 200 });
@@ -317,13 +390,14 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
+      detectInboundSilence(),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression];
+    const newAlerts = [...failed, ...review, ...regression, ...silence];
 
     for (const a of newAlerts) {
       try {
@@ -342,6 +416,7 @@ Deno.serve(async (req: Request) => {
           draft_failed: failed.length,
           human_review_needed: review.length,
           outcomes_regression: regression.length,
+          inbound_silence: silence.length,
           provider_credit_resolved: providerCreditResolved,
         },
       }),

@@ -12,13 +12,13 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage, captureSessionUsage } from "../_shared/usage.ts";
 import {
-  patchLeadField,
-  patchContactField,
   moveLeadStage,
   fetchPipelineStages,
-  fetchEntityFields,
+  fetchEntityFieldDefs,
+  patchEntityFieldTyped,
+  resolveFieldValue,
   type KommoStageLite,
-  type KommoFieldLite,
+  type KommoFieldDef,
 } from "../_shared/kommo.ts";
 import { getBcvRate } from "../_shared/exchange.ts";
 import {
@@ -253,8 +253,8 @@ type CrmContext = {
 const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto"]);
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
-let leadFieldsCache: { items: KommoFieldLite[]; loadedAt: number } | null = null;
-let contactFieldsCache: { items: KommoFieldLite[]; loadedAt: number } | null = null;
+let leadFieldsCache: { items: KommoFieldDef[]; loadedAt: number } | null = null;
+let contactFieldsCache: { items: KommoFieldDef[]; loadedAt: number } | null = null;
 
 function norm(s: string): string {
   return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -271,14 +271,41 @@ async function getEntityFields(
   entity: "leads" | "contacts",
   domain: string,
   token: string
-): Promise<KommoFieldLite[]> {
+): Promise<KommoFieldDef[]> {
   const cache = entity === "leads" ? leadFieldsCache : contactFieldsCache;
   if (cache && Date.now() - cache.loadedAt < CRM_TTL_MS) return cache.items;
-  const items = await fetchEntityFields(entity, domain, token);
+  const items = await fetchEntityFieldDefs(entity, domain, token);
   const entry = { items, loadedAt: Date.now() };
   if (entity === "leads") leadFieldsCache = entry;
   else contactFieldsCache = entry;
   return items;
+}
+
+/**
+ * Escribe un campo de Kommo desde una tool del agente, devolviendo un mensaje
+ * pensado PARA EL AGENTE.
+ *
+ * Los campos `select` de Kommo solo aceptan enum_id: mandarles un string
+ * arbitrario devuelve 200 y no guarda nada. Antes el agente creía haber escrito
+ * "Alquiler de Salas" en "Tipo de Evento" y el campo quedaba vacío para siempre.
+ * Ahora, si el valor no es una opción válida, le devolvemos las opciones reales
+ * para que reintente en vez de mentirle al operador.
+ */
+async function writeEntityField(
+  entity: "leads" | "contacts",
+  entityId: number,
+  def: KommoFieldDef,
+  value: string,
+  domain: string,
+  token: string
+): Promise<string> {
+  const etiqueta = entity === "leads" ? "lead" : "contacto";
+  if (def.enums.length > 0 && !resolveFieldValue(def, value)) {
+    const opciones = def.enums.map((e) => `"${e.value}"`).join(", ");
+    return `El campo "${def.name}" solo admite opciones predefinidas y "${value}" no es una de ellas. Opciones válidas: ${opciones}. Reintentá con una de esas exactamente, o no escribas el campo.`;
+  }
+  const written = await patchEntityFieldTyped(entity, entityId, def, value, domain, token);
+  return `Listo: actualicé el campo "${def.name}" del ${etiqueta} a "${written}".`;
 }
 
 // Ejecuta una tool CRM por nombre. Devuelve un string para el agente (el caller
@@ -357,8 +384,7 @@ async function runCrmTool(
       const opciones = fields.map((x) => `"${x.name}"`).join(", ");
       return `No existe un campo de lead llamado "${fieldName}". Campos disponibles: ${opciones || "(ninguno)"}.`;
     }
-    await patchLeadField(ctx.kommoLeadId, f.id, value, ctx.domain, ctx.token);
-    return `Listo: actualicé el campo "${f.name}" del lead a "${value}".`;
+    return await writeEntityField("leads", ctx.kommoLeadId, f, value, ctx.domain, ctx.token);
   }
 
   if (name === "actualizar_contacto") {
@@ -373,8 +399,7 @@ async function runCrmTool(
       const opciones = fields.map((x) => `"${x.name}"`).join(", ");
       return `No existe un campo de contacto llamado "${fieldName}". Campos disponibles: ${opciones || "(ninguno)"}.`;
     }
-    await patchContactField(ctx.kommoContactId, f.id, value, ctx.domain, ctx.token);
-    return `Listo: actualicé el campo "${f.name}" del contacto a "${value}".`;
+    return await writeEntityField("contacts", ctx.kommoContactId, f, value, ctx.domain, ctx.token);
   }
 
   return `Tool CRM desconocida: "${name}".`;
@@ -441,7 +466,7 @@ async function maybeFanOut(): Promise<void> {
 }
 
 const MSG_SELECT =
-  "id, lead_id, content, source, vertical_id, classification, requires_human_review, created_at, is_comment, verticals(slug, auto_reply, requires_review)";
+  "id, lead_id, content, source, vertical_id, classification, requires_human_review, created_at, is_comment, verticals(slug, auto_reply, requires_review, system_prompt)";
 
 // deno-lint-ignore no-explicit-any
 type MsgRow = any;
@@ -480,7 +505,7 @@ async function reclaimStaleDrafts(msgIds: string[]): Promise<Set<string>> {
 type Batch = {
   leadId: string;
   messages: MsgRow[];
-  vertical: { slug: string; auto_reply: boolean; requires_review: boolean };
+  vertical: { slug: string; auto_reply: boolean; requires_review: boolean; system_prompt: string | null };
 };
 
 // Cooldown + tope por lead. cooldownSeconds=0 y maxPerLead=0 → desactivado.
@@ -809,6 +834,7 @@ function buildContext(opts: {
   messages: Array<{ content: string; created_at: string }>;
   history: string;
   verticalSlug: string;
+  verticalPrompt: string | null;
   channel: string | null;
   classification: Record<string, unknown> | null;
   masterPath: string;
@@ -859,7 +885,11 @@ en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.business
 ${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debés tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
-vertical: ${opts.verticalSlug}
+vertical: ${opts.verticalSlug}${
+    opts.verticalPrompt && opts.verticalPrompt.trim()
+      ? `\ninstrucciones_de_la_vertical (cómo tratar ESTE tipo de consulta; mandan sobre tu criterio general, pero NUNCA por encima de aprendizajes_del_operador ni de tu system prompt):\n${opts.verticalPrompt.trim()}`
+      : ""
+  }
 channel: ${opts.channel ?? "unknown"}
 intent: ${cls.intent ?? "?"}
 urgency: ${cls.urgency ?? "?"}
@@ -1278,6 +1308,7 @@ Deno.serve(async (req: Request) => {
         })),
         history,
         verticalSlug: vertical.slug,
+        verticalPrompt: vertical.system_prompt,
         channel: latestMsg.source,
         classification: latestMsg.classification as Record<string, unknown> | null,
         masterPath,

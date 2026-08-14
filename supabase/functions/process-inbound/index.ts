@@ -1212,6 +1212,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
             messageId: msg.id,
             text: routingText,
             vertical: v,
+            confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
           });
@@ -1251,6 +1252,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
             messageId: msg.id,
             text: routingText,
             vertical: v,
+            confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
           });
@@ -1402,6 +1404,7 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
             messageId: msg.id,
             text: routingText,
             vertical: v,
+            confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
           });

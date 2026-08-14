@@ -5,6 +5,8 @@
 // Uso:
 //   import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
 
+import { normalizeLoose } from "./text.ts";
+
 /**
  * Actualiza un custom field de un lead en Kommo.
  * Throws si la respuesta no es OK.
@@ -50,6 +52,11 @@ export function sanitizeForKommoField(input: string): string {
     .trim();
 }
 
+/**
+ * Escribe un campo de TEXTO/TEXTAREA de un lead. Para campos con opciones
+ * predefinidas (select/radiobutton) usá patchEntityFieldTyped: este helper
+ * manda `value` y un select lo acepta con 200 sin guardar nada.
+ */
 export async function patchLeadField(
   kommoLeadId: number,
   fieldId: number,
@@ -76,38 +83,6 @@ export async function patchLeadField(
   });
   if (!res.ok) {
     throw new Error(`patch lead: ${res.status} ${await res.text()}`);
-  }
-}
-
-/**
- * Actualiza un custom field de un CONTACTO en Kommo (mismo shape que el lead,
- * pero el endpoint apunta a /contacts/). Throws si la respuesta no es OK.
- */
-export async function patchContactField(
-  kommoContactId: number,
-  fieldId: number,
-  value: string,
-  kommoDomain: string,
-  kommoToken: string
-): Promise<void> {
-  const url = `https://${kommoDomain}/api/v4/contacts/${kommoContactId}`;
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${kommoToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      custom_fields_values: [
-        {
-          field_id: fieldId,
-          values: [{ value }],
-        },
-      ],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`patch contact: ${res.status} ${await res.text()}`);
   }
 }
 
@@ -216,16 +191,20 @@ export async function fetchPipelineStages(
 }
 
 export type KommoFieldLite = { id: number; name: string };
+export type KommoEnumLite = { id: number; value: string };
+export type KommoFieldDef = KommoFieldLite & { type: string; enums: KommoEnumLite[] };
 
 /**
- * Trae los custom fields de leads o contacts de Kommo para resolver un campo
- * POR NOMBRE → field_id. 204 = sin campos.
+ * Trae la definición COMPLETA de los custom fields de leads o contacts: tipo y
+ * enums incluidos. Necesario para escribir campos `select`, que no aceptan un
+ * string cualquiera — hay que mandar el enum_id de una opción existente.
+ * 204 = sin campos.
  */
-export async function fetchEntityFields(
+export async function fetchEntityFieldDefs(
   entity: "leads" | "contacts",
   kommoDomain: string,
   kommoToken: string
-): Promise<KommoFieldLite[]> {
+): Promise<KommoFieldDef[]> {
   const url = `https://${kommoDomain}/api/v4/${entity}/custom_fields?limit=250`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${kommoToken}` },
@@ -235,9 +214,118 @@ export async function fetchEntityFields(
     throw new Error(`fetch ${entity} fields: ${res.status} ${await res.text()}`);
   }
   const json = (await res.json()) as {
-    _embedded?: { custom_fields?: Array<{ id: number; name: string }> };
+    _embedded?: {
+      custom_fields?: Array<{
+        id: number;
+        name: string;
+        type?: string;
+        enums?: Array<{ id: number; value: string }> | null;
+      }>;
+    };
   };
-  return (json._embedded?.custom_fields ?? []).map((f) => ({ id: f.id, name: f.name }));
+  return (json._embedded?.custom_fields ?? []).map((f) => ({
+    id: f.id,
+    name: f.name,
+    type: f.type ?? "text",
+    enums: (f.enums ?? []).map((e) => ({ id: e.id, value: e.value })),
+  }));
+}
+
+/**
+ * Asigna (o reasigna) el RESPONSABLE de un lead en Kommo.
+ * Throws si la respuesta no es OK.
+ */
+export async function assignLeadResponsible(
+  kommoLeadId: number,
+  responsibleUserId: number,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<void> {
+  const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${kommoToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ responsible_user_id: responsibleUserId }),
+  });
+  if (!res.ok) {
+    throw new Error(`assign responsible: ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
+ * Resuelve el valor a escribir en un campo según su TIPO.
+ *   - campo con enums (select/radiobutton/multiselect) → hay que mandar enum_id.
+ *     Mandar `value` en un select es la forma SILENCIOSA de que Kommo acepte el
+ *     PATCH con 200 y no guarde nada. Devuelve null si la opción no existe.
+ *   - campo de texto → value saneado (Kommo trunca desde el primer emoji).
+ */
+export function resolveFieldValue(
+  def: KommoFieldDef,
+  value: string
+): { values: Array<Record<string, unknown>>; written: string } | null {
+  if (def.enums.length > 0) {
+    const target = normalizeLoose(value);
+    const hit = def.enums.find((e) => normalizeLoose(e.value) === target);
+    if (!hit) return null;
+    return { values: [{ enum_id: hit.id }], written: hit.value };
+  }
+  const written = sanitizeForKommoField(value);
+  return { values: [{ value: written }], written };
+}
+
+/**
+ * Escribe un custom field de un LEAD o un CONTACTO resolviendo el tipo del campo.
+ *
+ * `def` es la definición ya resuelta (ver fetchEntityFieldDefs) para que el
+ * llamador cachee la lista y no pida los campos en cada mensaje. Devuelve lo que
+ * efectivamente se escribió. Throws si la opción no existe: es un error de
+ * configuración y hay que verlo, no tragarlo.
+ */
+export async function patchEntityFieldTyped(
+  entity: "leads" | "contacts",
+  entityId: number,
+  def: KommoFieldDef,
+  value: string,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<string> {
+  const resolved = resolveFieldValue(def, value);
+  if (!resolved) {
+    throw new Error(
+      `campo "${def.name}": la opción "${value}" no existe (opciones: ${def.enums
+        .map((e) => e.value)
+        .join(", ")})`
+    );
+  }
+  const url = `https://${kommoDomain}/api/v4/${entity}/${entityId}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${kommoToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      custom_fields_values: [{ field_id: def.id, values: resolved.values }],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`patch ${entity} field "${def.name}": ${res.status} ${await res.text()}`);
+  }
+  return resolved.written;
+}
+
+/** Azúcar para el caso más común: escribir un campo del LEAD. */
+export function patchLeadFieldTyped(
+  kommoLeadId: number,
+  def: KommoFieldDef,
+  value: string,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<string> {
+  return patchEntityFieldTyped("leads", kommoLeadId, def, value, kommoDomain, kommoToken);
 }
 
 /**

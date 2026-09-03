@@ -60,7 +60,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
     const { data, error } = await supabase
       .from("drafts")
       .select(
-        "id, body, edited_body, sent_at, message_id, messages(content, source, lead_id, classification, verticals(slug))"
+        "id, body, edited_body, sent_at, message_id, messages!message_id(content, source, lead_id, classification, verticals(slug))"
       )
       .eq("id", draftId)
       .single();
@@ -72,7 +72,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
   const { data, error } = await supabase
     .from("drafts")
     .select(
-      "id, body, edited_body, sent_at, message_id, messages(content, source, lead_id, classification, verticals(slug))"
+      "id, body, edited_body, sent_at, message_id, messages!message_id(content, source, lead_id, classification, verticals(slug))"
     )
     .in("status", ["auto_sent", "sent"])
     .gte("sent_at", cutoff)
@@ -123,6 +123,7 @@ Evaluá según las instrucciones del system prompt y devolvé JSON estricto.`;
           reasoning: { type: "string" },
         },
         required: ["passed", "reasoning"],
+        additionalProperties: false,
       }
     : {
         type: "object",
@@ -131,6 +132,7 @@ Evaluá según las instrucciones del system prompt y devolvé JSON estricto.`;
           reasoning: { type: "string" },
         },
         required: ["score", "reasoning"],
+        additionalProperties: false,
       };
 
   const response = await anthropic.messages.create({

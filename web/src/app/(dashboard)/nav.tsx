@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight,
+  Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight, Eye,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
 
@@ -35,6 +35,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/leads", label: "Leads", icon: Users },
       // Alertas es un buzón de monitoreo de solo lectura, no configuración → vive en Operación.
       { href: "/alerts", label: "Alertas", icon: Bell },
+      // Status es un informe de solo lectura (logros, tiempos, aciertos) → misma sección que Alertas.
+      { href: "/status", label: "Status", icon: Eye },
     ],
   },
   {

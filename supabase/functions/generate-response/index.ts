@@ -828,6 +828,20 @@ function buildSituationContext(rows: SituationRow[], timezone: string): string |
   return active.length ? active.join("\n") : null;
 }
 
+// ---------------- Guardarraíl: concurso de IG + número de asesora ----------------
+// Incidente real (lead a40b68d6, 25-ago-2026): un participante de una dinámica
+// de Instagram ("Logradoo iría con mi familia 🥳") fue mal clasificado como
+// interés real en evento corporativo, y el agente terminó compartiéndole el
+// WhatsApp real de una asesora. Esta red de seguridad no depende de que el
+// clasificador acierte: si el batch tiene marca de concurso Y el texto generado
+// contiene un teléfono, se fuerza revisión humana en vez de auto-enviar.
+const CONTEST_MARKER_RE = /\blogrado\b/i;
+const VE_PHONE_RE = /(?:\+?58[\s-]?)?0?4\d{2}[\s-]?\d{3}[\s-]?\d{4}/;
+
+function batchHasContestMarker(msgs: MsgRow[]): boolean {
+  return msgs.some((m) => CONTEST_MARKER_RE.test(String(m.content ?? "")));
+}
+
 // ---------------- Construir contexto user.message ----------------
 function buildContext(opts: {
   lead: { id: string; display_name: string | null; channel: string | null };
@@ -1067,10 +1081,22 @@ async function runAgent(opts: {
     }
   }
 
-  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>.
-  // Si no hay tags, usar el último texto (fallback).
+  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>. Si el
+  // modelo omite las etiquetas, NO usar el texto crudo como fallback: eso
+  // filtra razonamiento interno ("Silencio absoluto", "ANÁLISIS INTERNO") al
+  // cliente como si fuera el mensaje real — pasó 171 veces en producción.
+  // Sin etiquetas se interpreta como decisión de no responder.
   const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
-  const clean = (match ? match[1] : responseText).trim();
+  let clean = (match ? match[1] : "").trim();
+
+  // Red de seguridad: aunque venga bien envuelto en <respuesta>, si el texto
+  // describe una decisión de silencio o cita los aprendizajes del operador
+  // en vez de ser el mensaje real, se trata como respuesta vacía (no enviar).
+  const INTERNAL_REASONING_RE =
+    /aprendizajes del operador|an[aá]lisis interno|silencio absoluto|no\s+env[ií]o\s+respuesta|no\s+respondo\b|NO RESPONDER/i;
+  if (clean && INTERNAL_REASONING_RE.test(clean)) {
+    clean = "";
+  }
 
   return {
     responseText: clean,
@@ -1408,10 +1434,17 @@ Deno.serve(async (req: Request) => {
         }
       }
 
+      // Guardarraíl (ver definición arriba): concurso de IG + teléfono en la
+      // respuesta → nunca auto-enviar, sin importar bypass_review ni vertical.
+      const contestPhoneGuard =
+        batchHasContestMarker(batchMsgs) && VE_PHONE_RE.test(outcome.responseText);
+
       // forceReview (revisión humana) → siempre pending para que el humano
       // apruebe/edite. bypass → siempre approved (publica todo, ignora review).
       // Resto → lógica normal por vertical.
       const status = forceReview
+        ? "pending"
+        : contestPhoneGuard
         ? "pending"
         : bypass
         ? "approved"
@@ -1432,6 +1465,7 @@ Deno.serve(async (req: Request) => {
             vertical: vertical.slug,
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
+            ...(contestPhoneGuard ? { forced_review_reason: "contest_marker_with_phone" } : {}),
           },
         })
         .eq("id", draft.id)

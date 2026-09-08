@@ -27,6 +27,26 @@ type OutcomeRow = {
 };
 type AlertRow = { kind: string; title: string; severity: string; created_at: string };
 
+// PostgREST corta cualquier select sin paginar en max_rows (1000 en este proyecto) sin avisar.
+// drafts y outcomes superan eso holgadamente en una ventana de 30 días — hay que paginar
+// con .range() hasta agotar el resultado o las métricas quedan calculadas sobre una muestra parcial.
+type RangeableQuery<T> = { range: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }> };
+const PAGE_SIZE = 1000;
+
+async function fetchAllRows<T>(buildQuery: () => RangeableQuery<T>): Promise<T[]> {
+  const rows: T[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return rows;
+}
+
 export default async function StatusPage() {
   const supabase = createSupabaseServerClient();
   const cutoffIso = new Date(Date.now() - WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
@@ -34,15 +54,15 @@ export default async function StatusPage() {
 
   const [
     { data: usageDaily },
-    { data: draftsRows },
-    { data: outcomesRows },
+    drafts,
+    outcomesRows,
     { data: alertsRows },
     { count: inboundCount },
     { count: routedCount },
   ] = await Promise.all([
     supabase.from("usage_daily").select("component, calls, total_cost_usd, total_runtime_ms").gte("day", cutoffDay),
-    supabase.from("drafts").select("status").gte("created_at", cutoffIso),
-    supabase.from("outcomes").select("grader_id, score, passed, graders(slug, name)").gte("created_at", cutoffIso),
+    fetchAllRows<DraftRow>(() => supabase.from("drafts").select("status").gte("created_at", cutoffIso)),
+    fetchAllRows<OutcomeRow>(() => supabase.from("outcomes").select("grader_id, score, passed, graders(slug, name)").gte("created_at", cutoffIso)),
     supabase.from("alerts").select("kind, title, severity, created_at").gte("created_at", cutoffIso).order("created_at", { ascending: false }),
     supabase.from("messages").select("id", { count: "exact", head: true }).eq("direction", "inbound").gte("created_at", cutoffIso),
     supabase.from("leads").select("id", { count: "exact", head: true }).not("routed_at", "is", null).gte("routed_at", cutoffIso),
@@ -57,7 +77,6 @@ export default async function StatusPage() {
   const avgRuntimeSec = genCalls > 0 ? Math.round(genRuntime / genCalls / 1000) : null;
 
   // --- Respuestas ---
-  const drafts = (draftsRows ?? []) as DraftRow[];
   const statusCounts = new Map<string, number>();
   for (const d of drafts) statusCounts.set(d.status, (statusCounts.get(d.status) ?? 0) + 1);
   const sent = (statusCounts.get("auto_sent") ?? 0) + (statusCounts.get("sent") ?? 0) + (statusCounts.get("approved") ?? 0);
@@ -69,7 +88,7 @@ export default async function StatusPage() {
   // --- Aciertos por evaluador (mismo cálculo que /outcomes) ---
   type GraderAgg = { grader_id: string; slug: string; name: string; total: number; scoreSum: number; passed: number };
   const byGrader = new Map<string, GraderAgg>();
-  for (const o of (outcomesRows ?? []) as OutcomeRow[]) {
+  for (const o of outcomesRows) {
     const gv = o.graders;
     const g = Array.isArray(gv) ? gv[0] : gv;
     const slug = g?.slug ?? "?";

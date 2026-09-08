@@ -1,7 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
-  PageShell, SectionCard, StatRow, StatCard, EmptyState,
-  MessageSquare, Clock, Check, TrendUp, Bell,
+  PageShell, SectionCard, StatRow, StatCard, EmptyState, Badge,
+  MessageSquare, Clock, Check, TrendUp, Bell, Sparkles, Wrench,
 } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -38,12 +38,14 @@ export default async function StatusPage() {
     { data: outcomesRows },
     { data: alertsRows },
     { count: inboundCount },
+    { count: routedCount },
   ] = await Promise.all([
     supabase.from("usage_daily").select("component, calls, total_cost_usd, total_runtime_ms").gte("day", cutoffDay),
     supabase.from("drafts").select("status").gte("created_at", cutoffIso),
     supabase.from("outcomes").select("grader_id, score, passed, graders(slug, name)").gte("created_at", cutoffIso),
     supabase.from("alerts").select("kind, title, severity, created_at").gte("created_at", cutoffIso).order("created_at", { ascending: false }),
     supabase.from("messages").select("id", { count: "exact", head: true }).eq("direction", "inbound").gte("created_at", cutoffIso),
+    supabase.from("leads").select("id", { count: "exact", head: true }).not("routed_at", "is", null).gte("routed_at", cutoffIso),
   ]);
 
   // --- Volumen, tiempos y costo ---
@@ -94,10 +96,93 @@ export default async function StatusPage() {
   const alertKindRows = Array.from(alertsByKind.entries()).sort((a, b) => b[1] - a[1]);
   const recentAlerts = alerts.slice(0, 8);
 
+  // --- Logros (curado, no solo repetir los stat cards) ---
+  const achievements: string[] = [];
+  if ((inboundCount ?? 0) > 0) {
+    achievements.push(
+      `${inboundCount} mensajes atendidos en los últimos ${WINDOW_DAYS} días — ${sent} respondidos automáticamente por el agente${successRate !== null ? ` (${successRate}% de tasa de envío exitoso)` : ""}.`
+    );
+  }
+  if (overallPassRate !== null) {
+    achievements.push(
+      `${overallPassRate}% de aprobación general en las evaluaciones automáticas de calidad, sobre ${totalOutcomeEvals} evaluaciones.`
+    );
+  }
+  if ((routedCount ?? 0) > 0) {
+    achievements.push(
+      `${routedCount} leads ruteados automáticamente al vendedor o sede correcta, sin intervención manual.`
+    );
+  }
+  if (avgRuntimeSec !== null) {
+    achievements.push(`Tiempo promedio de respuesta del agente: ${avgRuntimeSec}s.`);
+  }
+
+  // --- Optimizaciones y recomendaciones (lectura de las métricas de arriba, no una lista de alertas cruda) ---
+  type Recommendation = { severity: "warning" | "info" | "ok"; title: string; detail: string };
+  const recommendations: Recommendation[] = [];
+
+  if (successRate !== null && successRate < 90) {
+    recommendations.push({
+      severity: "warning",
+      title: `Tasa de envío exitoso en ${successRate}% (meta: ≥90%)`,
+      detail: `${failed} respuesta(s) fallida(s) y ${pending} pendiente(s) de revisión en el período — revisar el Inbox para destrabarlas.`,
+    });
+  }
+
+  const worstGrader = graderAggs.length > 0
+    ? graderAggs.reduce((worst, g) => ((g.passRate ?? Infinity) < (worst.passRate ?? Infinity) ? g : worst))
+    : null;
+  if (overallPassRate !== null && overallPassRate < 85 && worstGrader && worstGrader.passRate !== null) {
+    recommendations.push({
+      severity: "warning",
+      title: `Aprobación de calidad general en ${overallPassRate}% (meta: ≥85%)`,
+      detail: `El evaluador con peor desempeño es "${worstGrader.name}" (${worstGrader.passRate}% de aprobación) — revisar en /outcomes qué está fallando.`,
+    });
+  }
+
+  if (avgRuntimeSec !== null && avgRuntimeSec > 90) {
+    recommendations.push({
+      severity: "info",
+      title: `Tiempo promedio de respuesta: ${avgRuntimeSec}s`,
+      detail: "Si se mantiene alto, conviene revisar la cantidad de tool calls o el tamaño del contexto del agente en /agent.",
+    });
+  }
+
+  const dreamErrorCount = alertsByKind.get("dream_error") ?? 0;
+  if (dreamErrorCount > 0) {
+    recommendations.push({
+      severity: "warning",
+      title: `${dreamErrorCount} aprendizaje(s) marcado(s) como error`,
+      detail: "Mientras no se revisen pueden estar generando respuestas incorrectas — revisar en /dreams.",
+    });
+  }
+
+  if (pending > 0) {
+    recommendations.push({
+      severity: "info",
+      title: `${pending} respuesta(s) esperando revisión humana`,
+      detail: "Revisarlas en el Inbox para no perder el hilo con esos leads.",
+    });
+  }
+
+  if (recommendations.length === 0 && totalDrafts > 0) {
+    recommendations.push({
+      severity: "ok",
+      title: "Sin problemas detectados en este período",
+      detail: "Tasa de envío, calidad y tiempos de respuesta dentro de los parámetros esperados.",
+    });
+  }
+
+  const severityBadge = {
+    warning: { color: "amber" as const, label: "Atender" },
+    info: { color: "blue" as const, label: "Sugerencia" },
+    ok: { color: "green" as const, label: "OK" },
+  };
+
   return (
     <PageShell
       title="Status del agente"
-      description={`Resumen de actividad de los últimos ${WINDOW_DAYS} días — logros, tiempos, aciertos y oportunidades de mejora.`}
+      description={`Resumen de actividad de los últimos ${WINDOW_DAYS} días — logros, respuestas, tiempos, aciertos, oportunidades de mejora y optimizaciones y recomendaciones.`}
     >
       <StatRow>
         <StatCard
@@ -123,6 +208,28 @@ export default async function StatusPage() {
           icon={<TrendUp size={18} />}
         />
       </StatRow>
+
+      <SectionCard
+        icon={<Sparkles size={18} />}
+        title="Logros"
+        description="Lo más destacado de la actividad del agente en el período."
+      >
+        {achievements.length === 0 ? (
+          <EmptyState
+            title="Sin actividad suficiente"
+            description="No hay datos suficientes en este período para reportar logros."
+          />
+        ) : (
+          <ul className="space-y-2">
+            {achievements.map((a, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-neutral-700">
+                <Check size={16} className="mt-0.5 shrink-0 text-emerald-600" />
+                <span>{a}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
 
       <SectionCard
         title="Respuestas"
@@ -237,6 +344,33 @@ export default async function StatusPage() {
               ))}
             </div>
           </>
+        )}
+      </SectionCard>
+
+      <SectionCard
+        icon={<Wrench size={18} />}
+        title="Optimizaciones y recomendaciones"
+        description="Lectura de las métricas de arriba traducida en próximos pasos concretos."
+      >
+        {recommendations.length === 0 ? (
+          <EmptyState
+            title="Sin datos suficientes"
+            description="No hay actividad suficiente en este período para generar recomendaciones."
+          />
+        ) : (
+          <ul className="space-y-3">
+            {recommendations.map((r, i) => (
+              <li key={i} className="rounded-lg border border-neutral-200 p-3">
+                <div className="flex items-center gap-2">
+                  <Badge color={severityBadge[r.severity].color} variant="ring">
+                    {severityBadge[r.severity].label}
+                  </Badge>
+                  <p className="text-sm font-medium text-neutral-900">{r.title}</p>
+                </div>
+                <p className="mt-1 text-xs text-neutral-500">{r.detail}</p>
+              </li>
+            ))}
+          </ul>
         )}
       </SectionCard>
     </PageShell>

@@ -57,14 +57,19 @@ export default async function StatusPage() {
     drafts,
     outcomesRows,
     { data: alertsRows },
-    { count: inboundCount },
+    { count: respondableCount },
+    { count: ignoredCount },
     { count: routedCount },
   ] = await Promise.all([
     supabase.from("usage_daily").select("component, calls, total_cost_usd, total_runtime_ms").gte("day", cutoffDay),
     fetchAllRows<DraftRow>(() => supabase.from("drafts").select("status").gte("created_at", cutoffIso)),
     fetchAllRows<OutcomeRow>(() => supabase.from("outcomes").select("grader_id, score, passed, graders(slug, name)").gte("created_at", cutoffIso)),
     supabase.from("alerts").select("kind, title, severity, created_at").gte("created_at", cutoffIso).order("created_at", { ascending: false }),
-    supabase.from("messages").select("id", { count: "exact", head: true }).eq("direction", "inbound").gte("created_at", cutoffIso),
+    // Solo mensajes que le correspondía responder al agente — excluye los "ignored"
+    // (canales classify-only como WhatsApp/Telegram, etapas fuera de alcance, agent_off,
+    // etc.), que son silencio por diseño, no mensajes desatendidos.
+    supabase.from("messages").select("id", { count: "exact", head: true }).eq("direction", "inbound").eq("ignored", false).gte("created_at", cutoffIso),
+    supabase.from("messages").select("id", { count: "exact", head: true }).eq("direction", "inbound").eq("ignored", true).gte("created_at", cutoffIso),
     supabase.from("leads").select("id", { count: "exact", head: true }).not("routed_at", "is", null).gte("routed_at", cutoffIso),
   ]);
 
@@ -117,9 +122,14 @@ export default async function StatusPage() {
 
   // --- Logros (curado, no solo repetir los stat cards) ---
   const achievements: string[] = [];
-  if ((inboundCount ?? 0) > 0) {
+  if ((respondableCount ?? 0) > 0) {
     achievements.push(
-      `${inboundCount} mensajes atendidos en los últimos ${WINDOW_DAYS} días — ${sent} respondidos automáticamente por el agente${successRate !== null ? ` (${successRate}% de tasa de envío exitoso)` : ""}.`
+      `${respondableCount} mensajes a cargo del agente en los últimos ${WINDOW_DAYS} días — ${sent} respondidos automáticamente${successRate !== null ? ` (${successRate}% de tasa de envío exitoso)` : ""}.`
+    );
+  }
+  if ((ignoredCount ?? 0) > 0) {
+    achievements.push(
+      `${ignoredCount} mensajes adicionales fueron ignorados por diseño (canales que responde el equipo humano, etapas fuera de alcance del agente, etc.) — no cuentan como pendientes.`
     );
   }
   if (overallPassRate !== null) {
@@ -205,8 +215,8 @@ export default async function StatusPage() {
     >
       <StatRow>
         <StatCard
-          label="Mensajes atendidos"
-          value={inboundCount ?? 0}
+          label="Mensajes a cargo del agente"
+          value={respondableCount ?? 0}
           icon={<MessageSquare size={18} />}
           tone="brand"
         />

@@ -147,6 +147,10 @@ const PATH_SCOPES: ReadonlyArray<{ readonly prefix: string; readonly scope: Scop
   { prefix: "/api/verticales", scope: "contenido" },
   { prefix: "/api/graders", scope: "contenido" },
   { prefix: "/api/usage", scope: "contenido" },
+  // Excepción dentro de /api/usage: leer el consumo es contenido y calidad,
+  // pero POST /api/usage/models CAMBIA el modelo de producción y sincroniza el
+  // Managed Agent en Anthropic. Eso es configuración del agente, no una métrica.
+  { prefix: "/api/usage/models", scope: "configuracion" },
   { prefix: "/api/dreams", scope: "contenido" },
 
   // ── Configuración ──────────────────────────────────────────────────────
@@ -187,10 +191,23 @@ function coincide(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(prefix + "/");
 }
 
-/** El alcance mínimo que exige esta ruta, o `null` si no está restringida. */
+/**
+ * El alcance mínimo que exige esta ruta, o `null` si no está restringida.
+ *
+ * GANA EL PREFIJO MÁS LARGO, no el primero de la lista. Es lo que permite una
+ * excepción más estricta dentro de un grupo laxo —`/api/usage` es `contenido`
+ * pero `/api/usage/models` es `configuracion`, porque cambia el modelo de
+ * producción y actualiza el Managed Agent en Anthropic— sin que el resultado
+ * dependa del ORDEN del array. Con `find()` bastaba con reordenar la lista para
+ * degradar una ruta en silencio, y ese es justo el fallo que no se ve.
+ */
 export function scopeRequeridoPara(pathname: string): Scope | null {
-  const entrada = PATH_SCOPES.find(({ prefix }) => coincide(pathname, prefix));
-  return entrada ? entrada.scope : null;
+  let mejor: { prefix: string; scope: Scope } | null = null;
+  for (const entrada of PATH_SCOPES) {
+    if (!coincide(pathname, entrada.prefix)) continue;
+    if (!mejor || entrada.prefix.length > mejor.prefix.length) mejor = entrada;
+  }
+  return mejor ? mejor.scope : null;
 }
 
 /**

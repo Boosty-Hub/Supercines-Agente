@@ -141,12 +141,49 @@ La sustitución y la lista de tools viven en `web/src/lib/agent-prompt.ts` (comp
 - **Resilient boot**: el middleware (`src/middleware.ts` → `lib/supabase/middleware.ts`) detecta la ausencia de env vars de Supabase y redirige todo (excepto `/first-run/**`, `/api/provision/**`, `/_next/**`, `/favicon.ico`) al wizard de configuracion inicial. Nunca lanza un 500 aunque el entorno esté vacío.
 - **`/first-run/` invariante**: ningún archivo bajo `web/src/app/first-run/` ni bajo `web/src/app/api/provision/` puede importar `@/lib/runtime-config` ni `@/lib/supabase/service` — ambos módulos lanzan si las vars de entorno no están presentes. Los componentes y routes de provision construyen sus clientes inline con `createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, ...)`.
 - **Onboarding no bloqueante (setup drawer)**: el wizard de config del agente (Anthropic/Agent/Verticales/Memoria/Kommo) NO es una página full-screen — vive como panel lateral derecho montado en `(dashboard)/layout.tsx` (`setup-drawer.tsx`, client). El layout computa el estado server-side con `getSetupState()` (`lib/setup-state.ts`, DB-only) y lo monta **solo para admins fuera de embed**. El drawer se auto-abre 1x por sesión si falta config (guard en `sessionStorage`), ofrece un launcher flotante y respeta `?setup=open`. `/setup` es solo un `redirect("/inbox?setup=open")` — los links "corré /setup" dispersos siguen funcionando. Reusa las mismas rutas `/api/setup/*` que el wizard anterior.
-- Single-user: usuario master se loguea; el `(dashboard)/layout.tsx` hace `getUser()` (hay 2 round-trips de auth por navegación — optimización pendiente conocida).
+- El `(dashboard)/layout.tsx` hace `getUser()` (hay 2 round-trips de auth por navegación — optimización pendiente conocida). El maestro lo crea el `/first-run`; a partir de ahí los usuarios se administran desde `/usuarios` (ver «Quién entra y hasta dónde»).
 - Todas las páginas del dashboard son `export const dynamic = "force-dynamic"`. Hay `loading.tsx` (grupo + inbox) que dan feedback instantáneo vía Suspense.
 - **Realtime**: `messages`/`drafts`/`leads`/`alerts` publicados (migración 0008/0011); componentes `realtime-refresher`/`realtime` hacen `router.refresh()` con debounce.
 - Filtros Inbox/Leads: server-side por `searchParams`, componente compartido `(dashboard)/inbox/filters.tsx` (prop `collapsible` para el inbox). Inbox preserva los filtros en los links de conversación vía `filterQS`.
-- RLS en todas las tablas: `authenticated` tiene acceso total (solo el master entra); `service_role` (Edge Functions) bypassea.
+- RLS en todas las tablas: `authenticated` tiene acceso total — los tres alcances por igual. **Ojo: la RLS NO distingue alcances**; ver la nota al final de «Quién entra y hasta dónde». `service_role` (Edge Functions) bypassea.
 - Branding: el título del dashboard se resuelve **DB-first** (`runtime_config.NEXT_PUBLIC_AGENT_LABEL`, editable en `/agent`) en `(dashboard)/layout.tsx` y se pasa como prop al `nav` — NO depende del inlining build-time de `NEXT_PUBLIC_AGENT_LABEL`. Fallback al env var y, si no, default "Agente". El login sí usa el env var build-time.
+
+### Quién entra y hasta dónde (gestión de usuarios)
+
+`/usuarios` (alcance `configuracion`) administra quién tiene acceso al panel: crear,
+cambiar el alcance, resetear la contraseña y borrar. Se apoya en la Admin API de Supabase
+Auth con la service-role key (`web/src/lib/users/admin.ts`, server-only).
+
+**El alcance vive en `app_metadata.role`** de Supabase Auth, que sólo se escribe con
+service-role: viaja firmado en el JWT y se lee sin round-trip a la base.
+
+**Tres alcances acumulativos** (`web/src/lib/auth/roles.ts`, el único lugar donde se decide):
+`operacion` (Inbox, Leads, Alertas) ⊂ `contenido` (+ contenido y calidad) ⊂ `configuracion`
+(+ credenciales, Kommo, herramientas, seguimiento, ajustes, usuarios). `admin` y `editor`
+se siguen leyendo como alias (`admin`→`configuracion`, `editor`→`contenido`), así que ningún
+usuario existente gana ni pierde acceso; ya no se escriben.
+
+- **El gate está en el MIDDLEWARE, y vale para páginas Y `/api/*`.** `nav.tsx` OCULTA, el
+  middleware PROHÍBE. Ocultar un ítem del menú no es un permiso: la ruta se sigue alcanzando
+  escribiendo la URL.
+- **Un valor desconocido cae CERRADO**, al alcance más restrictivo. Sólo la AUSENCIA de rol
+  abre del todo, y es el maestro del `/first-run`. El código legado hacía lo contrario:
+  `r === "editor" ? "editor" : "admin"`, o sea que un typo en el campo regalaba acceso total.
+- **Una ruta que no esté en `PATH_SCOPES` NO queda protegida: queda ABIERTA**, y en silencio
+  —`scopeRequeridoPara` devuelve `null` y no se rompe nada—. Por eso `web/scripts/check-scopes.mjs`
+  corre en `prebuild`/`predev` y **rompe el build** ante una página o ruta de API sin alcance
+  declarado. No es paranoia: en KIA-Agente, del mismo template, la lista quedó vieja y
+  `/api/promotions`, `/api/kb` y `/api/voz` quedaron alcanzables por cualquiera con sesión.
+- **No podés bajarte el alcance a vos mismo ni borrarte**, ni dejar el panel sin ningún
+  `configuracion`: la única salida sería la Admin API de Supabase con la service-role key.
+- **LO QUE ESTO NO CUBRE.** Es una frontera de RUTAS, no de DATOS. La RLS sigue siendo
+  `authenticated_all`, así que alguien con sesión puede saltarse el middleware hablándole
+  directo a PostgREST con la anon key (pública por diseño) y su propio JWT. Cerrarlo exige
+  políticas RLS por alcance, con funciones SQL que copien **exactamente** `getScope`/
+  `scopeAlcanza` — hay una implementación de referencia en `Vitalicia-Agente`, migración
+  `0062_rls_por_alcance.sql`. Una discrepancia entre las dos capas es peor que no tener la
+  segunda, porque da por protegido lo que no lo está.
+
 
 ## Convenciones y gotchas
 

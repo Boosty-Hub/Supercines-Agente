@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button, Modal, ConfirmDialog } from "@/components/ui";
 import { Plus, Trash } from "@/components/ui/icons";
 import type { ManagedUser } from "@/lib/users/admin";
-
-type Role = "admin" | "editor";
+import { SCOPES, SCOPE_LABEL, SCOPE_DESC, type Scope } from "@/lib/auth/roles";
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
@@ -30,7 +29,7 @@ export default function UsersTable({
   const [createOpen, setCreateOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<Role>("editor");
+  const [scope, setScope] = useState<Scope>("operacion");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -47,14 +46,14 @@ export default function UsersTable({
   const inputCls =
     "w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400";
 
-  async function changeRole(u: ManagedUser, next: Role) {
+  async function changeScope(u: ManagedUser, next: Scope) {
     setBusyId(u.id);
     setRowError(null);
     try {
       const res = await fetch(`/api/users/${u.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: next }),
+        body: JSON.stringify({ scope: next }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -73,14 +72,14 @@ export default function UsersTable({
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, role }),
+        body: JSON.stringify({ email, password, scope }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       setCreateOpen(false);
       setEmail("");
       setPassword("");
-      setRole("editor");
+      setScope("operacion");
       router.refresh();
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : String(e));
@@ -151,7 +150,7 @@ export default function UsersTable({
             <thead className="bg-neutral-50/60 text-left">
               <tr>
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Email</th>
-                <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Rol</th>
+                <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Alcance</th>
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Último acceso</th>
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Creado</th>
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400 text-right">Acciones</th>
@@ -167,13 +166,17 @@ export default function UsersTable({
                     </td>
                     <td className="px-4 py-3">
                       <select
-                        value={u.role}
+                        value={u.scope}
                         disabled={busyId === u.id}
-                        onChange={(e) => changeRole(u, e.target.value as Role)}
+                        onChange={(e) => changeScope(u, e.target.value as Scope)}
+                        title={SCOPE_DESC[u.scope]}
                         className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-800 focus:border-neutral-900 focus:outline-none focus:ring-1 focus:ring-neutral-900 disabled:opacity-50"
                       >
-                        <option value="admin">Admin</option>
-                        <option value="editor">Editor</option>
+                        {SCOPES.map((s) => (
+                          <option key={s} value={s}>
+                            {SCOPE_LABEL[s]}
+                          </option>
+                        ))}
                       </select>
                     </td>
                     <td className="px-4 py-3 text-neutral-500">{fmtDate(u.last_sign_in_at)}</td>
@@ -229,27 +232,23 @@ export default function UsersTable({
             <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="contraseña inicial" className={inputCls + " font-mono"} />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-neutral-700">Rol</label>
-            <div className="flex gap-2">
-              {(["editor", "admin"] as const).map((r) => (
+            <label className="text-xs font-medium text-neutral-700">Alcance</label>
+            <div className="flex flex-wrap gap-2">
+              {SCOPES.map((s) => (
                 <button
-                  key={r}
+                  key={s}
                   type="button"
-                  onClick={() => setRole(r)}
+                  onClick={() => setScope(s)}
                   className={
                     "px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors " +
-                    (role === r ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50")
+                    (scope === s ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50")
                   }
                 >
-                  {r === "admin" ? "Admin" : "Editor"}
+                  {SCOPE_LABEL[s]}
                 </button>
               ))}
             </div>
-            <p className="text-[11px] text-neutral-500">
-              {role === "admin"
-                ? "Acceso total al panel."
-                : "Opera (Inbox, Leads, drafts) y edita contenido; no toca credenciales, encendido ni usuarios."}
-            </p>
+            <p className="text-[11px] text-neutral-500">{SCOPE_DESC[scope]}</p>
           </div>
         </div>
       </Modal>

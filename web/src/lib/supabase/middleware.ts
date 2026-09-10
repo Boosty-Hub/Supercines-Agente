@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { getRole, isAdminOnlyPath } from "@/lib/auth/roles";
+import { getScope, rutaPermitida, scopeRequeridoPara } from "@/lib/auth/roles";
 import { EMBED_COOKIE_OPTIONS } from "./cookie-options";
 
 export async function updateSession(request: NextRequest) {
@@ -80,18 +80,27 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  // ── ROLE GATE ──────────────────────────────────────────────────────────────
-  // Los "editor" no acceden a la configuración (credenciales, kill switches,
-  // Kommo, herramientas, seguimiento, ajustes, setup) ni a la gestión de
-  // usuarios. Enforcement centralizado por prefijo de ruta. Los usuarios sin rol
-  // explícito (el master) son admin por default.
-  if (user && getRole(user) === "editor" && isAdminOnlyPath(pathname)) {
-    if (pathname.startsWith("/api/")) {
-      return NextResponse.json({ error: "forbidden: requiere rol admin" }, { status: 403 });
+  // ── SCOPE GATE ─────────────────────────────────────────────────────────────
+  // Tres alcances acumulativos: operacion ⊂ contenido ⊂ configuracion. A qué
+  // alcance pertenece cada ruta lo decide PATH_SCOPES en roles.ts — pura y
+  // centralizada; acá solo se aplica. Vale para páginas Y para /api/*: ocultar
+  // un ítem del menú no es un permiso, la ruta se sigue alcanzando escribiendo
+  // la URL. Los usuarios sin rol explícito (el maestro del first-run) alcanzan
+  // "configuracion" por default.
+  if (user) {
+    const scope = getScope(user);
+    if (!rutaPermitida(scope, pathname)) {
+      if (pathname.startsWith("/api/")) {
+        const requerido = scopeRequeridoPara(pathname);
+        return NextResponse.json(
+          { error: `forbidden: requiere alcance ${requerido ?? "superior"}` },
+          { status: 403 }
+        );
+      }
+      const redirectUrl = request.nextUrl.clone();
+      redirectUrl.pathname = "/inbox";
+      return NextResponse.redirect(redirectUrl);
     }
-    const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/inbox";
-    return NextResponse.redirect(redirectUrl);
   }
 
   // Modo embed: activa la UI de tabs al cargar con ?mode=embed, desactiva con ?mode=normal

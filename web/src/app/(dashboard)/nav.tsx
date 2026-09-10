@@ -8,6 +8,7 @@ import {
   Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight, Eye,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
+import { scopeAlcanza, type Scope } from "@/lib/auth/roles";
 
 type BcvData = { rate: number; source: string; fetchedAt: string };
 
@@ -22,37 +23,43 @@ export type NavItem = {
 export type NavGroup = {
   label: string;
   items: NavItem[];
-  /** Solo visible para admins (credenciales, kill switches, usuarios). */
-  adminOnly?: boolean;
+  /** Alcance mínimo para ver el grupo. Tiene que coincidir con PATH_SCOPES
+   *  de roles.ts: el menú OCULTA, el middleware PROHÍBE. */
+  scope: Scope;
 };
 
 // Grupos de sección (NO cambia rutas).
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Operación",
+    scope: "operacion",
     items: [
       { href: "/inbox", label: "Inbox", icon: Inbox },
       { href: "/leads", label: "Leads", icon: Users },
       // Alertas es un buzón de monitoreo de solo lectura, no configuración → vive en Operación.
       { href: "/alerts", label: "Alertas", icon: Bell },
-      // Status es un informe de solo lectura (logros, tiempos, aciertos) → misma sección que Alertas.
-      { href: "/status", label: "Status", icon: Eye },
     ],
   },
   {
     label: "Contenido y calidad",
+    scope: "contenido",
     items: [
       { href: "/contenido", label: "Contenido", icon: Layers },
       { href: "/promos", label: "Promos y situaciones", icon: Sparkles },
       { href: "/verticales", label: "Verticales", icon: Target },
       { href: "/outcomes", label: "Outcomes", icon: Sparkles },
       { href: "/consumo", label: "Consumo", icon: BarChart3 },
+      // Status es un informe de sólo lectura, pero muestra el costo acumulado en
+      // dólares —el mismo dato que /consumo—, así que vive en el mismo alcance.
+      // Dejarlo en Operación habría sido una segunda puerta al mismo número con
+      // un permiso distinto.
+      { href: "/status", label: "Status", icon: Eye },
       { href: "/dreams", label: "Dreams", icon: Stars },
     ],
   },
   {
     label: "Configuración",
-    adminOnly: true,
+    scope: "configuracion",
     items: [
       // Agente, Kommo y Herramientas viven dentro de Ajustes (pestañas).
       { href: "/seguimiento", label: "Seguimiento", icon: Repeat },
@@ -124,15 +131,15 @@ function NavGroups({
   alertsCount,
   onNavigate,
   collapsed = false,
-  isAdmin = true,
+  scope = "configuracion",
 }: {
   alertsCount: number;
   onNavigate?: () => void;
   collapsed?: boolean;
-  isAdmin?: boolean;
+  scope?: Scope;
 }) {
   const pathname = usePathname();
-  const groups = NAV_GROUPS.filter((g) => isAdmin || !g.adminOnly);
+  const groups = NAV_GROUPS.filter((g) => scopeAlcanza(scope, g.scope));
   return (
     <nav className={"flex-1 overflow-y-auto py-2 " + (collapsed ? "px-2" : "px-3")}>
       {groups.map((group) => (
@@ -233,13 +240,13 @@ export function SidebarNav({
   alertsCount,
   label,
   bcv,
-  isAdmin = true,
+  scope = "configuracion",
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
-  isAdmin?: boolean;
+  scope?: Scope;
 }) {
   const agentLabel = label || ENV_AGENT_LABEL;
   const initial = agentLabel.charAt(0).toUpperCase();
@@ -292,7 +299,7 @@ export function SidebarNav({
         </button>
       </div>
 
-      <NavGroups alertsCount={alertsCount} collapsed={collapsed} isAdmin={isAdmin} />
+      <NavGroups alertsCount={alertsCount} collapsed={collapsed} scope={scope} />
 
       {/* Pill BCV compacto sobre el footer de usuario (oculto al colapsar) */}
       {bcv && !collapsed && (
@@ -311,13 +318,13 @@ export function MobileNav({
   alertsCount,
   label,
   bcv,
-  isAdmin = true,
+  scope = "configuracion",
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
-  isAdmin?: boolean;
+  scope?: Scope;
 }) {
   const [open, setOpen] = useState(false);
   const agentLabel = label || ENV_AGENT_LABEL;
@@ -376,7 +383,7 @@ export function MobileNav({
             <NavGroups
               alertsCount={alertsCount}
               onNavigate={() => setOpen(false)}
-              isAdmin={isAdmin}
+              scope={scope}
             />
             <NavFooter email={email} onNavigate={() => setOpen(false)} />
           </div>

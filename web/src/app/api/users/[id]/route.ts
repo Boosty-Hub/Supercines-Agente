@@ -1,54 +1,75 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getRole, type Role } from "@/lib/auth/roles";
+import { getScope, isScope, type Scope } from "@/lib/auth/roles";
 import { listUsers, updateUser, deleteUser } from "@/lib/users/admin";
 
 export const runtime = "nodejs";
 
-async function requireAdmin() {
+// Ver la nota de /api/users/route.ts: el middleware ya gatea este prefijo, esto
+// es la segunda capa porque abajo se escribe con service-role.
+async function requireConfiguracion() {
   const supabase = createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: NextResponse.json({ error: "unauthorized" }, { status: 401 }) };
-  if (getRole(user) !== "admin")
-    return { error: NextResponse.json({ error: "forbidden: requiere rol admin" }, { status: 403 }) };
+  if (getScope(user) !== "configuracion")
+    return {
+      error: NextResponse.json({ error: "forbidden: requiere alcance configuracion" }, { status: 403 }),
+    };
   return { user };
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {
-  const gate = await requireAdmin();
+  const gate = await requireConfiguracion();
   if (gate.error) return gate.error;
 
-  let body: { role?: unknown; password?: unknown };
+  let body: { scope?: unknown; role?: unknown; password?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  const patch: { role?: Role; password?: string } = {};
-  if (body.role !== undefined) {
-    if (body.role !== "admin" && body.role !== "editor")
-      return NextResponse.json({ error: "role debe ser 'admin' o 'editor'" }, { status: 400 });
-    patch.role = body.role;
+  const patch: { scope?: Scope; password?: string } = {};
+
+  const pedido = body.scope ?? body.role;
+  if (pedido !== undefined) {
+    if (isScope(pedido)) patch.scope = pedido;
+    else if (pedido === "admin") patch.scope = "configuracion";
+    else if (pedido === "editor") patch.scope = "contenido";
+    else
+      return NextResponse.json(
+        { error: "scope debe ser 'operacion', 'contenido' o 'configuracion'" },
+        { status: 400 }
+      );
   }
+
   if (body.password !== undefined) {
     const pw = String(body.password);
     if (pw.length < 8)
       return NextResponse.json({ error: "La contraseña debe tener al menos 8 caracteres" }, { status: 400 });
     patch.password = pw;
   }
-  if (patch.role === undefined && patch.password === undefined)
+  if (patch.scope === undefined && patch.password === undefined)
     return NextResponse.json({ error: "Nada que actualizar" }, { status: 400 });
 
-  // Guard: no dejar el sistema sin admins al degradar al último admin.
-  if (patch.role === "editor") {
+  if (patch.scope !== undefined && patch.scope !== "configuracion") {
+    // No auto-degradarse: quien se baja el alcance a sí mismo pierde el acceso
+    // a esta misma pantalla en el siguiente request y no puede deshacerlo.
+    if (gate.user!.id === params.id)
+      return NextResponse.json({ error: "No podés bajarte el alcance a vos mismo" }, { status: 400 });
+
+    // No dejar el panel sin nadie que pueda entrar a Configuración: sin eso, la
+    // única salida sería la Admin API de Supabase con la service-role key.
     const users = await listUsers();
     const target = users.find((u) => u.id === params.id);
-    const admins = users.filter((u) => u.role === "admin");
-    if (target?.role === "admin" && admins.length <= 1)
-      return NextResponse.json({ error: "No podés degradar al último admin" }, { status: 400 });
+    const admins = users.filter((u) => u.scope === "configuracion");
+    if (target?.scope === "configuracion" && admins.length <= 1)
+      return NextResponse.json(
+        { error: "No podés degradar al último administrador" },
+        { status: 400 }
+      );
   }
 
   try {
@@ -60,18 +81,18 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 }
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
-  const gate = await requireAdmin();
+  const gate = await requireConfiguracion();
   if (gate.error) return gate.error;
 
-  // Guard: no auto-borrado ni borrar al último admin.
+  // Guard: no auto-borrado ni borrar al último con alcance configuracion.
   if (gate.user!.id === params.id)
     return NextResponse.json({ error: "No podés borrarte a vos mismo" }, { status: 400 });
 
   const users = await listUsers();
   const target = users.find((u) => u.id === params.id);
-  const admins = users.filter((u) => u.role === "admin");
-  if (target?.role === "admin" && admins.length <= 1)
-    return NextResponse.json({ error: "No podés borrar al último admin" }, { status: 400 });
+  const admins = users.filter((u) => u.scope === "configuracion");
+  if (target?.scope === "configuracion" && admins.length <= 1)
+    return NextResponse.json({ error: "No podés borrar al último administrador" }, { status: 400 });
 
   try {
     await deleteUser(params.id);

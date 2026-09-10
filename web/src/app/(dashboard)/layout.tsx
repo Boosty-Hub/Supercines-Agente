@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { getBcvRateCached } from "@/lib/exchange";
-import { getRole } from "@/lib/auth/roles";
+import { getScope } from "@/lib/auth/roles";
 import { getSetupState } from "@/lib/setup-state";
 import { MobileNav, SidebarNav } from "./nav";
 import { EmbedTabsNav } from "./embed-tabs-nav";
@@ -33,7 +33,7 @@ export default async function DashboardLayout({
 
   const email = user?.email ?? "";
   const alerts = alertsCount ?? 0;
-  const isAdmin = getRole(user) === "admin";
+  const scope = getScope(user);
   // Resolve the branding label DB-first (editable from /agent) with env
   // fallback. Resolved server-side so it does NOT depend on the build-time
   // NEXT_PUBLIC_AGENT_LABEL inlining.
@@ -50,7 +50,7 @@ export default async function DashboardLayout({
   // el dashboard. Se computa el estado desde runtime_config (DB) solo para
   // admins y fuera del embed. Si el onboarding ya está completo, el drawer no
   // muestra nada (ni launcher ni auto-apertura) salvo que ?setup=open lo fuerce.
-  const setupState = isAdmin && !isEmbed ? await getSetupState() : null;
+  const setupState = scope === "configuracion" && !isEmbed ? await getSetupState() : null;
   const showSetupDrawer = setupState !== null;
 
   if (isEmbed) {
@@ -59,7 +59,7 @@ export default async function DashboardLayout({
         <Suspense fallback={null}>
           <NavProgress />
         </Suspense>
-        <EmbedTabsNav label={label} alertsCount={alerts} isAdmin={isAdmin} />
+        <EmbedTabsNav label={label} alertsCount={alerts} scope={scope} />
         <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
       </div>
     );
@@ -70,9 +70,9 @@ export default async function DashboardLayout({
       <Suspense fallback={null}>
         <NavProgress />
       </Suspense>
-      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
+      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
+        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
         <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
       </div>
       {showSetupDrawer && <SetupDrawer state={setupState} />}

@@ -3,21 +3,22 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_GROUPS } from "./nav";
+import { scopeAlcanza, type Scope } from "@/lib/auth/roles";
 
 const ENV_AGENT_LABEL = process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente";
 
 export function EmbedTabsNav({
   label,
   alertsCount,
-  isAdmin = true,
+  scope = "configuracion",
 }: {
   label?: string;
   alertsCount: number;
-  isAdmin?: boolean;
+  scope?: Scope;
 }) {
   const pathname = usePathname();
   const agentLabel = label || ENV_AGENT_LABEL;
-  const groups = NAV_GROUPS.filter((g) => isAdmin || !g.adminOnly);
+  const groups = NAV_GROUPS.filter((g) => scopeAlcanza(scope, g.scope));
 
   return (
     <div className="shrink-0 border-b border-neutral-200 bg-white">

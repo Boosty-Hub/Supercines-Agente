@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "node scripts/embed-provision.mjs",
+    "predev": "node scripts/check-scopes.mjs && node scripts/embed-provision.mjs",
     "dev": "cross-env NODE_OPTIONS=--max-http-header-size=65536 next dev",
-    "prebuild": "node scripts/embed-provision.mjs",
+    "prebuild": "node scripts/check-scopes.mjs && node scripts/embed-provision.mjs",
     "build": "next build",
     "start": "cross-env NODE_OPTIONS=--max-http-header-size=65536 next start",
     "lint": "next lint"

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getRole } from "@/lib/auth/roles";
+import { getScope } from "@/lib/auth/roles";
 import { listUsers, type ManagedUser } from "@/lib/users/admin";
 import { PageShell } from "@/components/ui";
 import UsersTable from "./users-table";
@@ -12,8 +12,9 @@ export default async function UsuariosPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  // Defensa en profundidad: el middleware ya bloquea a los editores, pero re-chequeamos.
-  if (!user || getRole(user) !== "admin") redirect("/inbox");
+  // Defensa en profundidad: el middleware ya exige alcance `configuracion` para
+  // /usuarios, pero esta página lista usuarios con la service-role key.
+  if (!user || getScope(user) !== "configuracion") redirect("/inbox");
 
   let users: ManagedUser[] = [];
   let loadError: string | null = null;
@@ -26,7 +27,7 @@ export default async function UsuariosPage() {
   return (
     <PageShell
       title="Usuarios"
-      description="Quién puede entrar al panel. Los admin ven todo; los editores operan (Inbox, Leads, drafts) y editan contenido, pero no tocan credenciales, encendido del agente ni usuarios."
+      description="Quién puede entrar al panel y hasta dónde. Los alcances son acumulativos: Operación atiende conversaciones; Contenido agrega contenido y calidad; Administrador agrega credenciales, encendido del agente y esta misma pantalla."
     >
       <UsersTable initialUsers={users} currentUserId={user.id} loadError={loadError} />
     </PageShell>

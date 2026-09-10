@@ -6,7 +6,7 @@
 // (crea el master sin auth) y su createUser no maneja roles.
 // server-only: usa la service-role key; no importar desde el cliente.
 
-import type { Role } from "@/lib/auth/roles";
+import { getScope, type Scope } from "@/lib/auth/roles";
 
 function env() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,7 +22,7 @@ function headers(key: string): Record<string, string> {
 export type ManagedUser = {
   id: string;
   email: string;
-  role: Role;
+  scope: Scope;
   created_at: string;
   last_sign_in_at: string | null;
 };
@@ -35,12 +35,15 @@ type RawUser = {
   app_metadata?: Record<string, unknown> | null;
 };
 
+// El alcance se resuelve con el MISMO `getScope` que usa el middleware. Antes
+// esta función tenía su propia copia (`role === "editor" ? "editor" : "admin"`),
+// que además de fallar abierta podía divergir de la del gate: la tabla habría
+// mostrado "Admin" para un usuario que el middleware trataba de otra forma.
 function toManaged(u: RawUser): ManagedUser {
-  const role: Role = u.app_metadata?.role === "editor" ? "editor" : "admin";
   return {
     id: u.id,
     email: u.email ?? "",
-    role,
+    scope: getScope(u),
     created_at: u.created_at,
     last_sign_in_at: u.last_sign_in_at ?? null,
   };
@@ -57,11 +60,12 @@ export async function listUsers(): Promise<ManagedUser[]> {
   return (data.users ?? []).map(toManaged);
 }
 
+/** Cuántos usuarios pueden todavía entrar a Configuración. */
 export async function countAdmins(): Promise<number> {
-  return (await listUsers()).filter((u) => u.role === "admin").length;
+  return (await listUsers()).filter((u) => u.scope === "configuracion").length;
 }
 
-export async function createUser(email: string, password: string, role: Role): Promise<ManagedUser> {
+export async function createUser(email: string, password: string, scope: Scope): Promise<ManagedUser> {
   const { url, key } = env();
   const res = await fetch(`${url}/auth/v1/admin/users`, {
     method: "POST",
@@ -70,7 +74,10 @@ export async function createUser(email: string, password: string, role: Role): P
       email,
       password,
       email_confirm: true, // el admin fija la contraseña; sin verificación por email
-      app_metadata: { role },
+      // Se escribe el alcance LITERAL ("operacion"/"contenido"/"configuracion").
+      // La clave sigue llamándose `role` para no romper a los usuarios que ya
+      // tienen "admin"/"editor" ahí: `getScope` lee los cinco valores.
+      app_metadata: { role: scope },
     }),
   });
   if (!res.ok) throw new Error(`createUser (${res.status}): ${await res.text().catch(() => "")}`);
@@ -79,11 +86,11 @@ export async function createUser(email: string, password: string, role: Role): P
 
 export async function updateUser(
   id: string,
-  patch: { role?: Role; password?: string }
+  patch: { scope?: Scope; password?: string }
 ): Promise<ManagedUser> {
   const { url, key } = env();
   const body: Record<string, unknown> = {};
-  if (patch.role) body.app_metadata = { role: patch.role };
+  if (patch.scope) body.app_metadata = { role: patch.scope };
   if (patch.password) body.password = patch.password;
   const res = await fetch(`${url}/auth/v1/admin/users/${id}`, {
     method: "PUT",

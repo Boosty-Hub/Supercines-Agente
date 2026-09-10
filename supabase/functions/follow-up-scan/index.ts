@@ -640,7 +640,7 @@ Deno.serve(async (req: Request) => {
       runUserIds,
       timezone,
       anthropicKey,
-      agentModel: runtimeCfg.getOr("AGENT_MODEL", "claude-sonnet-4-6"),
+      agentModel: runtimeCfg.getOr("AGENT_MODEL", "claude-haiku-4-5"),
       pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES") ?? null,
     };
 

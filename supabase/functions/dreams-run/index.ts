@@ -346,7 +346,7 @@ async function rebuildDigest(
   const prevDigest = (cfg.get("DREAMS_DIGEST") ?? "").trim();
   let digest = "";
   if (dreams.length > 0 || prevDigest) {
-    const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-sonnet-4-6");
+    const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-haiku-4-5");
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
     const body = dreams.map((d) => `### ${d.path}\n${d.content}`).join("\n\n");
     const response = await anthropic.messages.create({
@@ -438,7 +438,7 @@ async function runDreams(
   const { transcript, leadMap } = period === "daily" ? await gatherDaily(sinceIso) : await gatherWeekly();
 
   // Modelo de Dreams: editable desde /consumo (DB-first, fallback Sonnet).
-  const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-sonnet-4-6");
+  const dreamsModel = cfg.getOr("DREAMS_MODEL", "claude-haiku-4-5");
   const response = await anthropic.messages.create({
     model: dreamsModel,
     max_tokens: 4096,

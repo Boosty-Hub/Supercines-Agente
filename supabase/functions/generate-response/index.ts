@@ -868,14 +868,16 @@ function buildContext(opts: {
 }) {
   const cls = opts.classification ?? {};
   const multi = opts.messages.length > 1;
-  const block = multi
-    ? opts.messages
-        .map(
-          (m, i) =>
-            `(${i + 1}) [${new Date(m.created_at).toISOString().slice(11, 16)}] ${m.content}`
-        )
-        .join("\n")
-    : opts.messages[0]?.content ?? "";
+  // Fecha+hora completa (no solo HH:MM) en todos los casos, incluido el mensaje
+  // único: sin esto el agente no tiene forma de saber que está respondiendo un
+  // mensaje de hace varios días (ej. tras una recuperación de backlog) y no
+  // puede aplicar la instrucción de reconocer la demora más abajo.
+  const fmtTs = (iso: string) => new Date(iso).toISOString().slice(0, 16).replace("T", " ");
+  const block = opts.messages
+    .map((m, i) =>
+      multi ? `(${i + 1}) [${fmtTs(m.created_at)}] ${m.content}` : `[${fmtTs(m.created_at)}] ${m.content}`
+    )
+    .join("\n");
 
   const header = multi
     ? `[MENSAJES DEL LEAD — ${opts.messages.length} mensajes seguidos, trátalos como UNA sola conversación y responde de forma unificada, no uno por uno]`
@@ -916,7 +918,7 @@ ${historyBlock}${header}
 ${block}
 """
 
-Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
+Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
 
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }

@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 // Publicación Kommo (Config → Kommo): campo destino + salesbot del reply principal.
-// Los switches de encendido/publicación/revisión viven ahora en Agente →
-// "Encendido y publicación" (POST /api/agent/publish); acá NO se tocan para no
-// pisarlos al guardar el campo/salesbot.
+// Los switches de encendido/publicación/revisión viven en el Panel de control
+// (POST /api/settings/control-panel), arriba de las pestañas de Ajustes; acá
+// NO se tocan para no pisarlos al guardar el campo/salesbot.
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
   const {
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
   // Go-live (idempotente): si el sistema YA está en producción (publishing_enabled)
   // y recién ahora se carga el salesbot, estampamos la línea de corte publish_from
   // para que los borradores de validación viejos NUNCA se disparen. El otro disparo
-  // (activar publishing con salesbot ya cargado) vive en /api/agent/publish.
+  // (activar publishing con salesbot ya cargado) vive en /api/settings/control-panel.
   const { data: current } = await supabase
     .from("kommo_publish_config")
     .select("publishing_enabled, publish_from")

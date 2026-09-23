@@ -429,7 +429,17 @@ export default async function InboxPage({
       .select("agent_enabled, publishing_enabled, salesbot_id, ignored_stage_ids")
       .eq("is_active", true)
       .maybeSingle();
+    // Apagado total: query APARTE (no se suma al select de arriba) — si la
+    // migración que agrega `system_halted` todavía no se aplicó en este
+    // proyecto, este select falla solo, sin tirar abajo el resto del estado
+    // del agente (fail-open: se toma como no-halted).
+    const { data: haltCfg } = await supabase
+      .from("kommo_publish_config")
+      .select("system_halted")
+      .eq("is_active", true)
+      .maybeSingle();
     agentStatus = computeAgentStatus({
+      systemHalted: haltCfg?.system_halted === true,
       // generate-response solo bloquea con agent_enabled === false explícito.
       agentEnabled: pubCfg?.agent_enabled !== false,
       publishingEnabled: pubCfg?.publishing_enabled === true,

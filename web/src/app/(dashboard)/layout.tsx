@@ -9,6 +9,7 @@ import { MobileNav, SidebarNav } from "./nav";
 import { EmbedTabsNav } from "./embed-tabs-nav";
 import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
+import { SystemHaltedBanner } from "./system-halted-banner";
 
 export default async function DashboardLayout({
   children,
@@ -19,7 +20,7 @@ export default async function DashboardLayout({
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const [{ count: alertsCount }, { data: pubCfg }] = await Promise.all([
+  const [{ count: alertsCount }, { data: pubCfg }, { data: haltCfg }] = await Promise.all([
     supabase
       .from("alerts")
       .select("*", { count: "exact", head: true })
@@ -29,8 +30,14 @@ export default async function DashboardLayout({
       .select("bcv_rate_enabled")
       .eq("is_active", true)
       .maybeSingle(),
+    // Apagado total: query APARTE del select de arriba — si la migración que
+    // agrega `system_halted` todavía no se aplicó en este proyecto, este
+    // select falla solo (fail-open: banner oculto) sin tirar abajo el resto
+    // del layout (branding, BCV, alertas).
+    supabase.from("kommo_publish_config").select("system_halted").eq("is_active", true).maybeSingle(),
   ]);
 
+  const systemHalted = haltCfg?.system_halted === true;
   const email = user?.email ?? "";
   const alerts = alertsCount ?? 0;
   const scope = getScope(user);
@@ -56,6 +63,7 @@ export default async function DashboardLayout({
   if (isEmbed) {
     return (
       <div className="flex flex-col h-dvh overflow-hidden bg-neutral-50">
+        {systemHalted && <SystemHaltedBanner />}
         <Suspense fallback={null}>
           <NavProgress />
         </Suspense>
@@ -66,16 +74,19 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-neutral-50">
-      <Suspense fallback={null}>
-        <NavProgress />
-      </Suspense>
-      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
-        <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+    <div className="flex flex-col h-dvh overflow-hidden bg-neutral-50">
+      {systemHalted && <SystemHaltedBanner />}
+      <div className="flex min-h-0 flex-1">
+        <Suspense fallback={null}>
+          <NavProgress />
+        </Suspense>
+        <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
+          <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+        </div>
+        {showSetupDrawer && <SetupDrawer state={setupState} />}
       </div>
-      {showSetupDrawer && <SetupDrawer state={setupState} />}
     </div>
   );
 }

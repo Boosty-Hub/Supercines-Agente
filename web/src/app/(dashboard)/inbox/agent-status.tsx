@@ -3,6 +3,7 @@
 // header del inbox POR QUÉ un lead recibe (o no) respuesta, sin tener que adivinar.
 //
 // Precedencia (de más bloqueante a OK):
+//   0. system_halted=true         → 🔴 apagado total (nada consume IA)
 //   1. agent_enabled=false        → 🔴 apagado para TODOS (kill switch)
 //   2. etapa ∈ ignored_stage_ids  → 🟠 el agente ignora esta etapa
 //   3. publishing_enabled=false   → 🟡 responde pero no envía (modo validación)
@@ -20,21 +21,32 @@ export type AgentStatus = {
 };
 
 export function computeAgentStatus(input: {
+  systemHalted?: boolean;
   agentEnabled: boolean;
   publishingEnabled: boolean;
   salesbotId: number | null;
   ignoredStageIds: number[];
   stageId: number | null;
 }): AgentStatus {
-  const { agentEnabled, publishingEnabled, salesbotId, ignoredStageIds, stageId } = input;
+  const { systemHalted, agentEnabled, publishingEnabled, salesbotId, ignoredStageIds, stageId } = input;
 
+  if (systemHalted) {
+    return {
+      tone: "red",
+      label: "Sistema apagado por completo",
+      detail:
+        "Apagado total activo: nada llama a Anthropic ni a OpenAI (ni clasificación, ni respuestas, ni Dreams, ni Outcomes, ni seguimientos).",
+      fixHref: "/settings#panel-control",
+      fixLabel: "Reactivar en el Panel de control",
+    };
+  }
   if (!agentEnabled) {
     return {
       tone: "red",
       label: "Agente apagado",
       detail: "El interruptor general está apagado: el agente no responde a NINGÚN lead.",
-      fixHref: "/settings?tab=conexiones",
-      fixLabel: "Encender en Kommo",
+      fixHref: "/settings#panel-control",
+      fixLabel: "Encender en el Panel de control",
     };
   }
   if (stageId != null && ignoredStageIds.includes(stageId)) {
@@ -53,8 +65,8 @@ export function computeAgentStatus(input: {
       label: "Modo validación",
       detail:
         "El agente responde y guarda el borrador, pero NO lo envía al cliente (publicación apagada).",
-      fixHref: "/settings?tab=conexiones",
-      fixLabel: "Activar publicación",
+      fixHref: "/settings#panel-control",
+      fixLabel: "Activar publicación en el Panel de control",
     };
   }
   if (!salesbotId) {

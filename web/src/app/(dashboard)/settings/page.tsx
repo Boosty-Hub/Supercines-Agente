@@ -14,7 +14,8 @@ import { toReviewMode } from "@/lib/review-mode";
 import { SettingsTabs, type SettingsTab } from "./settings-tabs";
 import { AgenteTab, type AgenteSection } from "./agente/agente-tab";
 import { AgentForm } from "./agente/agent-form";
-import { AgentPublishPanel, type PublishState } from "./agente/agent-publish-panel";
+import { AgentOffConfig } from "./agente/agent-off";
+import { ControlPanel, type ControlPanelConfig } from "./control-panel";
 import type { Rule, VerticalLite } from "./agente/filters-panel";
 import type { CommentsConfig } from "./agente/comments-panel";
 import { KommoSection } from "./conexiones/kommo-section";
@@ -48,7 +49,7 @@ export default async function SettingsPage({
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -95,9 +96,19 @@ export default async function SettingsPage({
         .select("id, kommo_user_id, display_name, match_terms, enabled, sort_order")
         .order("sort_order")
         .order("kommo_user_id"),
+      // Apagado total (Panel de control): query APARTE de la fila grande de
+      // arriba, a propósito. Si la migración que agrega `system_halted`
+      // todavía no se aplicó en este proyecto, este select falla solo (columna
+      // inexistente) sin tirar abajo el resto de la página — el switch llega
+      // deshabilitado (ver `systemHaltedAvailable`) y todo lo demás funciona
+      // normal. Sumarla al select grande de `pubRes` haría que UN campo
+      // faltante rompiera las otras ~30 columnas que sí existen.
+      supabase.from("kommo_publish_config").select("system_halted").eq("is_active", true).maybeSingle(),
     ]);
 
   const p = pubRes.data;
+  const systemHaltedAvailable = !haltRes.error;
+  const systemHalted = systemHaltedAvailable && haltRes.data?.system_halted === true;
 
   // ── Datos: pestaña Agente ─────────────────────────────────────────────────
   const rules = (rulesRes.data ?? []) as Rule[];
@@ -136,14 +147,18 @@ export default async function SettingsPage({
     documents: p?.respond_to_documents === true,
     audio: p?.respond_to_audio === true,
   };
-  const publish: PublishState = {
+  const reviewMode = toReviewMode({
+    publishing_enabled: p?.publishing_enabled === true,
+    bypass_review: p?.bypass_review === true,
+    auto_reply_mode: (p?.auto_reply_mode as string | null) ?? null,
+  });
+  const controlPanelConfig: ControlPanelConfig = {
+    systemHalted,
+    systemHaltedAvailable,
     agentEnabled: p?.agent_enabled !== false, // default ON
-    publishing: p?.publishing_enabled === true,
-    reviewMode: toReviewMode({
-      publishing_enabled: p?.publishing_enabled === true,
-      bypass_review: p?.bypass_review === true,
-      auto_reply_mode: (p?.auto_reply_mode as string | null) ?? null,
-    }),
+    publishingEnabled: p?.publishing_enabled === true,
+    reviewMode,
+    salesbotId: (p?.salesbot_id as number | null) ?? null,
   };
   const crm = {
     enabled: p?.crm_actions_enabled === true,
@@ -197,6 +212,11 @@ export default async function SettingsPage({
       title="Ajustes"
       description="Todo lo que configura al agente: su identidad y comportamiento, las conexiones, sus herramientas y el sistema."
     >
+      {/* Panel de control: arriba de TODO, visible sin importar qué pestaña
+          esté abierta — los interruptores críticos ya no viven dispersos
+          dentro de las pestañas. */}
+      <ControlPanel initial={controlPanelConfig} />
+
       {/* Un solo banner de guardado para toda la página (antes había tres, uno
           por módulo, con tres flags distintos de querystring). */}
       {saved && sync === "ok" && (
@@ -253,12 +273,17 @@ export default async function SettingsPage({
             assignees={assignees}
           >
             <div className="space-y-6">
-              <AgentPublishPanel
-                initial={publish}
-                agentOff={{
-                  fieldId: (p?.agent_off_field_id as number | null) ?? null,
-                  fieldName: (p?.agent_off_field_name as string | null) ?? null,
-                }}
+              <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs text-neutral-500">
+                El agente encendido, la publicación en Kommo y la revisión humana se controlan desde el{" "}
+                <a href="#panel-control" className="font-medium text-neutral-700 underline">
+                  Panel de control
+                </a>
+                , arriba de estas pestañas.
+              </div>
+
+              <AgentOffConfig
+                fieldId={(p?.agent_off_field_id as number | null) ?? null}
+                fieldName={(p?.agent_off_field_name as string | null) ?? null}
               />
 
               <SectionCard

@@ -28,6 +28,7 @@ import {
 } from "../_shared/business-hours.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -1116,6 +1117,16 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  // Apagado total: query aparte (isSystemHalted, cacheada 60s) en vez de
+  // sumarse al select de `cfg` de abajo — así un deploy de esta función antes
+  // de aplicar la migración 0057 no rompe ese select por pedir una columna
+  // que todavía no existe (fail-open, ver _shared/halt.ts). Se chequea antes
+  // de parsear el body: ni eso vale la pena si el sistema está apagado.
+  if (await isSystemHalted(supabase)) {
+    logHalted("generate-response");
+    return haltedResponse({ picked: null });
   }
 
   let body: { message_id?: string; force_review?: boolean } = {};

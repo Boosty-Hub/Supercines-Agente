@@ -16,6 +16,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
 import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
+import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -140,6 +141,17 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // Apagado total: query aparte (isSystemHalted, cacheada 60s) — no se
+    // suma al select de getConfig() para no romperlo si esta función se
+    // despliega antes de aplicar la migración 0057 (fail-open, ver
+    // _shared/halt.ts). Se chequea ANTES de exigir credenciales de Kommo con
+    // runtimeCfg.require(): ningún draft 'approved' se publica mientras esto
+    // esté en true, ni el que ya estaba en cola antes del switch.
+    if (await isSystemHalted(supabase)) {
+      logHalted("publish-to-kommo");
+      return haltedResponse({ published: 0 });
+    }
+
     // Resolve config at request time: DB-first, then env fallback.
     const runtimeCfg = await loadConfig(supabase);
     const kommoDomain = runtimeCfg.require("KOMMO_API_DOMAIN");

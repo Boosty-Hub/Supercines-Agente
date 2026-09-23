@@ -16,6 +16,7 @@ import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 import { routeLead } from "../_shared/routing.ts";
+import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -1563,6 +1564,15 @@ Deno.serve(async (req: Request) => {
     return new Response("Method Not Allowed", { status: 405 });
   }
   try {
+    // Apagado total: se chequea con una query aparte (isSystemHalted, cacheada
+    // 60s) en vez de sumarse a un select existente — así un deploy de esta
+    // función antes de aplicar la migración 0057 no rompe ningún select por
+    // pedir una columna que todavía no existe (fail-open, ver _shared/halt.ts).
+    if (await isSystemHalted(supabase)) {
+      logHalted("process-inbound");
+      return haltedResponse({ accepted: false });
+    }
+
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
     const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);

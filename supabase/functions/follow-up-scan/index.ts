@@ -27,6 +27,7 @@ import {
 } from "../_shared/kommo.ts";
 import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -585,6 +586,18 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // Apagado total: corta ANTES de tocar Anthropic (el follow-up usa el
+    // agente CMA completo, no solo un template). Sin excepción para el
+    // reintento manual: si el operador cortó todo, un click desde el
+    // dashboard no debe saltarse el freno — hay que apagar el switch primero.
+    // follow-up-scan no lee kommo_publish_config para nada más, así que usa
+    // isSystemHalted (query aparte cacheada 60s — fail-open, ver
+    // _shared/halt.ts).
+    if (await isSystemHalted(supabase)) {
+      logHalted("follow-up-scan");
+      return haltedResponse({ processed: 0 });
+    }
+
     // Resolver toda la config ANTES del waitUntil boundary
     // (mismo patrón de generate-response para evitar drafts stuck)
     const runtimeCfg = await loadConfig(supabase);

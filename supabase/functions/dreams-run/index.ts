@@ -15,6 +15,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -552,6 +553,15 @@ Deno.serve(async (req: Request) => {
   const force = body.force === true; // el botón manual fuerza; el cron no.
 
   try {
+    // Apagado total: corta ANTES de tocar Anthropic, incluso en modo
+    // digest_only (rebuildDigest también llama al modelo). dreams-run no lee
+    // kommo_publish_config para nada más, así que usa isSystemHalted
+    // (query aparte cacheada 60s — fail-open, ver _shared/halt.ts).
+    if (await isSystemHalted(supabase)) {
+      logHalted("dreams-run");
+      return haltedResponse({ skipped: true, reason: "system_halted" });
+    }
+
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
 

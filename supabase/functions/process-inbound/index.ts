@@ -17,6 +17,7 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
+import { isStaleBacklog } from "../_shared/backlog.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -207,6 +208,11 @@ type PublishFilters = {
   agentOffFieldId: number | null;
   commentSourceIds: Set<number>;
   respondToComments: boolean;
+  // Ventana de frescura (misma columna que usa generate-response para
+  // elegir qué contestar). 0 = sin límite. Se lee acá para poder saltar la
+  // clasificación Haiku de una fila del backlog que igual generate-response
+  // nunca respondería por vieja (ver isStaleBacklog).
+  answerMaxAgeHours: number;
 };
 let publishFiltersCache: (PublishFilters & { loadedAt: number }) | null = null;
 
@@ -216,7 +222,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
   }
   const empty: MediaFlags = { images: false, documents: false, audio: false };
   const LEGACY_COLS =
-    "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments";
+    "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments, answer_max_age_hours";
 
   // Ventana función-desplegada-antes-que-migración: pedir una columna que no
   // existe hace fallar el select ENTERO. Sin el reintento con el select viejo,
@@ -257,6 +263,9 @@ async function getPublishFilters(): Promise<PublishFilters> {
       agentOffFieldId: null,
       commentSourceIds: new Set(),
       respondToComments: false,
+      // Mismo default (1h) que la columna (0040) y que generate-response —
+      // fail-open a la ventana chica, nunca a "sin límite" ante un error.
+      answerMaxAgeHours: 1,
       loadedAt: Date.now(),
     };
     return publishFiltersCache;
@@ -284,7 +293,10 @@ async function getPublishFilters(): Promise<PublishFilters> {
   );
   // Gate maestro de comentarios (0048): default/columna ausente = OFF.
   const respondToComments = data?.respond_to_comments === true;
-  publishFiltersCache = { channels, classifyOnlyChannels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
+  // Misma lectura que generate-response (answer_max_age_hours, 0040): default
+  // 1h, nunca negativo. 0 = sin límite.
+  const answerMaxAgeHours = Math.max(0, Number(data?.answer_max_age_hours ?? 1));
+  publishFiltersCache = { channels, classifyOnlyChannels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, answerMaxAgeHours, loadedAt: Date.now() };
   return publishFiltersCache;
 }
 
@@ -812,9 +824,16 @@ async function transcribeAudio(
 }
 
 // ---- Procesa un payload completo ----
-async function processPayload(payload: KommoPayload, anthropic: Anthropic, operator: string) {
+// queuedAt: created_at de la fila de inbound_queue (cuándo llegó el webhook
+// de verdad), NO el momento en que se procesa. Se usa para: a) sellar
+// messages.created_at con la hora real de llegada en vez de now() (para que
+// la ventana de frescura de generate-response funcione con backlog viejo) y
+// b) decidir si esta fila es demasiado vieja para clasificar (ver
+// isStaleBacklog más abajo).
+async function processPayload(payload: KommoPayload, anthropic: Anthropic, operator: string, queuedAt: string) {
   const subdomain = payload.account?.subdomain ?? null;
   const inboundMessageIds: string[] = [];
+  let staleBacklogSkipped = 0;
   const verticals = await getVerticals();
   const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
   const skipRules = await getSkipRules();
@@ -844,7 +863,16 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
   // 2) Procesar messages
   if (payload.message?.add) {
-    for (const m of payload.message.add) {
+    // Hora base para el sello de messages.created_at: la de llegada real del
+    // webhook (queuedAt), no now(). Si un mismo payload trae varios mensajes
+    // (message.add con más de un elemento — inusual pero el formato lo
+    // permite), se suma 1ms por índice para conservar el orden relativo entre
+    // ellos: todos compartirían el MISMO queuedAt si no, y el orden de
+    // desempate en la DB dejaría de coincidir con el orden real de llegada
+    // (importa para el debounce y el orden de lectura del historial).
+    const queuedAtMs = new Date(queuedAt).getTime();
+    const baseTs = Number.isFinite(queuedAtMs) ? queuedAtMs : Date.now();
+    for (const [msgIdx, m] of payload.message.add.entries()) {
       const leadKommoId = Number(m.entity_id ?? m.element_id);
       if (!Number.isFinite(leadKommoId)) continue;
 
@@ -960,7 +988,12 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (dup) continue;
       }
 
-      // Insert message (sin classification al principio)
+      // Insert message (sin classification al principio). created_at = hora
+      // real de llegada del webhook (queuedAt + offset de orden), NO now():
+      // ver el comentario sobre baseTs/msgIdx más arriba. Esto es lo que hace
+      // que la ventana de frescura de generate-response (answer_max_age_hours)
+      // vea el backlog como viejo en vez de "recién llegado" al reactivar.
+      const msgCreatedAt = new Date(baseTs + msgIdx).toISOString();
       const { data: msg, error: msgErr } = await supabase
         .from("messages")
         .insert({
@@ -973,6 +1006,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
           media_kind: media?.kind ?? null,
           media_status: mediaStatus,
           media_error: mediaError,
+          created_at: msgCreatedAt,
         })
         .select("id")
         .single();
@@ -1041,6 +1075,26 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
       // Clasificar solo inbound
       if (direction !== "inbound") continue;
+
+      // Backlog viejo (system_halted, apagón sostenido del webhook de Kommo,
+      // etc.): si la fila llegó hace más de `answer_max_age_hours`, generate-
+      // response NUNCA la iba a responder igual (misma ventana de frescura,
+      // ver pickLeadBatch) — clasificarla con Haiku sería pagar por un
+      // mensaje que no se va a contestar. El mensaje SÍ queda guardado (el
+      // inbox lo muestra) pero: no se clasifica (vertical_id se queda null,
+      // cero tokens) y se marca ignored + requires_human_review para que
+      // nunca entre a la cola de generate-response (ni siquiera con
+      // bypass_review, que solo salta el filtro de requires_human_review, no
+      // el de ignored) y para que un asesor lo revise a mano.
+      // answer_max_age_hours=0 → sin límite, comportamiento legacy (nunca stale).
+      if (isStaleBacklog(msgCreatedAt, Date.now(), filters.answerMaxAgeHours)) {
+        await supabase
+          .from("messages")
+          .update({ ignored: true, ignored_reason: "backlog_stale", requires_human_review: true })
+          .eq("id", msg.id);
+        staleBacklogSkipped++;
+        continue;
+      }
 
       // Estado del lead en Kommo: interruptor "Apagar Agente" + etapa actual, en
       // una sola llamada. Se pide cuando cualquiera de los dos gates está
@@ -1291,6 +1345,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
     leads_processed: payload.leads?.add?.length ?? 0,
     messages_processed: payload.message?.add?.length ?? 0,
     inboundMessageIds,
+    staleBacklogSkipped,
   };
 }
 
@@ -1453,23 +1508,24 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
 }
 
 // ---- Tomar y procesar pending de la cola ----
-async function processBatch(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; messageIds: string[] }> {
+async function processBatch(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; messageIds: string[]; staleBacklogSkipped: number }> {
   // Tomar pending y marcarlos como processing (atómico)
   const { data: claimed, error: claimErr } = await supabase
     .rpc("claim_inbound_batch", { p_limit: MAX_BATCH });
 
   if (claimErr) {
-    // Si la RPC no existe aún, fallback a select+update
+    // Si la RPC no existe aún (p.ej. 0058 sin aplicar), fallback a
+    // select+update — inbound_queue.created_at siempre está disponible acá.
     const { data: rows } = await supabase
       .from("inbound_queue")
-      .select("id, payload, attempts")
+      .select("id, payload, attempts, created_at")
       .eq("status", "pending")
       .order("created_at", { ascending: true })
       .limit(MAX_BATCH);
 
-    if (!rows || rows.length === 0) return { processed: 0, failed: 0, messageIds: [] };
+    if (!rows || rows.length === 0) return { processed: 0, failed: 0, messageIds: [], staleBacklogSkipped: 0 };
 
-    let processed = 0, failed = 0;
+    let processed = 0, failed = 0, staleBacklogSkipped = 0;
     const messageIds: string[] = [];
     for (const row of rows) {
       try {
@@ -1477,8 +1533,9 @@ async function processBatch(anthropic: Anthropic, operator: string): Promise<{ p
           .from("inbound_queue")
           .update({ status: "processing", attempts: (row.attempts ?? 0) + 1 })
           .eq("id", row.id);
-        const result = await processPayload(row.payload as KommoPayload, anthropic, operator);
+        const result = await processPayload(row.payload as KommoPayload, anthropic, operator, row.created_at as string);
         messageIds.push(...result.inboundMessageIds);
+        staleBacklogSkipped += result.staleBacklogSkipped;
         await supabase
           .from("inbound_queue")
           .update({ status: "done", processed_at: new Date().toISOString() })
@@ -1494,18 +1551,19 @@ async function processBatch(anthropic: Anthropic, operator: string): Promise<{ p
         console.error("process row failed:", msg);
       }
     }
-    return { processed, failed, messageIds };
+    return { processed, failed, messageIds, staleBacklogSkipped };
   }
 
-  const rows = (claimed ?? []) as Array<{ id: string; payload: KommoPayload }>;
-  if (rows.length === 0) return { processed: 0, failed: 0, messageIds: [] };
+  const rows = (claimed ?? []) as Array<{ id: string; payload: KommoPayload; created_at: string }>;
+  if (rows.length === 0) return { processed: 0, failed: 0, messageIds: [], staleBacklogSkipped: 0 };
 
-  let processed = 0, failed = 0;
+  let processed = 0, failed = 0, staleBacklogSkipped = 0;
   const messageIds: string[] = [];
   for (const row of rows) {
     try {
-      const result = await processPayload(row.payload, anthropic, operator);
+      const result = await processPayload(row.payload, anthropic, operator, row.created_at);
       messageIds.push(...result.inboundMessageIds);
+      staleBacklogSkipped += result.staleBacklogSkipped;
       await supabase
         .from("inbound_queue")
         .update({ status: "done", processed_at: new Date().toISOString() })
@@ -1521,7 +1579,7 @@ async function processBatch(anthropic: Anthropic, operator: string): Promise<{ p
       console.error("process row failed:", msg);
     }
   }
-  return { processed, failed, messageIds };
+  return { processed, failed, messageIds, staleBacklogSkipped };
 }
 
 // ---- Drenado de la cola ----
@@ -1536,11 +1594,12 @@ async function processBatch(anthropic: Anthropic, operator: string): Promise<{ p
 const DRAIN_MAX_BATCHES = 5;
 const DRAIN_BUDGET_MS = 60_000;
 
-async function drainQueue(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; batches: number; messageIds: string[] }> {
+async function drainQueue(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; batches: number; messageIds: string[]; staleBacklogSkipped: number }> {
   const startedAt = Date.now();
   let processed = 0;
   let failed = 0;
   let batches = 0;
+  let staleBacklogSkipped = 0;
   const messageIds: string[] = [];
   for (let i = 0; i < DRAIN_MAX_BATCHES; i++) {
     if (Date.now() - startedAt > DRAIN_BUDGET_MS) break;
@@ -1548,11 +1607,12 @@ async function drainQueue(anthropic: Anthropic, operator: string): Promise<{ pro
     batches++;
     processed += r.processed;
     failed += r.failed;
+    staleBacklogSkipped += r.staleBacklogSkipped;
     messageIds.push(...r.messageIds);
     // Cola vacía (o todo lo pendiente ya lo tomó otra invocación) → salir ya.
     if (r.processed + r.failed === 0) break;
   }
-  return { processed, failed, batches, messageIds };
+  return { processed, failed, batches, messageIds, staleBacklogSkipped };
 }
 
 Deno.serve(async (req: Request) => {
@@ -1605,7 +1665,7 @@ Deno.serve(async (req: Request) => {
           }).catch((e) => console.warn("trigger generate-response failed:", e));
         }
         console.log(
-          `drain: ${result.processed} ok, ${result.failed} fail, ${result.batches} batches, ${recovered} recuperados`
+          `drain: ${result.processed} ok, ${result.failed} fail, ${result.batches} batches, ${recovered} recuperados, ${result.staleBacklogSkipped} backlog viejo sin clasificar`
         );
       } catch (err) {
         console.error("drain error:", err instanceof Error ? err.message : String(err));

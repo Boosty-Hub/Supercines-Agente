@@ -87,7 +87,10 @@ export default async function AlertsPage({ searchParams }: { searchParams: { sho
   if (draftRefIds.length > 0) {
     const { data: drs } = await supabase
       .from("drafts")
-      .select("id, messages(lead_id)")
+      // Dos FKs entre drafts y messages (drafts.message_id y
+      // messages.answered_by_draft_id) — hay que nombrar el FK o PostgREST
+      // responde PGRST201. Acá queremos el mensaje que ORIGINÓ el draft.
+      .select("id, messages!drafts_message_id_fkey(lead_id)")
       .in("id", draftRefIds);
     for (const d of (drs ?? []) as Array<{
       id: string;

@@ -40,7 +40,10 @@ export async function POST(request: Request) {
   try {
     let draftsQuery = supabase
       .from("drafts")
-      .select("id, agent_metadata, created_at, messages(lead_id)")
+      // Dos FKs entre drafts y messages (drafts.message_id y
+      // messages.answered_by_draft_id) — hay que nombrar el FK o PostgREST
+      // responde PGRST201. Acá queremos el mensaje que ORIGINÓ el draft.
+      .select("id, agent_metadata, created_at, messages!drafts_message_id_fkey(lead_id)")
       .not("agent_metadata->session_id", "is", null)
       .order("created_at", { ascending: true })
       .limit(BATCH_SIZE);

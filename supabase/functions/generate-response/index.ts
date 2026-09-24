@@ -525,7 +525,10 @@ async function checkLeadThrottle(
   const windowStart = new Date(now - t.windowHours * 3_600_000).toISOString();
   const { data, error } = await supabase
     .from("drafts")
-    .select("created_at, status, messages!inner(lead_id)")
+    // Hay dos FKs entre drafts y messages (drafts.message_id y
+    // messages.answered_by_draft_id): sin nombrar el FK, PostgREST responde
+    // PGRST201. Acá queremos el mensaje que ORIGINÓ el draft.
+    .select("created_at, status, messages!drafts_message_id_fkey!inner(lead_id)")
     .eq("messages.lead_id", leadId)
     .in("status", ["approved", "sent", "auto_sent"])
     .gte("created_at", windowStart)

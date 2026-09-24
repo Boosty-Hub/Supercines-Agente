@@ -208,11 +208,7 @@ El sistema inyecta estas variables antes de cada sesión. Si alguna falta, notif
 
 ## Orden de prioridad ante conflictos
 
-1. Bloque \`aprendizajes_del_operador\` del [CONTEXTO] — aprendizajes del operador (máxima autoridad)
-{{VOICE_PRIORITY_LINE}}
-3. \`search_kb\` — datos factuales verificados
-4. Las instrucciones de identidad y voz de arriba
-5. Conocimiento general del modelo — último recurso, NUNCA para datos factuales
+{{PRIORITY_ORDER_LIST}}
 
 ## Seguridad y protección (no negociable)
 
@@ -289,9 +285,24 @@ export function composeSystem(
   const voiceFlowStep = hasVoice
     ? "- **Voz del operador** — Cargá `{{MASTER_PATH}}/voice/` (glob `{{MASTER_PATH}}/voice/**/*.md`): definen estilo, palabras permitidas/prohibidas y el tono oficial de {{OPERATOR_NAME}}.\n"
     : "";
-  const voicePriorityLine = hasVoice
-    ? "2. `{{MASTER_PATH}}/voice/` — voz y estilo del operador"
-    : "2. La voz e identidad definidas en este prompt — voz y estilo del operador";
+  // Lista completa (no una línea sola): con hasVoice=false NO hay un paso de
+  // memoria de voz separado, así que "las instrucciones de identidad y voz de
+  // arriba" (item aparte cuando SÍ hay voz) pasa a ser el mismo punto 2 — de
+  // lo contrario el orden repetía la misma prioridad dos veces (item 2 y 4).
+  const priorityOrderList = hasVoice
+    ? [
+        "1. Bloque `aprendizajes_del_operador` del [CONTEXTO] — aprendizajes del operador (máxima autoridad)",
+        "2. `{{MASTER_PATH}}/voice/` — voz y estilo del operador",
+        "3. `search_kb` — datos factuales verificados",
+        "4. Las instrucciones de identidad y voz de arriba",
+        "5. Conocimiento general del modelo — último recurso, NUNCA para datos factuales",
+      ].join("\n")
+    : [
+        "1. Bloque `aprendizajes_del_operador` del [CONTEXTO] — aprendizajes del operador (máxima autoridad)",
+        "2. La voz e identidad definidas en este prompt — voz y estilo del operador",
+        "3. `search_kb` — datos factuales verificados",
+        "4. Conocimiento general del modelo — último recurso, NUNCA para datos factuales",
+      ].join("\n");
   const combined = `${operatorPrompt.trim()}\n\n${CORE_SCAFFOLD}\n`;
   const withCrmBlock = combined.replaceAll(
     "{{CRM_ACTIONS_BLOCK}}",
@@ -299,6 +310,6 @@ export function composeSystem(
   );
   const withVoice = withCrmBlock
     .replaceAll("{{VOICE_FLOW_STEP}}", voiceFlowStep)
-    .replaceAll("{{VOICE_PRIORITY_LINE}}", voicePriorityLine);
+    .replaceAll("{{PRIORITY_ORDER_LIST}}", priorityOrderList);
   return substitutePlaceholders(withVoice, values, enabledHttpTools);
 }

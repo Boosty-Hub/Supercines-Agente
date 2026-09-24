@@ -1363,14 +1363,32 @@ const RECOVER_MAX_ATTEMPTS = 5;
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
   try {
-    const { data: rows } = await supabase
+    // Mismos filtros que el hot path. Se cargan ANTES del select: (a)
+    // answerMaxAgeHours acota la query (ver abajo) y (b) un mensaje de un
+    // canal "clasificar sin responder" llega acá con ignored=false a
+    // propósito (para poder reintentarlo); al recuperarlo hay que volver a
+    // ponerle la marca, o generate-response lo tomaría y le respondería al
+    // lead en un canal silenciado. Ese era el agujero.
+    const filters = await getPublishFilters();
+
+    let recoverQuery = supabase
       .from("messages")
       .select("id, lead_id, content, source, media_url, media_kind, classification, leads(kommo_lead_id)")
       .eq("direction", "inbound")
       .eq("ignored", false)
       .is("vertical_id", null)
       .not("classification->error", "is", null)
-      .not("classification->>error", "like", "recover:%")
+      .not("classification->>error", "like", "recover:%");
+    // Ventana de frescura (0040/misma que isStaleBacklog): si el mensaje ya
+    // es más viejo que answer_max_age_hours, generate-response de todas
+    // formas no lo va a contestar — reclasificarlo (Haiku) tras una pausa
+    // larga solo quema tokens en un backlog que ya está vencido. 0 = sin
+    // límite, se conserva el comportamiento legacy (reintenta todo).
+    if (filters.answerMaxAgeHours > 0) {
+      const cutoffIso = new Date(Date.now() - filters.answerMaxAgeHours * 3600_000).toISOString();
+      recoverQuery = recoverQuery.gte("created_at", cutoffIso);
+    }
+    const { data: rows } = await recoverQuery
       .order("created_at", { ascending: true })
       .limit(RECOVER_BATCH);
     if (!rows || rows.length === 0) return 0;
@@ -1379,12 +1397,6 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
     const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
     const verticals = await getVerticals();
     const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
-    // Mismos filtros que el hot path. Un mensaje de un canal "clasificar sin
-    // responder" llega acá con ignored=false a propósito (para poder
-    // reintentarlo); al recuperarlo hay que volver a ponerle la marca, o
-    // generate-response lo tomaría y le respondería al lead en un canal
-    // silenciado. Ese era el agujero.
-    const filters = await getPublishFilters();
     const kommoDomain = runtimeCfg.get("KOMMO_API_DOMAIN");
     const kommoToken = runtimeCfg.get("KOMMO_ACCESS_TOKEN");
     let healed = 0;

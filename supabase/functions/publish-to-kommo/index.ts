@@ -37,13 +37,16 @@ type KommoConfig = {
   comment_reply_enabled: boolean;
   comment_salesbot_id: number | null;
   comment_field_id: number | null;
+  // Ventana de frescura (0040): drafts auto-aprobados más viejos que esto no
+  // se publican — ver el filtro de expiración más abajo.
+  answer_max_age_hours: number | null;
 };
 
 async function getConfig(): Promise<KommoConfig | null> {
   const { data, error } = await supabase
     .from("kommo_publish_config")
     .select(
-      "id, response_custom_field_id, salesbot_id, publishing_enabled, auto_reply_mode, publish_from, comment_reply_enabled, comment_salesbot_id, comment_field_id"
+      "id, response_custom_field_id, salesbot_id, publishing_enabled, auto_reply_mode, publish_from, comment_reply_enabled, comment_salesbot_id, comment_field_id, answer_max_age_hours"
     )
     .eq("is_active", true)
     .limit(1)
@@ -64,7 +67,7 @@ async function pickPending(publishFrom: string | null, limit = 10) {
   let q = supabase
     .from("drafts")
     .select(
-      "id, message_id, body, status, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
+      "id, message_id, body, status, created_at, reviewer_id, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
     )
     .eq("status", "approved")
     .is("sent_at", null);
@@ -72,6 +75,59 @@ async function pickPending(publishFrom: string | null, limit = 10) {
   const { data, error } = await q.order("created_at", { ascending: true }).limit(limit);
   if (error) throw new Error(`pick drafts: ${error.message}`);
   return data ?? [];
+}
+
+// Filtra los drafts vencidos tras una pausa (agente apagado / system_halted
+// por días) del lote a publicar. Un draft AUTO-aprobado (bypass_review o
+// vertical.auto_reply — reviewer_id null, ningún humano lo tocó) más viejo
+// que answer_max_age_hours ya no sirve: el lead puede haberse ido, haber
+// sido atendido por un asesor, o el contexto quedó desactualizado. Se marca
+// 'rejected' (no se publica) en vez de simplemente saltearlo, para que quede
+// visible en el dashboard por qué no salió.
+//
+// Un draft aprobado A MANO por un humano (reviewer_id no-null, vía
+// /api/drafts/[id]/approve) queda EXENTO: si un revisor lo aprobó, se
+// publica sin importar la antigüedad — esa es una decisión humana explícita.
+async function splitExpired<
+  T extends {
+    id: string;
+    created_at: string;
+    reviewer_id: string | null;
+    agent_metadata: Record<string, unknown> | null;
+  }
+>(drafts: T[], maxAgeHours: number): Promise<{ toPublish: T[]; expired: number }> {
+  if (!(maxAgeHours > 0)) return { toPublish: drafts, expired: 0 };
+
+  const cutoffMs = Date.now() - maxAgeHours * 3600_000;
+  const toPublish: T[] = [];
+  let expired = 0;
+
+  for (const d of drafts) {
+    const createdMs = new Date(d.created_at).getTime();
+    const isHumanApproved = d.reviewer_id != null;
+    // Fail-open: created_at inválido no debe bloquear la publicación.
+    if (!isHumanApproved && Number.isFinite(createdMs) && createdMs < cutoffMs) {
+      const { error } = await supabase
+        .from("drafts")
+        .update({
+          status: "rejected",
+          agent_metadata: {
+            ...(d.agent_metadata ?? {}),
+            expired: true,
+            expired_reason: "vencido tras pausa: más viejo que answer_max_age_hours",
+          },
+        })
+        // Guarda de status: si mientras tanto un humano lo aprobó/rechazó o
+        // ya se publicó, no lo pisamos.
+        .eq("id", d.id)
+        .eq("status", "approved");
+      if (!error) expired++;
+      continue;
+    }
+    toPublish.push(d);
+  }
+
+  return { toPublish, expired };
 }
 
 // Cap duro de seguridad en profundidad: 280 chars, cortando en el último espacio.
@@ -172,8 +228,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const pending = await pickPending(config.publish_from);
-    if (pending.length === 0) {
-      return new Response(JSON.stringify({ ok: true, published: 0 }), {
+    const maxAgeHours = Math.max(0, Number(config.answer_max_age_hours ?? 1));
+    const { toPublish, expired } = await splitExpired(pending, maxAgeHours);
+    if (toPublish.length === 0) {
+      return new Response(JSON.stringify({ ok: true, published: 0, expired }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -183,7 +241,7 @@ Deno.serve(async (req: Request) => {
     let failed = 0;
     const errors: Array<{ draft_id: string; error: string }> = [];
 
-    for (const d of pending) {
+    for (const d of toPublish) {
       try {
         await publishOne(d, config, kommoDomain, kommoToken);
         await supabase
@@ -220,7 +278,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, published, failed, errors }),
+      JSON.stringify({ ok: true, published, failed, expired, errors }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
   } catch (err) {

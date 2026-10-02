@@ -6,6 +6,7 @@ import { getBcvRateCached } from "@/lib/exchange";
 import { getScope } from "@/lib/auth/roles";
 import { getSetupState } from "@/lib/setup-state";
 import { MobileNav, SidebarNav } from "./nav";
+import { BoostySupportWidget } from "./boosty-widget";
 import { EmbedTabsNav } from "./embed-tabs-nav";
 import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
@@ -87,6 +88,7 @@ export default async function DashboardLayout({
         </div>
         {showSetupDrawer && <SetupDrawer state={setupState} />}
       </div>
+      <BoostySupportWidget email={email} />
     </div>
   );
 }

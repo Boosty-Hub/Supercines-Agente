@@ -8,6 +8,7 @@ import {
   Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight, Eye,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
+import { BOOSTY_MOUNT_DESKTOP, BOOSTY_MOUNT_MOBILE } from "./boosty-widget";
 import { scopeAlcanza, type Scope } from "@/lib/auth/roles";
 
 type BcvData = { rate: number; source: string; fetchedAt: string };
@@ -287,6 +288,8 @@ export function SidebarNav({
             {agentLabel}
           </p>
         )}
+        {/* Punto de montaje del widget de soporte Boosty (desktop) — ver boosty-widget.tsx */}
+        <div id={BOOSTY_MOUNT_DESKTOP} className="shrink-0" />
         <button
           type="button"
           onClick={toggle}
@@ -343,6 +346,8 @@ export function MobileNav({
           {bcv && (
             <BcvBanner rate={bcv.rate} source={bcv.source} fetchedAt={bcv.fetchedAt} variant="mini" />
           )}
+          {/* Punto de montaje del widget de soporte Boosty (mobile) — ver boosty-widget.tsx */}
+          <div id={BOOSTY_MOUNT_MOBILE} className="shrink-0" />
           <button
             type="button"
             aria-label="Abrir menú"

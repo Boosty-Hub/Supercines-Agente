@@ -130,22 +130,22 @@ export function BarBreakdown(props: {
 }
 
 // ---- FunnelChart ----
-// Embudo real (trapecios conectados que se angostan de paso a paso), no
-// barras sueltas — con una barra sólida al 100% en cada fila (como la v1)
-// un funnel sano se veía igual de "saturado" que uno con fugas grandes. El
-// ancho de cada segmento sigue siendo proporcional al conteo (MISMA
-// información que antes); lo que cambia es la forma (angosta en vez de
-// barras repetidas) y el color, que ahora codifica la retención respecto al
-// paso anterior — así una caída real salta a la vista aunque el resto del
-// embudo esté casi lleno.
-const RETENTION_COLORS = [
-  { min: 0.90, color: "#10b981" }, // emerald — retiene casi todo
-  { min: 0.70, color: "#6366f1" }, // indigo — retención sana
-  { min: 0.50, color: "#f59e0b" }, // amber — fuga notable
-  { min: 0, color: "#ef4444" }, // red — fuga grande
+// Barras escalonadas: una fila por paso, ancho proporcional a cuántos
+// llegaron (relativo al primer paso), con la caída % respecto al paso
+// anterior a la derecha. Se probó una versión en forma de embudo conectado
+// (trapecios) pero resultaba difícil de leer a primera vista para alguien
+// que no conoce el flujo de antemano — esta versión es más literal: se lee
+// como una lista de arriba a abajo, igual que el resto de las tablas del
+// dashboard. El color de la barra es siempre el mismo (calma, no distrae);
+// la severidad de la caída se marca SOLO en el texto "↓x%", que es el dato
+// que de verdad hay que notar.
+const DROP_SEVERITY = [
+  { max: 0.10, color: "text-neutral-400" }, // caída chica, normal
+  { max: 0.30, color: "text-amber-600" }, // caída notable
+  { max: 1, color: "text-red-600" }, // caída grande
 ];
-function retentionColor(ratio: number): string {
-  return (RETENTION_COLORS.find((b) => ratio >= b.min) ?? RETENTION_COLORS[RETENTION_COLORS.length - 1]).color;
+function dropColor(dropRatio: number): string {
+  return (DROP_SEVERITY.find((b) => dropRatio <= b.max) ?? DROP_SEVERITY[DROP_SEVERITY.length - 1]).color;
 }
 
 export function FunnelChart(props: {
@@ -154,77 +154,33 @@ export function FunnelChart(props: {
   const { steps } = props;
   if (steps.length === 0) return <div className="text-xs text-neutral-400">Sin datos</div>;
 
-  const n = steps.length;
   const first = steps[0].count || 1;
-
-  const W = 800;
-  const LABEL_W = 190;
-  const RIGHT_W = 120;
-  const PAD_Y = 22;
-  const ROW_H = 42;
-  const H = PAD_Y * 2 + Math.max(n - 1, 1) * ROW_H;
-
-  const shapeX0 = LABEL_W + 12;
-  const shapeX1 = W - RIGHT_W - 12;
-  const centerX = (shapeX0 + shapeX1) / 2;
-  const maxHalf = (shapeX1 - shapeX0) / 2;
-
-  const yAt = (i: number) => PAD_Y + i * ROW_H;
-  const halfWidthAt = (i: number) => Math.max((steps[i].count / first) * maxHalf, 3);
-
   return (
-    <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 320 }}>
-        {/* Segmentos del embudo: un trapecio por transición, coloreado por retención */}
-        {steps.slice(0, -1).map((s, i) => {
-          const y0 = yAt(i);
-          const y1 = yAt(i + 1);
-          const h0 = halfWidthAt(i);
-          const h1 = halfWidthAt(i + 1);
-          const ratio = s.count > 0 ? steps[i + 1].count / s.count : 0;
-          const points = [
-            `${centerX - h0},${y0}`,
-            `${centerX + h0},${y0}`,
-            `${centerX + h1},${y1}`,
-            `${centerX - h1},${y1}`,
-          ].join(" ");
-          return (
-            <polygon
-              key={s.label}
-              points={points}
-              fill={retentionColor(ratio)}
-              stroke="#ffffff"
-              strokeWidth={1.5}
-            />
-          );
-        })}
-
-        {/* Labels + conteos, uno por cada línea de corte del embudo */}
-        {steps.map((s, i) => {
-          const y = yAt(Math.min(i, n - 1));
-          const prevCount = i > 0 ? steps[i - 1].count : null;
-          const retention = prevCount && prevCount > 0 ? Math.round((s.count / prevCount) * 100) : null;
-          return (
-            <g key={s.label}>
-              <text x={LABEL_W} y={y + 4} textAnchor="end" fontSize={11} fill="#52525b">
-                {s.label}
-              </text>
-              <text x={W - RIGHT_W + 8} y={y + 4} textAnchor="start" fontSize={11} fontWeight={600} fill="#27272a">
-                {s.count}
-                {retention !== null && (
-                  <tspan fontWeight={400} fill="#a1a1aa"> ({retention}%)</tspan>
-                )}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-      <p className="mt-1 text-[10px] text-neutral-400">
-        Color = retención respecto al paso anterior: <span className="text-emerald-600 font-medium">verde ≥90%</span>,{" "}
-        <span className="text-[#6366f1] font-medium">azul 70–89%</span>,{" "}
-        <span className="text-amber-600 font-medium">ámbar 50–69%</span>,{" "}
-        <span className="text-red-600 font-medium">rojo &lt;50%</span>.
-      </p>
+    <div className="space-y-2.5">
+      {steps.map((s, i) => {
+        const prevCount = i > 0 ? steps[i - 1].count : null;
+        const dropPct = prevCount && prevCount > 0 ? Math.round((1 - s.count / prevCount) * 100) : null;
+        const dropRatio = prevCount && prevCount > 0 ? 1 - s.count / prevCount : 0;
+        return (
+          <div key={s.label} className="flex items-center gap-3">
+            <div className="w-40 shrink-0 text-xs text-neutral-600 truncate" title={s.label}>
+              {i + 1}. {s.label}
+            </div>
+            <div className="flex-1 h-5 rounded-full bg-neutral-100 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[#6366f1]"
+                style={{ width: `${Math.max((s.count / first) * 100, 1).toFixed(1)}%` }}
+              />
+            </div>
+            <div className="w-24 shrink-0 text-right text-xs tabular-nums">
+              <span className="font-semibold text-neutral-800">{s.count}</span>
+              {dropPct !== null && (
+                <span className={`ml-1.5 font-medium ${dropColor(dropRatio)}`}>↓{dropPct}%</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

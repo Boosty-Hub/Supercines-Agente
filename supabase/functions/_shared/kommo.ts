@@ -328,6 +328,129 @@ export function patchLeadFieldTyped(
   return patchEntityFieldTyped("leads", kommoLeadId, def, value, kommoDomain, kommoToken);
 }
 
+export type KommoCustomFieldValue = { field_id: number; values: Array<{ value: unknown }> };
+
+export type KommoLeadRaw = {
+  id: number;
+  status_id: number;
+  pipeline_id: number;
+  responsible_user_id: number | null;
+  created_at: number;
+  updated_at: number;
+  custom_fields_values: KommoCustomFieldValue[] | null;
+  contactId: number | null;
+};
+
+const LEADS_PAGE_SIZE = 250;
+const LEADS_PAGE_SAFETY_CAP = 40; // 40 * 250 = 10.000 leads por pipeline, de sobra
+
+/**
+ * Pagina TODOS los leads de un pipeline creados desde `sinceUnix` (epoch
+ * segundos), con el contacto principal embebido (solo el id — Kommo no
+ * expande sus custom fields acá, para eso ver `fetchContactsByIds`).
+ * Throws si alguna página responde !OK.
+ */
+export async function fetchLeadsByPipelineSince(
+  pipelineId: number,
+  sinceUnix: number,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<KommoLeadRaw[]> {
+  const out: KommoLeadRaw[] = [];
+  for (let page = 1; page <= LEADS_PAGE_SAFETY_CAP; page++) {
+    const url =
+      `https://${kommoDomain}/api/v4/leads` +
+      `?filter[pipeline_id]=${pipelineId}` +
+      `&filter[created_at][from]=${sinceUnix}` +
+      `&with=contacts&limit=${LEADS_PAGE_SIZE}&page=${page}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (res.status === 204) break; // sin más resultados
+    if (!res.ok) {
+      throw new Error(`fetch leads (pipeline ${pipelineId}, page ${page}): ${res.status} ${await res.text()}`);
+    }
+    const json = (await res.json()) as {
+      _embedded?: {
+        leads?: Array<{
+          id: number;
+          status_id: number;
+          pipeline_id: number;
+          responsible_user_id?: number | null;
+          created_at: number;
+          updated_at: number;
+          custom_fields_values: KommoCustomFieldValue[] | null;
+          _embedded?: { contacts?: Array<{ id: number; is_main?: boolean }> };
+        }>;
+      };
+    };
+    const leads = json._embedded?.leads ?? [];
+    for (const l of leads) {
+      const contacts = l._embedded?.contacts ?? [];
+      const main = contacts.find((c) => c.is_main) ?? contacts[0];
+      out.push({
+        id: l.id,
+        status_id: l.status_id,
+        pipeline_id: l.pipeline_id,
+        responsible_user_id: l.responsible_user_id ?? null,
+        created_at: l.created_at,
+        updated_at: l.updated_at,
+        custom_fields_values: l.custom_fields_values,
+        contactId: main?.id ?? null,
+      });
+    }
+    if (leads.length < LEADS_PAGE_SIZE) break; // última página
+  }
+  return out;
+}
+
+export type KommoContactLite = { id: number; name: string | null; email: string | null };
+
+const CONTACT_EMAIL_FIELD_ID = 115308;
+const CONTACTS_BATCH_SIZE = 250;
+
+/**
+ * Trae nombre + email (custom field "Email") de un lote de contactos por id.
+ * Pagina en lotes de 250 ids (límite de la API). Throws si alguna página
+ * responde !OK (204 = sin resultados para ese lote, no es error).
+ */
+export async function fetchContactsByIds(
+  ids: number[],
+  kommoDomain: string,
+  kommoToken: string
+): Promise<Map<number, KommoContactLite>> {
+  const out = new Map<number, KommoContactLite>();
+  const uniqueIds = Array.from(new Set(ids));
+  for (let i = 0; i < uniqueIds.length; i += CONTACTS_BATCH_SIZE) {
+    const batch = uniqueIds.slice(i, i + CONTACTS_BATCH_SIZE);
+    if (batch.length === 0) continue;
+    const qs = batch.map((id) => `filter[id][]=${id}`).join("&");
+    const url = `https://${kommoDomain}/api/v4/contacts?${qs}&limit=${CONTACTS_BATCH_SIZE}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (res.status === 204) continue;
+    if (!res.ok) {
+      throw new Error(`fetch contacts batch: ${res.status} ${await res.text()}`);
+    }
+    const json = (await res.json()) as {
+      _embedded?: {
+        contacts?: Array<{
+          id: number;
+          name?: string | null;
+          custom_fields_values: KommoCustomFieldValue[] | null;
+        }>;
+      };
+    };
+    for (const c of json._embedded?.contacts ?? []) {
+      const emailField = (c.custom_fields_values ?? []).find((f) => f.field_id === CONTACT_EMAIL_FIELD_ID);
+      const email = emailField?.values?.[0]?.value;
+      out.set(c.id, {
+        id: c.id,
+        name: c.name ?? null,
+        email: typeof email === "string" ? email : null,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Dispara un salesbot de Kommo sobre un lead.
  * Endpoint legacy v2 (sigue soportado en cuentas v4).

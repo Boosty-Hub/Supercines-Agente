@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { SectionCard, StatRow, StatCard, EmptyState, SegmentedControl, BarChart3, TrendUp, Check, Bot } from "@/components/ui";
+import { SectionCard, StatRow, StatCard, EmptyState, SegmentedControl, BarChart3, TrendUp, Check, Bot, Clock } from "@/components/ui";
 import { FunnelChart, BarBreakdown, LineAreaChart, type LineAreaSeries } from "../consumo/charts";
-import { FLOW_LABELS, STEP_LABELS, type FlowType, type FunnelLeadRow } from "./steps";
+import { FLOW_LABELS, STEP_LABELS, COLD_STALL_HOURS, formatRelativeTime, type FlowType, type FunnelLeadRow } from "./steps";
+
+function hoursSince(iso: string | null): number {
+  if (!iso) return Infinity;
+  return (Date.now() - new Date(iso).getTime()) / 3_600_000;
+}
 
 export default function SalesbotFunnelTabs({
   rows,
@@ -25,6 +30,11 @@ export default function SalesbotFunnelTabs({
   const reachedCount = filtered.filter((r) => r.reached_human).length;
   const pctReached = total > 0 ? Math.round((reachedCount / total) * 100) : null;
   const stuckCount = total - reachedCount;
+  // Proxy por tiempo (no una causa confirmada): estancado y sin actividad en
+  // Kommo hace más de COLD_STALL_HOURS. Es el único dato real y verificable
+  // que tenemos para distinguir "todavía podría estar respondiendo" de
+  // "ya se enfrió".
+  const coldCount = filtered.filter((r) => !r.reached_human && hoursSince(r.kommo_updated_at) > COLD_STALL_HOURS).length;
 
   // "Al menos llegó hasta este paso" — acumulado, de ahí la forma de funnel.
   const funnelSteps = labels.map((label, i) => ({
@@ -86,6 +96,13 @@ export default function SalesbotFunnelTabs({
               icon={<TrendUp size={17} />}
               tone={stuckCount > 0 ? "amber" : "default"}
             />
+            <StatCard
+              label={`Fríos (+${COLD_STALL_HOURS}h sin actividad)`}
+              value={coldCount}
+              hint={stuckCount > 0 ? `de ${stuckCount} estancados` : undefined}
+              icon={<Clock size={17} />}
+              tone={coldCount > 0 ? "red" : "default"}
+            />
           </StatRow>
 
           <SectionCard
@@ -123,6 +140,7 @@ export default function SalesbotFunnelTabs({
                       <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Fecha</th>
                       <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Lead</th>
                       <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Último paso alcanzado</th>
+                      <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Última actividad</th>
                       <th scope="col" className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-neutral-400">Estado</th>
                     </tr>
                   </thead>
@@ -132,6 +150,16 @@ export default function SalesbotFunnelTabs({
                         <td className="px-4 py-3 text-xs text-neutral-500 tabular-nums">{r.kommo_created_at.slice(0, 10)}</td>
                         <td className="px-4 py-3 text-sm text-neutral-700">{r.contact_name || `Lead ${r.kommo_lead_id}`}</td>
                         <td className="px-4 py-3 text-sm text-neutral-600">{labels[r.furthest_step_index]}</td>
+                        <td
+                          className={
+                            "px-4 py-3 text-xs tabular-nums " +
+                            (!r.reached_human && hoursSince(r.kommo_updated_at) > COLD_STALL_HOURS
+                              ? "text-red-600 font-medium"
+                              : "text-neutral-500")
+                          }
+                        >
+                          {formatRelativeTime(r.kommo_updated_at)}
+                        </td>
                         <td className="px-4 py-3">
                           <span
                             className={

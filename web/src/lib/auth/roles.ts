@@ -137,6 +137,7 @@ const PATH_SCOPES: ReadonlyArray<{ readonly prefix: string; readonly scope: Scop
   { prefix: "/outcomes", scope: "contenido" },
   { prefix: "/consumo", scope: "contenido" },
   { prefix: "/status", scope: "contenido" }, // muestra el costo en USD, igual que /consumo
+  { prefix: "/salesbots", scope: "contenido" }, // funnel de los Salesbots de Kommo (solo lectura)
   { prefix: "/dreams", scope: "contenido" },
   { prefix: "/kb", scope: "contenido" }, // redirige a /contenido?tab=kb
   { prefix: "/voz", scope: "contenido" }, // redirige a /contenido?tab=voz

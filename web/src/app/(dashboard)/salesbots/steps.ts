@@ -48,4 +48,24 @@ export type FunnelLeadRow = {
   furthest_step_index: number;
   reached_human: boolean;
   kommo_created_at: string;
+  kommo_updated_at: string | null;
 };
+
+// Umbral para considerar un lead estancado "frío": sin actividad en Kommo
+// hace más de este tiempo. Proxy por tiempo, no una certeza de la causa real
+// (no tenemos visibilidad de errores internos del salesbot) — pero es el
+// único dato real y verificable que tenemos (kommo_updated_at).
+export const COLD_STALL_HOURS = 48;
+
+/** "hace 6 días" / "hace 3 horas" / "hace 40 min" — tiempo relativo en español. */
+export function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "—";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMin = Math.round(diffMs / 60_000);
+  if (diffMin < 1) return "recién";
+  if (diffMin < 60) return `hace ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `hace ${diffH}h`;
+  const diffD = Math.round(diffH / 24);
+  return `hace ${diffD} día${diffD === 1 ? "" : "s"}`;
+}

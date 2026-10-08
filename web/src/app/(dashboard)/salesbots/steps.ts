@@ -40,6 +40,17 @@ export const STEP_LABELS: Record<FlowType, string[]> = {
   ],
 };
 
+/** Agregado liviano por sede+flujo para comparar sedes en el selector (punto 3). */
+export type SedeFlowSummary = {
+  sede: Sede;
+  flow_type: FlowType;
+  total: number;
+  reached: number;
+};
+
+/** Agregado del período anterior de igual duración, misma sede (punto 2). */
+export type PreviousPeriodSummary = Record<FlowType, { total: number; reached: number }>;
+
 export type FunnelLeadRow = {
   kommo_lead_id: number;
   sede: Sede;

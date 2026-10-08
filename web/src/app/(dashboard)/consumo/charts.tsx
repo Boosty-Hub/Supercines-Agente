@@ -129,6 +129,46 @@ export function BarBreakdown(props: {
   );
 }
 
+// ---- FunnelChart ----
+// Barras descendentes por paso de un funnel (ej: el recorrido de un bot),
+// con el conteo y el % de retención respecto al paso anterior. Mismo
+// lenguaje visual que BarBreakdown (ancho proporcional al primer paso).
+export function FunnelChart(props: {
+  steps: { label: string; count: number }[];
+}): React.JSX.Element {
+  const { steps } = props;
+  if (steps.length === 0) return <div className="text-xs text-neutral-400">Sin datos</div>;
+
+  const first = steps[0].count || 1;
+  return (
+    <div className="space-y-2">
+      {steps.map((s, i) => {
+        const prev = i > 0 ? steps[i - 1].count : null;
+        const retention = prev && prev > 0 ? Math.round((s.count / prev) * 100) : null;
+        return (
+          <div key={s.label} className="flex items-center gap-3">
+            <div className="w-40 shrink-0 text-xs text-neutral-600 truncate" title={s.label}>
+              {s.label}
+            </div>
+            <div className="flex-1 relative h-6 rounded-full bg-neutral-100 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[#6366f1]"
+                style={{ width: `${Math.max((s.count / first) * 100, 1).toFixed(1)}%` }}
+              />
+            </div>
+            <div className="w-28 shrink-0 text-right text-xs font-medium text-neutral-700 tabular-nums">
+              {s.count}
+              {retention !== null && (
+                <span className="ml-1.5 text-[10px] text-neutral-400">({retention}%)</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---- HeatmapGrid ----
 const DOW_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]; // isodow 1..7
 

@@ -3,7 +3,19 @@
 import { useState } from "react";
 import { SectionCard, StatRow, StatCard, EmptyState, SegmentedControl, BarChart3, TrendUp, Check, Bot, Clock } from "@/components/ui";
 import { FunnelChart, BarBreakdown, LineAreaChart, type LineAreaSeries } from "../consumo/charts";
-import { FLOW_LABELS, STEP_LABELS, COLD_STALL_HOURS, formatRelativeTime, type FlowType, type FunnelLeadRow } from "./steps";
+import {
+  SEDES,
+  SEDE_LABELS,
+  FLOW_LABELS,
+  STEP_LABELS,
+  COLD_STALL_HOURS,
+  formatRelativeTime,
+  type Sede,
+  type FlowType,
+  type FunnelLeadRow,
+  type SedeFlowSummary,
+  type PreviousPeriodSummary,
+} from "./steps";
 
 function hoursSince(iso: string | null): number {
   if (!iso) return Infinity;
@@ -13,9 +25,15 @@ function hoursSince(iso: string | null): number {
 export default function SalesbotFunnelTabs({
   rows,
   rangeDays,
+  sede,
+  sedeSummary,
+  previousPeriod,
 }: {
   rows: FunnelLeadRow[];
   rangeDays: number;
+  sede: Sede;
+  sedeSummary: SedeFlowSummary[];
+  previousPeriod: PreviousPeriodSummary;
 }) {
   const [tab, setTab] = useState<FlowType>("cumpleanos");
 
@@ -30,6 +48,14 @@ export default function SalesbotFunnelTabs({
   const reachedCount = filtered.filter((r) => r.reached_human).length;
   const pctReached = total > 0 ? Math.round((reachedCount / total) * 100) : null;
   const stuckCount = total - reachedCount;
+
+  // Comparativo vs. el período anterior de igual duración (misma sede, mismo flujo).
+  const prevPeriod = previousPeriod[tab];
+  const prevPct = prevPeriod.total > 0 ? Math.round((prevPeriod.reached / prevPeriod.total) * 100) : null;
+  const pctDelta = pctReached !== null && prevPct !== null ? pctReached - prevPct : null;
+  const deltaLabel =
+    pctDelta === null ? null : pctDelta === 0 ? "sin cambio" : pctDelta > 0 ? `↑${pctDelta} pts` : `↓${Math.abs(pctDelta)} pts`;
+  const reachedHint = `${reachedCount} de ${total}` + (deltaLabel ? ` · ${deltaLabel} vs. anterior` : "");
   // Proxy por tiempo (no una causa confirmada): estancado y sin actividad en
   // Kommo hace más de COLD_STALL_HOURS. Es el único dato real y verificable
   // que tenemos para distinguir "todavía podría estar respondiendo" de
@@ -66,6 +92,33 @@ export default function SalesbotFunnelTabs({
 
   return (
     <div className="space-y-6">
+      {/* Comparativo de sedes (punto 3): % de ESTE flujo (tab activo) en cada
+          sede, siempre el mismo flow_type que el que estás mirando — nunca
+          mezclado. Cambiar de pestaña actualiza estos % al instante; cambiar
+          de sede navega (recarga con los datos completos de esa sede). */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {SEDES.map((s) => {
+          const summary = sedeSummary.find((x) => x.sede === s && x.flow_type === tab);
+          const pct = summary && summary.total > 0 ? Math.round((summary.reached / summary.total) * 100) : null;
+          const active = s === sede;
+          return (
+            <a
+              key={s}
+              href={`/salesbots?sede=${s}&range=${rangeDays}`}
+              className={
+                "flex flex-col items-center rounded-lg px-3 py-1.5 leading-tight transition-colors " +
+                (active ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200")
+              }
+            >
+              <span className="text-xs font-medium">{SEDE_LABELS[s]}</span>
+              <span className={"text-[10px] " + (active ? "text-neutral-300" : "text-neutral-400")}>
+                {pct !== null ? `${pct}% llegó` : "sin datos"}
+              </span>
+            </a>
+          );
+        })}
+      </div>
+
       <SegmentedControl
         items={tabs.map((t) => ({ id: t.key, label: t.label }))}
         value={tab}
@@ -86,7 +139,7 @@ export default function SalesbotFunnelTabs({
             <StatCard
               label="Llegaron a la asesora"
               value={pctReached !== null ? `${pctReached}%` : "—"}
-              hint={`${reachedCount} de ${total}`}
+              hint={reachedHint}
               icon={<Check size={17} />}
               tone={pctReached !== null && pctReached >= 50 ? "emerald" : "amber"}
             />

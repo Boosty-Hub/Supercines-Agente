@@ -22,7 +22,7 @@ export default async function SalesbotsPage({
   const supabase = createSupabaseServerClient();
   const { data } = await supabase
     .from("salesbot_funnel_leads")
-    .select("kommo_lead_id, sede, flow_type, contact_name, furthest_step_index, reached_human, kommo_created_at")
+    .select("kommo_lead_id, sede, flow_type, contact_name, furthest_step_index, reached_human, kommo_created_at, kommo_updated_at")
     .eq("sede", sede)
     .gte("kommo_created_at", since)
     .order("kommo_created_at", { ascending: false });

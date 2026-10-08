@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight, Eye,
+  Repeat, Bell, Settings, LogOut, BarChart3, ChevronRight, Eye, Bot,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
 import { BOOSTY_MOUNT_DESKTOP, BOOSTY_MOUNT_MOBILE } from "./boosty-widget";
@@ -55,6 +55,7 @@ export const NAV_GROUPS: NavGroup[] = [
       // Dejarlo en Operación habría sido una segunda puerta al mismo número con
       // un permiso distinto.
       { href: "/status", label: "Status", icon: Eye },
+      { href: "/salesbots", label: "Salesbots", icon: Bot },
       { href: "/dreams", label: "Dreams", icon: Stars },
     ],
   },

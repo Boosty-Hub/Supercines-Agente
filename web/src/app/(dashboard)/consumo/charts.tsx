@@ -22,7 +22,7 @@ export function LineAreaChart(props: {
   formatY?: (n: number) => string;
 }): React.JSX.Element {
   const { days, series, formatY = (n) => `$${n.toFixed(2)}` } = props;
-  const W = 800; const H = 240; const PAD = { top: 16, right: 16, bottom: 40, left: 60 };
+  const W = 800; const H = 228; const PAD = { top: 16, right: 16, bottom: 28, left: 60 };
   const inner = { w: W - PAD.left - PAD.right, h: H - PAD.top - PAD.bottom };
 
   if (days.length === 0 || series.length === 0) {
@@ -40,52 +40,60 @@ export function LineAreaChart(props: {
   // Y axis ticks
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => ({ v: maxVal * t, y: yScale(maxVal * t) }));
 
-  // X axis labels (show at most 7 evenly spaced)
-  const xStep2 = Math.max(1, Math.floor(days.length / 7));
-  const xLabels = days.reduce<{ i: number; label: string }[]>((acc, d, i) => {
-    if (i % xStep2 === 0 || i === days.length - 1) acc.push({ i, label: d.slice(5) }); // MM-DD
-    return acc;
-  }, []);
+  // X axis labels: hasta 7, repartidas PAREJO entre el primer y el último día
+  // (en vez de un paso fijo + forzar el último índice, que con 30 días deja
+  // la última etiqueta pegada a la anterior). Con días de sobra, dedupe por
+  // si el redondeo hace coincidir dos "k" en el mismo índice.
+  const labelCount = Math.min(7, days.length);
+  const xLabels = Array.from({ length: labelCount }, (_, k) => {
+    const i = labelCount === 1 ? 0 : Math.round((k * (days.length - 1)) / (labelCount - 1));
+    return { i, label: days[i].slice(5) }; // MM-DD
+  }).filter((v, idx, arr) => arr.findIndex((x) => x.i === v.i) === idx);
 
   return (
-    <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 280, maxHeight: 260 }}>
-        <g transform={`translate(${PAD.left},${PAD.top})`}>
-          {/* Y grid + labels */}
-          {yTicks.map(({ v, y }) => (
-            <g key={v}>
-              <line x1={0} x2={inner.w} y1={y} y2={y} stroke="#e5e7eb" strokeWidth={1} />
-              <text x={-6} y={y + 4} textAnchor="end" fontSize={10} fill="#9ca3af">{formatY(v)}</text>
-            </g>
-          ))}
-          {/* X labels */}
-          {xLabels.map(({ i, label }) => (
-            <text key={i} x={xScale(i)} y={inner.h + 20} textAnchor="middle" fontSize={10} fill="#9ca3af">{label}</text>
-          ))}
-          {/* Areas (stacked, back to front) */}
-          {series.map((ser) => {
-            const pts = ser.values.map((v, i) => `${xScale(i)},${yScale(v)}`).join(" ");
-            const area = `${xScale(0)},${inner.h} ` + pts + ` ${xScale(days.length - 1)},${inner.h}`;
-            return (
-              <polygon key={ser.label} points={area} fill={ser.color} opacity={0.18} />
-            );
-          })}
-          {/* Lines */}
-          {series.map((ser) => {
-            const pts = ser.values.map((v, i) => `${xScale(i)},${yScale(v)}`).join(" ");
-            return (
-              <polyline key={ser.label} points={pts} fill="none" stroke={ser.color} strokeWidth={2} />
-            );
-          })}
-          {/* Legend */}
-          {series.map((ser, i) => (
-            <g key={ser.label} transform={`translate(${i * 140},${inner.h + 30})`}>
-              <rect x={0} y={-8} width={10} height={10} fill={ser.color} rx={2} />
-              <text x={14} y={0} fontSize={11} fill="#6b7280">{ser.label}</text>
-            </g>
-          ))}
-        </g>
-      </svg>
+    <div>
+      {/* Leyenda arriba, a la izquierda — separada del eje de fechas (antes
+          compartían la misma franja inferior y quedaban pegadas). */}
+      <div className="mb-2 flex flex-wrap items-center gap-4">
+        {series.map((ser) => (
+          <div key={ser.label} className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: ser.color }} />
+            <span className="text-xs text-neutral-600">{ser.label}</span>
+          </div>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 280, maxHeight: 248 }}>
+          <g transform={`translate(${PAD.left},${PAD.top})`}>
+            {/* Y grid + labels */}
+            {yTicks.map(({ v, y }) => (
+              <g key={v}>
+                <line x1={0} x2={inner.w} y1={y} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                <text x={-6} y={y + 4} textAnchor="end" fontSize={10} fill="#9ca3af">{formatY(v)}</text>
+              </g>
+            ))}
+            {/* X labels */}
+            {xLabels.map(({ i, label }) => (
+              <text key={i} x={xScale(i)} y={inner.h + 20} textAnchor="middle" fontSize={10} fill="#9ca3af">{label}</text>
+            ))}
+            {/* Areas (stacked, back to front) */}
+            {series.map((ser) => {
+              const pts = ser.values.map((v, i) => `${xScale(i)},${yScale(v)}`).join(" ");
+              const area = `${xScale(0)},${inner.h} ` + pts + ` ${xScale(days.length - 1)},${inner.h}`;
+              return (
+                <polygon key={ser.label} points={area} fill={ser.color} opacity={0.18} />
+              );
+            })}
+            {/* Lines */}
+            {series.map((ser) => {
+              const pts = ser.values.map((v, i) => `${xScale(i)},${yScale(v)}`).join(" ");
+              return (
+                <polyline key={ser.label} points={pts} fill="none" stroke={ser.color} strokeWidth={2} />
+              );
+            })}
+          </g>
+        </svg>
+      </div>
     </div>
   );
 }

@@ -2,33 +2,39 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues } from "@/lib/runtime-config";
-import {
-  generateWebhookSecret,
-  maskDestination,
-  planWebhookUpdate,
-  webhookDestination,
-  type KommoHook,
-} from "@/lib/kommo-webhook";
+import { getScope, scopeAlcanza } from "@/lib/auth/roles";
+import { generateWebhookSecret, maskDestination, strictModeBlocker, webhookDestination } from "@/lib/kommo-webhook";
+import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
 
 /**
- * Autenticidad del webhook de Kommo (secreto en la URL). Alcance `configuracion`
- * (middleware, prefijo /api/kommo).
+ * Autenticidad del webhook de Kommo (secreto en la URL). Alcance `configuracion`: lo
+ * aplica el middleware (prefijo /api/kommo) y, como la respuesta lleva el SECRETO, se
+ * verifica otra vez acá (defensa en profundidad).
  *
- *  GET   → URL completa con el secreto + estado del modo (para Configuración → Kommo y /setup).
- *  POST  → { action: "set_mode", mode } · { action: "apply" } · { action: "rotate" }
+ *  GET   → URL completa con el secreto + estado del modo, de la rotación y del último descarte.
+ *  POST  → { action: "set_mode", mode, force? } · { action: "apply" } · { action: "rotate" }
  *
- * `apply` actualiza la suscripción en Kommo por API (POST del destino nuevo y DELETE del
- * viejo: Kommo no edita la URL). `rotate` genera otro secreto, deja el anterior válido 24 h
- * (así no hay downtime mientras Kommo cambia de URL) y aplica a Kommo si está conectado.
+ * `set_mode: strict` responde 409 si cortaría el webhook real (nunca llegó una request con
+ * clave, o llegó una sin clave hace menos de 1 h), salvo `force: true` (el panel lo pide
+ * con confirmación explícita y el motivo).
+ * `apply` registra el destino vigente en Kommo (lib/kommo-webhook-apply.ts) y, si salió bien,
+ * confirma en la base que Kommo usa el secreto vigente.
+ * `rotate` es atómica en la base (kommo_webhook_rotate): el vigente pasa a anterior (24 h)
+ * y se rechaza con 409 si el anterior sigue vigente y Kommo no confirmó el actual (rotar
+ * otra vez perdería el único secreto que Kommo tiene). Después aplica a Kommo; si Kommo
+ * falla, la respuesta trae `kommoError` (la clave ya rotó; el panel lo muestra como error
+ * y ofrece «Actualizar en Kommo»).
  */
-const PREVIOUS_GRACE_MS = 24 * 3600 * 1000;
+const PREVIOUS_GRACE_HOURS = 24;
 
-async function requireUser() {
+async function requireConfigUser(): Promise<NextResponse | null> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  return user;
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!scopeAlcanza(getScope(user), "configuracion")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  return null;
 }
 
 function baseUrl(): string | null {
@@ -45,55 +51,31 @@ async function readState() {
   return { secret: (sec?.valor as string | undefined) ?? null, auth };
 }
 
-/** Deja a Kommo apuntando SOLO al destino con el secreto vigente. */
-async function applyToKommo(destination: string): Promise<{ ok: true; removed: number } | { ok: false; error: string }> {
+/** Aplica a Kommo el destino con `secret` y, si salió bien, confirma el vigente en la base. */
+async function applySecret(base: string, secret: string) {
   const cfg = await configValues(["KOMMO_API_DOMAIN", "KOMMO_ACCESS_TOKEN"]);
-  const dominio = cfg.KOMMO_API_DOMAIN;
-  const token = cfg.KOMMO_ACCESS_TOKEN;
-  if (!dominio || !token) return { ok: false, error: "Falta configurar la conexión con Kommo" };
-  const H = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  const list = async (): Promise<KommoHook[]> => {
-    const r = await fetch(`https://${dominio}/api/v4/webhooks`, { headers: H, cache: "no-store" });
-    if (!r.ok) throw new Error(`Kommo respondió ${r.status} al listar los webhooks`);
-    return ((await r.json())?._embedded?.webhooks ?? []) as KommoHook[];
-  };
-  try {
-    const plan = planWebhookUpdate(await list(), destination);
-    // 1) registrar el nuevo (idempotente por destino)  2) recién entonces dar de baja el viejo.
-    const post = await fetch(`https://${dominio}/api/v4/webhooks`, {
-      method: "POST",
-      headers: H,
-      body: JSON.stringify({ destination, settings: plan.settings }),
-    });
-    if (!post.ok) {
-      return { ok: false, error: `Kommo respondió ${post.status}: ${(await post.text().catch(() => "")).slice(0, 200)}` };
-    }
-    const verif = await list();
-    if (!verif.some((h) => h.destination === destination && h.disabled !== true)) {
-      return { ok: false, error: "Kommo aceptó el pedido pero el webhook nuevo no quedó habilitado. Revisalo en Kommo → Integraciones." };
-    }
-    let removed = 0;
-    for (const old of plan.toDelete) {
-      const del = await fetch(`https://${dominio}/api/v4/webhooks`, {
-        method: "DELETE",
-        headers: H,
-        body: JSON.stringify({ destination: old }),
-      });
-      if (del.ok) removed++;
-      else console.warn(`webhook-auth: no se pudo dar de baja ${maskDestination(old)} (${del.status})`);
-    }
-    return { ok: true, removed };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  const r = await applyWebhookDestination(
+    { dominio: cfg.KOMMO_API_DOMAIN, token: cfg.KOMMO_ACCESS_TOKEN },
+    webhookDestination(base, secret),
+  );
+  if (r.ok) {
+    const { error } = await createServiceClient().rpc("kommo_webhook_mark_applied", { p_secret: secret });
+    if (error) console.warn("webhook-auth: no se pudo registrar la confirmación:", error.message);
   }
+  return r;
 }
 
 export async function GET() {
-  if (!(await requireUser())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const denied = await requireConfigUser();
+  if (denied) return denied;
   const base = baseUrl();
   if (!base) return NextResponse.json({ url: null });
   try {
     const { secret, auth } = await readState();
+    const prevExp = auth?.previous_expires_at ? Date.parse(auth.previous_expires_at) : NaN;
+    const confirmed =
+      Boolean(auth?.current_confirmed_at) &&
+      (!auth?.rotated_at || Date.parse(auth.current_confirmed_at) >= Date.parse(auth.rotated_at));
     return NextResponse.json({
       url: webhookDestination(base, secret),
       mode: auth?.mode ?? "permissive",
@@ -102,6 +84,12 @@ export async function GET() {
       strictReason: auth?.strict_reason ?? null,
       lastSignedAt: auth?.last_signed_at ?? null,
       lastUnsignedAt: auth?.last_unsigned_at ?? null,
+      lastRejectedAt: auth?.last_rejected_at ?? null,
+      lastRejectedReason: auth?.last_rejected_reason ?? null,
+      rotatedAt: auth?.rotated_at ?? null,
+      currentConfirmedAt: auth?.current_confirmed_at ?? null,
+      rotationPending: Number.isFinite(prevExp) && prevExp > Date.now() && !confirmed,
+      strictBlocker: strictModeBlocker(auth),
       secretConfigured: Boolean(secret),
     });
   } catch (e) {
@@ -110,10 +98,11 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  if (!(await requireUser())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const denied = await requireConfigUser();
+  if (denied) return denied;
   const base = baseUrl();
   if (!base) return NextResponse.json({ error: "Falta NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
-  const body = (await req.json().catch(() => ({}))) as { action?: string; mode?: string };
+  const body = (await req.json().catch(() => ({}))) as { action?: string; mode?: string; force?: boolean };
   const svc = createServiceClient();
 
   try {
@@ -122,12 +111,17 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "mode inválido" }, { status: 400 });
       }
       const strict = body.mode === "strict";
+      if (strict && body.force !== true) {
+        const { auth } = await readState();
+        const blocker = strictModeBlocker(auth);
+        if (blocker) return NextResponse.json({ error: blocker.message, blocker, needsForce: true }, { status: 409 });
+      }
       const { error } = await svc
         .from("kommo_webhook_auth")
         .update({
           mode: body.mode,
           strict_since: strict ? new Date().toISOString() : null,
-          strict_reason: strict ? "manual" : null,
+          strict_reason: strict ? (body.force === true ? "manual_forced" : "manual") : null,
           updated_at: new Date().toISOString(),
         })
         .eq("singleton", true);
@@ -138,29 +132,31 @@ export async function POST(req: Request) {
     if (body.action === "apply") {
       const { secret } = await readState();
       if (!secret) return NextResponse.json({ error: "No hay secreto configurado (migración 0073 sin aplicar)" }, { status: 409 });
-      const r = await applyToKommo(webhookDestination(base, secret));
+      const r = await applySecret(base, secret);
       return r.ok ? NextResponse.json(r) : NextResponse.json({ error: r.error }, { status: 502 });
     }
 
     if (body.action === "rotate") {
-      const { secret: current } = await readState();
       const next = generateWebhookSecret();
-      // Primero la base (el nuevo y el anterior valen a la vez), después Kommo: sin downtime.
-      const ops = [
-        svc.from("_app_secrets").upsert({ clave: "KOMMO_WEBHOOK_SECRET", valor: next }, { onConflict: "clave" }),
-        svc
-          .from("kommo_webhook_auth")
-          .update({ previous_expires_at: new Date(Date.now() + PREVIOUS_GRACE_MS).toISOString(), updated_at: new Date().toISOString() })
-          .eq("singleton", true),
-      ];
-      if (current) {
-        ops.unshift(svc.from("_app_secrets").upsert({ clave: "KOMMO_WEBHOOK_SECRET_PREVIOUS", valor: current }, { onConflict: "clave" }));
+      // Primero la base (atómica; el nuevo y el anterior valen a la vez), después Kommo: sin downtime.
+      const { data: outcome, error } = await svc.rpc("kommo_webhook_rotate", {
+        p_new: next,
+        p_grace_hours: PREVIOUS_GRACE_HOURS,
+      });
+      if (error) throw new Error(error.message);
+      if (outcome === "pending_confirmation") {
+        return NextResponse.json(
+          {
+            error:
+              "Hay una rotación sin confirmar: Kommo todavía no usó la clave vigente y la anterior sigue valiendo. " +
+              "Rotar otra vez dejaría a Kommo sin ninguna clave válida. Pulsá «Actualizar en Kommo» (o esperá a que " +
+              "llegue una request con la clave vigente) y volvé a intentar.",
+            code: "rotation_pending",
+          },
+          { status: 409 },
+        );
       }
-      for (const op of ops) {
-        const { error } = await op;
-        if (error) throw new Error(error.message);
-      }
-      const r = await applyToKommo(webhookDestination(base, next));
+      const r = await applySecret(base, next);
       return NextResponse.json({
         ok: true,
         kommoUpdated: r.ok,
@@ -171,6 +167,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: "acción inválida" }, { status: 400 });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    return NextResponse.json({ error: maskDestination(e instanceof Error ? e.message : String(e)) }, { status: 500 });
   }
 }

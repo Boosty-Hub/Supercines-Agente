@@ -163,8 +163,7 @@ test("R2: cada runSalesbot va precedido (misma función, mismo flujo) por un awa
 const MUTATING_KOMMO_ALLOWED = new Set([
   "supabase/functions/_shared/kommo.ts", // cliente de la API de Kommo (PATCH de campos vía outbound.ts, etapa, salesbot)
   "web/src/lib/kommo.ts", // mover etapa, crear campos custom
-  "web/src/app/api/kommo/webhook-auth/route.ts", // registrar/dar de baja el webhook
-  "web/src/app/api/kommo/reconnect-webhook/route.ts", // re-suscribir el webhook
+  "web/src/lib/kommo-webhook-apply.ts", // registrar/dar de baja/re-suscribir el webhook (único camino)
 ]);
 
 function isMutatingKommoFetch(c: ts.CallExpression): boolean {

@@ -25,7 +25,7 @@
 //     FETCH_TIMEOUT_MS para que una conexión colgada no la retenga;
 //   - caché NEGATIVO (NEGATIVE_TTL_MS): tras un fallo no se reconsulta en cada request;
 //     las requests que esperan comparten el próximo intento;
-//   - 0070 sin aplicar (tabla inexistente) NO es un fallo: es un estado conocido
+//   - 0073 sin aplicar (tabla inexistente) NO es un fallo: es un estado conocido
 //     («sin autenticación instalada» = transición sin secretos) y se cachea como tal.
 //
 // ROTACIÓN: una instancia caliente puede tener el secreto viejo en caché. Ante `bad_token`
@@ -83,7 +83,7 @@ export function matchesAnySecret(provided: string, secrets: readonly string[]): 
 
 /**
  * Decisión pura. Sin estado (null) NO se acepta: nunca se abre el modo estricto por no
- * poder leer la base. Sin ningún secreto configurado (0070 sin aplicar) rige el modo: en
+ * poder leer la base. Sin ningún secreto configurado (0073 sin aplicar) rige el modo: en
  * transición se acepta como sin firmar; en estricto no hay nada válido y se descarta.
  */
 export function decideWebhook(provided: string | null, state: WebhookAuthState | null): WebhookDecision {
@@ -124,7 +124,7 @@ type RawState = {
   previousExpiresAt: number | null;
 };
 
-/** 0070 sin aplicar: estado CONOCIDO (transición, sin secretos), no un fallo. */
+/** 0073 sin aplicar: estado CONOCIDO (transición, sin secretos), no un fallo. */
 const NOT_INSTALLED: RawState = { mode: "permissive", current: null, previous: null, previousExpiresAt: null };
 
 let cache: { raw: RawState; loadedAt: number } | null = null;
@@ -171,7 +171,7 @@ export function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
   });
 }
 
-/** ¿El error es «la tabla/relación no existe» (0070 sin aplicar)? */
+/** ¿El error es «la tabla/relación no existe» (0073 sin aplicar)? */
 function isMissingRelation(err: { code?: string; message?: string } | null | undefined): boolean {
   if (!err) return false;
   return err.code === "42P01" || err.code === "PGRST205" || /does not exist|could not find the table/i.test(err.message ?? "");

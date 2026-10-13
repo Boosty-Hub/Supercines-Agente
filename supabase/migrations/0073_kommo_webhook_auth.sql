@@ -146,7 +146,7 @@ begin
   end if;
   select * into a from kommo_webhook_auth where singleton for update;
   if not found then
-    raise exception 'kommo_webhook_auth sin fila (migración 0070 incompleta)';
+    raise exception 'kommo_webhook_auth sin fila (migración 0073 incompleta)';
   end if;
   select valor into v_current from _app_secrets where clave = 'KOMMO_WEBHOOK_SECRET';
   select valor into v_prev from _app_secrets where clave = 'KOMMO_WEBHOOK_SECRET_PREVIOUS';

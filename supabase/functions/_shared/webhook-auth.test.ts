@@ -76,7 +76,7 @@ Deno.test("loadWebhookAuthState: arma los secretos vigentes y descarta el anteri
   });
 });
 
-Deno.test("0070 sin aplicar (tabla inexistente) es un estado CONOCIDO: transición sin secretos, cacheado", async () => {
+Deno.test("0073 sin aplicar (tabla inexistente) es un estado CONOCIDO: transición sin secretos, cacheado", async () => {
   resetWebhookAuthCache();
   const c = fakeClient({ kind: "missing" });
   const h = harness();

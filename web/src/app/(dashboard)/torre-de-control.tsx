@@ -39,6 +39,8 @@ const KINDS: Record<string, string> = {
   outcomes_regression: "Bajó la calidad",
   budget_exceeded: "Presupuesto mensual",
   outbound_blocked: "Texto bloqueado antes de enviar",
+  webhook_unsigned: "Webhook de Kommo sin clave",
+  webhook_rejected: "Requests al webhook descartadas",
 };
 
 export function TorreDeControl({

@@ -7,6 +7,8 @@ import {
   maskDestination,
   planWebhookUpdate,
   SETTINGS_DEFAULT,
+  STRICT_UNSIGNED_WINDOW_MS,
+  strictModeBlocker,
   webhookDestination,
 } from "./kommo-webhook.ts";
 
@@ -42,6 +44,28 @@ test("planWebhookUpdate: ya registrado → nada que borrar; sin hooks → settin
   assert.equal(ya.alreadyRegistered, true);
   assert.deepEqual(ya.toDelete, []);
   assert.deepEqual(planWebhookUpdate([], dest).settings, SETTINGS_DEFAULT);
+});
+
+test("maskDestination: ?secret=, varios parámetros y texto libre de un error de Kommo", () => {
+  assert.equal(maskDestination(`${BASE}/f?secret=X&a=1`), `${BASE}/f?secret=***&a=1`);
+  const err = `{"detail":"destination ${BASE}/functions/v1/kommo-webhook?token=SECRETO is invalid"}`;
+  assert.equal(maskDestination(err).includes("SECRETO"), false);
+  assert.ok(maskDestination(err).endsWith(` is invalid"}`));
+});
+
+test("strictModeBlocker: nunca firmada → bloquea; sin firmar hace < 1 h → bloquea; si no, null", () => {
+  const now = Date.parse("2026-10-13T12:00:00Z");
+  assert.equal(strictModeBlocker(null, now)?.code, "never_signed");
+  assert.equal(strictModeBlocker({ last_signed_at: null, last_unsigned_at: null }, now)?.code, "never_signed");
+  const firmada = "2026-10-13T11:59:00Z";
+  const reciente = strictModeBlocker({ last_signed_at: firmada, last_unsigned_at: "2026-10-13T11:30:00Z" }, now);
+  assert.equal(reciente?.code, "recent_unsigned");
+  assert.match(reciente!.message, /Hace 30 min/);
+  assert.equal(
+    strictModeBlocker({ last_signed_at: firmada, last_unsigned_at: new Date(now - STRICT_UNSIGNED_WINDOW_MS - 1).toISOString() }, now),
+    null,
+  );
+  assert.equal(strictModeBlocker({ last_signed_at: firmada, last_unsigned_at: null }, now), null);
 });
 
 test("generateWebhookSecret: 48 hex y distinto cada vez", () => {

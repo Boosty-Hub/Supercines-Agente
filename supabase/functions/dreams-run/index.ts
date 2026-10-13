@@ -26,6 +26,7 @@ import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { jsonOf, LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
+import { keepAlive } from "../_shared/keep-alive.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -793,31 +794,39 @@ Deno.serve(async (req: Request) => {
     const policy: ActivationPolicy =
       rawPolicy === "error" || rawPolicy === "none" ? rawPolicy : "all";
 
-    const result = await runDreams(period, anthropic, memstoreMaster, operator, policy, cfg, sinceIso);
+    // El análisis + la marca DREAMS_LAST_RUN se sostienen con keepAlive (waitUntil):
+    // el botón del panel y pg_net esperan el resultado, pero si cortan (timeout del
+    // host serverless o los 120 s de pg_net) la corrida termina igual y queda
+    // estampada. Antes moría a mitad: learnings escritos sin la marca → la próxima
+    // corrida re-analizaba la misma ventana y duplicaba aprendizajes.
+    const result = await keepAlive((async () => {
+      const analysis = await runDreams(period, anthropic, memstoreMaster, operator, policy, cfg, sinceIso);
 
-    // Tras cada corrida (haya o no learnings nuevos), reconsolidar el digest:
-    // capta también aprobaciones/borrados hechos desde el dashboard entre
-    // corridas. Fail-open: un fallo del digest no invalida los learnings.
-    // En background (como digest_only): el cron espera como mucho 120 s (pg_net) y el
-    // análisis + dos consolidaciones pueden pasarse; sin waitUntil el runtime cortaría
-    // el digest a medias.
-    runInBackground((async () => {
-      try {
-        const r = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
-        console.log(`dreams-run ${period}: digest ${r.dreams} dreams, ${r.archived} archivados, ${r.digest_chars} chars${r.superseded ? " (superada)" : ""}`);
-      } catch (err) {
-        console.warn("rebuildDigest:", err instanceof Error ? err.message : String(err));
+      // Tras cada corrida (haya o no learnings nuevos), reconsolidar el digest:
+      // capta también aprobaciones/borrados hechos desde el dashboard entre
+      // corridas. Fail-open: un fallo del digest no invalida los learnings.
+      // En background (como digest_only): el cron espera como mucho 120 s (pg_net) y el
+      // análisis + dos consolidaciones pueden pasarse; sin waitUntil el runtime cortaría
+      // el digest a medias.
+      runInBackground((async () => {
+        try {
+          const r = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
+          console.log(`dreams-run ${period}: digest ${r.dreams} dreams, ${r.archived} archivados, ${r.digest_chars} chars${r.superseded ? " (superada)" : ""}`);
+        } catch (err) {
+          console.warn("rebuildDigest:", err instanceof Error ? err.message : String(err));
+        }
+      })());
+
+      // Marca de la última corrida daily efectiva (para el due-check de la próxima).
+      if (period === "daily") {
+        const nowIso = new Date().toISOString();
+        const { error: stampErr } = await supabase
+          .from("runtime_config")
+          .upsert({ key: "DREAMS_LAST_RUN", value: nowIso, updated_at: nowIso, updated_by: "dreams-run" }, { onConflict: "key" });
+        if (stampErr) console.warn("stamp DREAMS_LAST_RUN:", stampErr.message);
       }
+      return analysis;
     })());
-
-    // Marca de la última corrida daily efectiva (para el due-check de la próxima).
-    if (period === "daily") {
-      const nowIso = new Date().toISOString();
-      const { error: stampErr } = await supabase
-        .from("runtime_config")
-        .upsert({ key: "DREAMS_LAST_RUN", value: nowIso, updated_at: nowIso, updated_by: "dreams-run" }, { onConflict: "key" });
-      if (stampErr) console.warn("stamp DREAMS_LAST_RUN:", stampErr.message);
-    }
 
     return new Response(JSON.stringify({ ok: true, period, ...result, digest: "scheduled" }), {
       status: 200,

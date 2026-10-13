@@ -36,6 +36,7 @@ import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/me
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import { UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
+import { keepAlive } from "../_shared/keep-alive.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -740,6 +741,18 @@ Deno.serve(async (req: Request) => {
     if (denied) return denied;
   }
 
+  // ¿Reintento manual puntual? El botón "Reintentar" manda { lead_id, force? }.
+  // Sin body (o sin lead_id) = barrido automático, comportamiento de siempre.
+  let manualLeadId: string | null = null;
+  let manualForce = false;
+  try {
+    const b = await req.json();
+    if (b && typeof b.lead_id === "string" && b.lead_id.trim()) manualLeadId = b.lead_id.trim();
+    manualForce = b?.force === true;
+  } catch {
+    // sin body = barrido automático
+  }
+
   try {
     // Apagado total: corta ANTES de tocar Anthropic (el follow-up usa el
     // agente CMA completo, no solo un template). Sin excepción para el
@@ -781,16 +794,22 @@ Deno.serve(async (req: Request) => {
     const anthropic  = createAnthropicClient(runtimeCfg.require("ANTHROPIC_API_KEY"), supabase);
     const anthropicKey = runtimeCfg.require("ANTHROPIC_API_KEY");
 
-    // SQL gate: retorna leads elegibles (o vacío si config deshabilitada / fuera de horario)
-    const { data: due, error: rpcError } = await supabase.rpc("follow_up_due_leads", { p_limit: 5 });
-    if (rpcError) throw new Error(`follow_up_due_leads RPC: ${rpcError.message}`);
+    // El barrido automático resuelve su cola ANTES de construir deps, igual que
+    // siempre: si no hay nada pendiente sale sin exigir el resto de la config. El
+    // reintento manual no pasa por la RPC — su gate es retryOne.
+    let rows: DueLeadRow[] = [];
+    if (!manualLeadId) {
+      // SQL gate: retorna leads elegibles (o vacío si config deshabilitada / fuera de horario)
+      const { data: due, error: rpcError } = await supabase.rpc("follow_up_due_leads", { p_limit: 5 });
+      if (rpcError) throw new Error(`follow_up_due_leads RPC: ${rpcError.message}`);
+      rows = (due ?? []) as DueLeadRow[];
 
-    const rows = (due ?? []) as DueLeadRow[];
-    if (rows.length === 0) {
-      return new Response(
-        JSON.stringify({ ok: true, processed: 0 }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
+      if (rows.length === 0) {
+        return new Response(
+          JSON.stringify({ ok: true, processed: 0 }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
     }
 
     const maxFollowUps = await getMaxFollowUps();
@@ -824,6 +843,19 @@ Deno.serve(async (req: Request) => {
       dreamsDigest: (runtimeCfg.get("DREAMS_DIGEST") ?? "").trim() || null,
       pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES") ?? null,
     };
+
+    // Reintento manual: se ESPERA el resultado porque el operador lo ve en la UI
+    // para saber si salió o por qué no. Pero va sostenido con keepAlive (waitUntil):
+    // si el panel corta (timeout del host serverless), el reintento termina igual y
+    // registra el envío. Antes moría a mitad —con el salesbot ya disparado y sin la
+    // fila `sent` ni el paso avanzado— y el próximo barrido le volvía a escribir al lead.
+    if (manualLeadId) {
+      const res = await keepAlive(retryOne(manualLeadId, manualForce, deps));
+      return new Response(JSON.stringify(res), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
 
     // Loop secuencial dentro de waitUntil:
     // Secuencial para no saturar la API de Anthropic Managed Agents.

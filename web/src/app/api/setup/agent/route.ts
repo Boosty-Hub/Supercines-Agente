@@ -10,7 +10,7 @@ import {
   type AgentToolRow,
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
-import { detectVoiceFiles, syncAgentTools } from "@/lib/sync-agent-tools";
+import { detectVoiceFiles, renameAgent, syncAgentTools } from "@/lib/sync-agent-tools";
 import { hashPrompt } from "@/lib/agent-prompt-sync";
 import { agentModelParam } from "@/lib/model-capabilities";
 import { DEFAULT_MODEL } from "@/lib/model-config";
@@ -161,7 +161,9 @@ export async function POST() {
     // 2. Agent — ID-first (mismo principio: nunca crear un duplicado porque el
     //    nombre drifteó). Reconcilia nombre remoto → config antes del sync.
     let agentId: string;
-    let agentVersion: number;
+    // null = no hay versión nueva que registrar (el sync no corrió): NO se pisa la ya
+    // registrada con la que se leyó antes de renombrar (quedaría vieja y daría un falso conflicto).
+    let agentVersion: number | null;
     let agentCreated = false;
     const agentById = cfg.ANTHROPIC_AGENT_ID
       ? await retrieveResource(key, "agents", cfg.ANTHROPIC_AGENT_ID)
@@ -169,7 +171,7 @@ export async function POST() {
     const existingAgent = agentById ?? (await findByName(key, "agents", agentName!));
     if (existingAgent) {
       if (existingAgent.name !== agentName) {
-        await renameResource(key, "agents", existingAgent.id, agentName!);
+        await renameAgent(key, existingAgent.id, agentName!, user.email ?? "setup-wizard");
       }
       // Agent exists — use syncAgentTools for the update path (it handles
       // optimistic concurrency retry and persists the new version).
@@ -180,7 +182,7 @@ export async function POST() {
         return NextResponse.json({ ok: false, error: sync.error, conflict: sync.conflict }, { status: 409 });
       }
       agentId = existingAgent.id;
-      agentVersion = sync.version ?? existingAgent.version ?? 0;
+      agentVersion = sync.version;
     } else {
       // Agent does not exist yet — create it with the current tool surface.
       const created = await createAgent(key, {
@@ -199,8 +201,9 @@ export async function POST() {
       {
         ANTHROPIC_ENVIRONMENT_ID: envId,
         ANTHROPIC_AGENT_ID: agentId,
-        ANTHROPIC_AGENT_VERSION: String(agentVersion),
-        AGENT_SCAFFOLD_HASH: scaffoldHash(),
+        ...(agentVersion !== null ? { ANTHROPIC_AGENT_VERSION: String(agentVersion) } : {}),
+        // Solo si el system realmente se empujó (o se creó): si el sync no corrió, no se marca al día.
+        ...(agentVersion !== null ? { AGENT_SCAFFOLD_HASH: scaffoldHash() } : {}),
         // Hash del system EXACTO enviado al CREAR el agente: referencia de la próxima
         // sincronización para detectar ediciones externas (lib/agent-prompt-sync.ts).
         ...(agentCreated ? { AGENT_PROMPT_SYNCED_HASH: hashPrompt(system) } : {}),

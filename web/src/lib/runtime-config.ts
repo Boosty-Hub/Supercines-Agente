@@ -71,6 +71,31 @@ export async function configValues<K extends string>(
 }
 
 /**
+ * Igual que configValues pero SIN la memoización por request: consulta la tabla en el
+ * momento. Para decisiones que dependen de lo que acaba de escribir esta misma request
+ * u otra concurrente (p. ej. la línea base de la sincronización segura del prompt: hash
+ * y versión registrados, que un sync paralelo o un rename pueden haber movido).
+ */
+export async function configValuesFresh<K extends string>(
+  keys: readonly K[]
+): Promise<Record<K, string | undefined>> {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("runtime_config")
+    .select("key, value")
+    .in("key", [...keys]);
+  if (error) throw new Error(`runtime_config read failed: ${error.message}`);
+  const db = new Map<string, string | null>();
+  for (const row of (data ?? []) as ConfigRow[]) db.set(row.key, row.value);
+  const out = {} as Record<K, string | undefined>;
+  for (const key of keys) {
+    const v = db.get(key);
+    out[key] = v !== undefined && v !== null && v.trim() !== "" ? v : process.env[key] ?? undefined;
+  }
+  return out;
+}
+
+/**
  * Upserts config values into runtime_config via the service-role client.
  * Empty-string / undefined values are written as NULL so the reader falls
  * back to env (never an intentional empty override — matches the precedence

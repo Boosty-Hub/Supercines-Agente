@@ -47,7 +47,10 @@ export async function POST(request: Request) {
       // Cambiar el modelo SUBE la versión del agente: si el prompt vivo fue editado
       // fuera del dashboard, esa versión nueva taparía la señal de conflicto. No se
       // toca el agente hasta que el usuario lo resuelva en la página Agente.
-      const conflict = await checkAgentPromptConflict();
+      // `onlyWithBaseline`: este camino NO empuja el prompt, así que un cliente sin hash
+      // registrado (recién actualizado, primera sincronización pendiente) no tiene señal que
+      // tapar y NO se bloquea: solo frena una edición externa respecto de una línea base real.
+      const conflict = await checkAgentPromptConflict(undefined, { onlyWithBaseline: true });
       if (conflict) {
         return NextResponse.json(
           {

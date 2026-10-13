@@ -14,7 +14,8 @@ export const runtime = "nodejs";
 // primera vez y difiere) NO sincroniza: responde 409 con el conflicto y el diff.
 // El usuario decide con `{ "resolve": "overwrite" | "import_live" }`:
 //   - overwrite:   empuja el prompt de la DB igual (pisa lo de afuera);
-//   - import_live: no empuja; trae el prompt vivo del operador a la DB.
+//   - import_live: no empuja; trae el prompt vivo del operador a la DB, restituyendo los
+//                  placeholders conocidos (los valores ambiguos se informan y no se tocan).
 export async function POST(request: Request) {
   const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
@@ -35,7 +36,12 @@ export async function POST(request: Request) {
   if (!res.synced) {
     return NextResponse.json({ ok: false, error: res.error ?? "No hay agente aprovisionado" }, { status: 502 });
   }
-  return NextResponse.json({ ok: true, version: res.version, imported: res.imported === true });
+  return NextResponse.json({
+    ok: true,
+    version: res.version,
+    imported: res.imported === true,
+    placeholders: res.placeholders ?? null,
+  });
 }
 
 // GET /api/agent/sync — ¿hay un conflicto de prompt pendiente? (sin modificar nada)

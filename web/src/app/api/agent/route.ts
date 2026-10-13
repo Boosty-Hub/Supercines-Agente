@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
-import { syncAgentTools } from "@/lib/sync-agent-tools";
-import { renameResource } from "@/lib/anthropic-managed";
+import { renameAgent, syncAgentTools } from "@/lib/sync-agent-tools";
 
 // nodejs runtime + raw fetch (lib/anthropic-managed) — the official SDK 401s on
 // Netlify. The /agent "Guardar y sincronizar" pushes the prompt via this route.
@@ -67,7 +66,7 @@ export async function POST(request: Request) {
     agentName !== "" && (current.AGENT_NAME ?? "") !== "" && agentName !== current.AGENT_NAME;
   if (nameChanged && current.ANTHROPIC_AGENT_ID && current.ANTHROPIC_API_KEY) {
     try {
-      await renameResource(current.ANTHROPIC_API_KEY, "agents", current.ANTHROPIC_AGENT_ID, agentName);
+      await renameAgent(current.ANTHROPIC_API_KEY, current.ANTHROPIC_AGENT_ID, agentName, user.email ?? "dashboard");
     } catch (err) {
       // El rename falló → NO persistir el nombre nuevo (quedaría inconsistente).
       // El resto de la identidad se guarda igual.

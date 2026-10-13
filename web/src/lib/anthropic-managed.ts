@@ -10,6 +10,7 @@
 //   methods: create = POST /v1/<resource>; update = POST /v1/<resource>/<id>; list = GET /v1/<resource>
 
 import { truncateGraphemes } from "@/lib/text-safe";
+import { renameAgentVersioned, type AgentRenameResult } from "@/lib/agent-rename";
 
 const BASE = "https://api.anthropic.com";
 const BETA = "managed-agents-2026-04-01";
@@ -118,35 +119,32 @@ export async function retrieveResource(
 }
 
 /**
- * Renombra un recurso en Anthropic. Los agents usan concurrencia optimista
- * (requieren `version`; ante 409 por una escritura concurrente se relee la
- * versión y se reintenta una vez); environments y memory_stores aceptan el
- * name directo. IMPORTANTE: para memory_stores el nombre es también la RUTA
- * de montaje (/mnt/memory/<name>) — quien renombra debe actualizar
- * runtime_config y re-sincronizar el system prompt en la misma operación.
+ * Renombra un environment o memory store (aceptan el name directo). IMPORTANTE: para
+ * memory_stores el nombre es también la RUTA de montaje (/mnt/memory/<name>) — quien
+ * renombra debe actualizar runtime_config y re-sincronizar el system prompt en la misma
+ * operación. Los agents NO pasan por acá (ver renameAgentResource): renombrarlos sube su
+ * versión y quien lo hace debe registrarla.
  */
 export async function renameResource(
   apiKey: string,
-  resource: Resource,
+  resource: Exclude<Resource, "agents">,
   id: string,
   name: string
 ): Promise<NamedResource> {
-  if (resource === "agents") {
-    const doRename = async (): Promise<NamedResource> => {
-      const current = await retrieveAgent(apiKey, id);
-      return (await call(apiKey, "POST", `/v1/agents/${id}`, {
-        version: current.version,
-        name,
-      })) as unknown as NamedResource;
-    };
-    try {
-      return await doRename();
-    } catch (err) {
-      if (err instanceof AnthropicHttpError && err.status === 409) return await doRename();
-      throw err;
-    }
-  }
   return (await call(apiKey, "POST", `/v1/${resource}/${id}`, { name })) as unknown as NamedResource;
+}
+
+/**
+ * Renombra un agente con concurrencia optimista y devuelve la versión de antes y la
+ * vigente después (lib/agent-rename). El llamador DEBE persistir la nueva versión
+ * (sync-agent-tools.renameAgent lo hace): si no, el siguiente sync da un falso conflicto.
+ */
+export async function renameAgentResource(apiKey: string, id: string, name: string): Promise<AgentRenameResult> {
+  return renameAgentVersioned({
+    retrieve: () => retrieveAgent(apiKey, id),
+    update: (version) => updateAgent(apiKey, id, { version, name }),
+    isVersionConflict: (err) => err instanceof AnthropicHttpError && err.status === 409,
+  });
 }
 
 // ─── Memory items (files inside a memory store) ──────────────────────────────

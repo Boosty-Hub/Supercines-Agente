@@ -11,16 +11,20 @@
 // triggered the sync is still returned to the client.
 
 import { createServiceClient } from "@/lib/supabase/service";
-import { configValues, setConfigValues } from "@/lib/runtime-config";
+import { configValues, configValuesFresh, setConfigValues } from "@/lib/runtime-config";
 import {
   scaffoldHash,
   buildAgentTools,
   composeSystem,
+  type PlaceholderValues,
   filterToolRowsByGates,
   type AgentToolRow,
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
-import { listMemories, retrieveAgent, updateAgent, type NamedResource } from "@/lib/anthropic-managed";
+import { listMemories, renameAgentResource, retrieveAgent, updateAgent, type NamedResource } from "@/lib/anthropic-managed";
+import { versionToRecordAfterRename } from "@/lib/agent-rename";
+import { guardedPush } from "@/lib/guarded-push";
+import { placeholderize, type PlaceholderizeResult } from "@/lib/prompt-placeholders";
 import type { AgentRetriever } from "@/lib/once-retriever";
 import {
   conflictMessage,
@@ -61,26 +65,55 @@ export interface SyncResult {
   conflict?: PromptConflict;
   /** Se importó el prompt vivo a la DB (resolve = import_live); no se empujó nada. */
   imported?: boolean;
+  /** Con import_live: qué placeholders se restituyeron y cuáles valores quedaron ambiguos (sin tocar). */
+  placeholders?: PlaceholderizeResult;
 }
 
 /** Cómo resolver un conflicto de prompt (decisión EXPLÍCITA del usuario). */
 export type ConflictResolution = "overwrite" | "import_live";
 
-class PromptConflictError extends Error {
-  constructor(public conflict: PromptConflict) {
-    super(`${conflictMessage(conflict)} No se sincronizó: resolvelo en la página Agente (importar el vivo o sobrescribir).`);
-    this.name = "PromptConflictError";
-  }
-}
+const conflictError = (c: PromptConflict) =>
+  `${conflictMessage(c)} No se sincronizó: resolvelo en la página Agente (importar el vivo o sobrescribir).`;
 
 type Payload = {
   apiKey: string;
   agentId: string;
   system: string;
   tools: unknown[];
-  syncedHash: string | undefined;
-  registeredVersion: number | null;
+  /** Línea base de la sincronización segura (releída de la DB, no memoizada). */
+  baseline: Baseline;
+  values: PlaceholderValues;
 };
+
+/** Hash del último system enviado y versión registrada: contra lo que se detecta una edición externa. */
+type Baseline = { syncedHash: string | undefined; registeredVersion: number | null };
+
+/**
+ * Lee la línea base DIRECTO de la tabla (sin la memoización por request de configValues):
+ * un sync concurrente, un rename o esta misma request pueden haberla movido, y una línea
+ * base vieja produce falsos conflictos.
+ */
+async function readBaseline(): Promise<Baseline> {
+  const cfg = await configValuesFresh(["AGENT_PROMPT_SYNCED_HASH", "ANTHROPIC_AGENT_VERSION"]);
+  const reg = Number(cfg.ANTHROPIC_AGENT_VERSION);
+  return {
+    syncedHash: cfg.AGENT_PROMPT_SYNCED_HASH || undefined,
+    registeredVersion: Number.isFinite(reg) && reg > 0 ? reg : null,
+  };
+}
+
+/**
+ * Renombra el agente en Anthropic y REGISTRA la versión que eso genera (un rename sube la
+ * versión). Sin esto el siguiente sync vería «versión viva > registrada» y daría un falso
+ * conflicto. Si el agente ya estaba por delante de lo registrado (edición externa) no se
+ * registra: taparía ese conflicto real (ver agent-rename.versionToRecordAfterRename).
+ */
+export async function renameAgent(apiKey: string, agentId: string, name: string, actor: string): Promise<void> {
+  const result = await renameAgentResource(apiKey, agentId, name);
+  const { registeredVersion } = await readBaseline();
+  const record = versionToRecordAfterRename({ registered: registeredVersion, result });
+  if (record !== null) await setConfigValues({ ANTHROPIC_AGENT_VERSION: String(record) }, actor);
+}
 
 /**
  * Arma lo que se empujaría al agente (system compuesto + tools) desde la DB.
@@ -98,8 +131,6 @@ async function buildPayload(): Promise<Payload | null | { error: string }> {
     "MEMORY_STORE_MASTER_NAME",
     "MEMORY_STORE_LEADS_NAME",
     "SYSTEM_PROMPT",
-    "AGENT_PROMPT_SYNCED_HASH",
-    "ANTHROPIC_AGENT_VERSION",
   ]);
 
   const apiKey = cfg.ANTHROPIC_API_KEY;
@@ -160,38 +191,32 @@ async function buildPayload(): Promise<Payload | null | { error: string }> {
   // fixed CORE_SCAFFOLD (machinery + security), then substitutes placeholders.
   // The declared tool names drive the scaffold's CRM actions block so the
   // prompt only mentions tools the agent can actually call.
+  const values: PlaceholderValues = {
+    operatorName: cfg.OPERATOR_NAME || "el operador",
+    masterStoreName: cfg.MEMORY_STORE_MASTER_NAME || "master",
+    leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
+  };
   const system = composeSystem(
     cfg.SYSTEM_PROMPT ?? "",
-    {
-      operatorName: cfg.OPERATOR_NAME || "el operador",
-      masterStoreName: cfg.MEMORY_STORE_MASTER_NAME || "master",
-      leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
-    },
+    values,
     httpRows,
     rows.map((r) => r.name),
     { hasVoice }
   );
 
-  const reg = Number(cfg.ANTHROPIC_AGENT_VERSION);
-  return {
-    apiKey,
-    agentId,
-    system,
-    tools,
-    syncedHash: cfg.AGENT_PROMPT_SYNCED_HASH || undefined,
-    registeredVersion: Number.isFinite(reg) && reg > 0 ? reg : null,
-  };
+  return { apiKey, agentId, system, tools, baseline: await readBaseline(), values };
 }
 
 const liveSystemOf = (agent: NamedResource): string | null => (typeof agent.system === "string" ? agent.system : null);
 
-function conflictOf(p: Payload, live: NamedResource): PromptConflict | null {
+function conflictOf(p: Payload, live: NamedResource, baseline: Baseline = p.baseline): PromptConflict | null {
   return detectPromptConflict({
     liveSystem: liveSystemOf(live),
     liveVersion: typeof live.version === "number" ? live.version : null,
-    syncedHash: p.syncedHash,
-    registeredVersion: p.registeredVersion,
+    syncedHash: baseline.syncedHash,
+    registeredVersion: baseline.registeredVersion,
     composedSystem: p.system,
+    placeholderValues: p.values,
   });
 }
 
@@ -202,14 +227,21 @@ function conflictOf(p: Payload, live: NamedResource): PromptConflict | null {
  * sin aprovisionar / Anthropic no responde: no se afirma lo que no se pudo comprobar).
  * `retrieve` es inyectable: una página que además necesita el agente vivo para otra cosa
  * pasa un retriever compartido (lib/once-retriever) y el agente se lee UNA vez por render.
+ *
+ * `opts.onlyWithBaseline`: ignora el caso «primera sincronización» (sin hash registrado). Para
+ * caminos que NO empujan el prompt (cambiar el modelo): sin línea base no hay señal que
+ * taparían, así que un cliente que recién actualiza no queda bloqueado sin necesidad.
  */
 export async function checkAgentPromptConflict(
-  retrieve: AgentRetriever = retrieveAgent
+  retrieve: AgentRetriever = retrieveAgent,
+  opts: { onlyWithBaseline?: boolean } = {}
 ): Promise<PromptConflict | null> {
   try {
     const payload = await buildPayload();
     if (!payload || "error" in payload) return null;
-    return conflictOf(payload, await retrieve(payload.apiKey, payload.agentId));
+    const conflict = conflictOf(payload, await retrieve(payload.apiKey, payload.agentId));
+    if (conflict && opts.onlyWithBaseline && conflict.kind === "first_sync_differs") return null;
+    return conflict;
   } catch {
     return null;
   }
@@ -237,7 +269,7 @@ export async function syncAgentTools(
     const payload = await buildPayload();
     if (!payload) return { version: null, synced: false };
     if ("error" in payload) return { version: null, synced: false, error: payload.error };
-    const { apiKey, agentId, system, tools } = payload;
+    const { apiKey, agentId, system, tools, values } = payload;
 
     // Importar lo vivo a la DB: no se empuja nada.
     if (opts.resolve === "import_live") {
@@ -253,57 +285,46 @@ export async function syncAgentTools(
         };
       }
       const version = typeof live.version === "number" ? live.version : 0;
+      // El vivo trae los placeholders YA sustituidos: se restituyen los valores conocidos
+      // (inversa de substitutePlaceholders) para que renombrar el operador o un store siga
+      // propagándose. Los valores ambiguos (cortos / palabras comunes) NO se tocan y se informan.
+      const placeholders = placeholderize(operatorPrompt, values);
       await setConfigValues(
         {
-          SYSTEM_PROMPT: operatorPrompt,
+          SYSTEM_PROMPT: placeholders.text,
           AGENT_PROMPT_SYNCED_HASH: hashPrompt(liveSystem),
           ANTHROPIC_AGENT_VERSION: String(version),
         },
         actor
       );
-      return { version, synced: true, imported: true };
+      return { version, synced: true, imported: true, placeholders };
     }
 
-    // 4. Optimistic concurrency: read current version then PATCH.
-    const doUpdate = async (): Promise<number> => {
-      const current = await retrieveAgent(apiKey, agentId);
-      if (opts.resolve !== "overwrite") {
-        const conflict = conflictOf(payload, current);
-        if (conflict) throw new PromptConflictError(conflict);
+    // 4. Concurrencia optimista + sincronización segura (lib/guarded-push): ante un 409 se
+    //    reintenta una vez RELEYENDO la línea base registrada.
+    const pushed = await guardedPush(
+      {
+        readBaseline,
+        retrieve: () => retrieveAgent(apiKey, agentId),
+        detect: (live, baseline) => conflictOf(payload, live, baseline),
+        push: async (version) => {
+          const updated = await updateAgent(apiKey, agentId, { version, system, tools });
+          return (updated.version as number) ?? 0;
+        },
+        // El 409 de versión, o un «conflict» explícito — NO la palabra «version» suelta (aparece
+        // también en errores ajenos, p. ej. un header anthropic-version inválido).
+        isVersionConflict: (err) => /\b409\b|conflict/i.test(err instanceof Error ? err.message : String(err)),
+      },
+      { overwrite: opts.resolve === "overwrite", initialBaseline: payload.baseline }
+    );
+    if (!pushed.ok) {
+      if ("conflict" in pushed) {
+        return { version: null, synced: false, error: conflictError(pushed.conflict), conflict: pushed.conflict };
       }
-      const updated = await updateAgent(apiKey, agentId, {
-        version: current.version,
-        system,
-        tools,
-      });
-      return (updated.version as number) ?? 0;
-    };
-
-    let newVersion: number;
-    try {
-      newVersion = await doUpdate();
-    } catch (err) {
-      if (err instanceof PromptConflictError) return { version: null, synced: false, error: err.message, conflict: err.conflict };
-      const msg = err instanceof Error ? err.message : String(err);
-      // On version-mismatch re-read once and retry. Match the 409 status or an
-      // explicit "conflict" — NOT the bare word "version" (that also appears in
-      // unrelated errors like a bad anthropic-version header).
-      if (/\b409\b|conflict/i.test(msg)) {
-        try {
-          newVersion = await doUpdate();
-        } catch (retryErr) {
-          if (retryErr instanceof PromptConflictError) {
-            return { version: null, synced: false, error: retryErr.message, conflict: retryErr.conflict };
-          }
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          console.error("syncAgentTools: retry failed:", retryMsg);
-          return { version: null, synced: false, error: retryMsg };
-        }
-      } else {
-        console.error("syncAgentTools: updateAgent failed:", msg);
-        return { version: null, synced: false, error: msg };
-      }
+      console.error("syncAgentTools: updateAgent failed:", pushed.error);
+      return { version: null, synced: false, error: pushed.error };
     }
+    const newVersion = pushed.version;
 
     // 5. Persist the bumped version so the editor page can show it, y el hash del
     //    system EXACTO que se envió: es la referencia contra la que la próxima

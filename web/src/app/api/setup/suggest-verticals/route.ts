@@ -5,7 +5,7 @@ import { buildCrmActionsContext } from "@/lib/crm-context";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -69,8 +69,7 @@ export async function POST(request: Request) {
 
   try {
     const { object, usage } = await generateObject({
-      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
-      model: dashboardModel(apiKey, "low"),
+      model: dashboardModel(apiKey, DASHBOARD_TASKS.suggestVerticals),
       schema: z.object({
         verticals: z
           .array(

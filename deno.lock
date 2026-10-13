@@ -11,7 +11,8 @@
     "npm:@anthropic-ai/sdk@0.95.1": "0.95.1_zod@3.25.76",
     "npm:ai@4.3.19": "4.3.19_react@19.3.0_zod@3.25.76",
     "npm:ai@5.0.267": "5.0.267_zod@3.25.76",
-    "npm:zod@3": "3.25.76"
+    "npm:zod@3": "3.25.76",
+    "npm:zod@3.25.76": "3.25.76"
   },
   "jsr": {
     "@std/assert@1.0.19": {
@@ -337,5 +338,12 @@
     "https://esm.sh/whatwg-url@5.0.0?target=denonext": "f001a2cadf81312d214ca330033f474e74d81a003e21e8c5d70a1f46dc97b02d",
     "https://esm.sh/ws@8.21.3/denonext/ws.mjs": "06f4232ae4661bde6643351cf016a810ef62bc23c555d736d72323c0e46fcad0",
     "https://esm.sh/ws@8.21.3?target=denonext": "a7a038553aa72c62198495e7f69c67f9618437c22d9f2c12e00513ceff5a7141"
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:@ai-sdk/anthropic@2.0.106",
+      "npm:ai@5.0.267",
+      "npm:zod@3.25.76"
+    ]
   }
 }

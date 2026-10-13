@@ -4,7 +4,7 @@ import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: el SDK oficial de Anthropic da 401 spurios en Netlify Edge.
 // Usar generateObject (Vercel AI SDK) vía dashboardModel, como en /api/verticales/generate.
@@ -62,8 +62,7 @@ export async function POST(request: Request) {
 
   try {
     const { object, usage } = await generateObject({
-      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
-      model: dashboardModel(apiKey, "low"),
+      model: dashboardModel(apiKey, DASHBOARD_TASKS.followUpTemplate),
       schema: z.object({
         name: z
           .string()

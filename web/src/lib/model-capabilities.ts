@@ -1,6 +1,6 @@
-// Capacidades de request por modelo + la normalización del body que de ahí sale.
+// Capacidades de request por modelo (qué rechaza cada uno con 400).
 // SIN imports a propósito: es puro, lo usa el front (rutas del dashboard) y lo
-// ejercita supabase/tests con el AI SDK real.
+// ejercita supabase/tests.
 // Mantener en sync con supabase/functions/_shared/models.ts (MODEL_CAPS):
 // web-parity.test.ts verifica que sean idénticas.
 //
@@ -8,8 +8,10 @@
 //  - effort:   Haiku 4.5 no tiene `output_config.effort`.
 //  - sampling: Haiku 5.5 solo acepta temperature=1 / top_p=0.99 (los defaults);
 //              Opus 4.8 los eliminó. Cualquier otro valor, o top_k, da 400.
-// Un modelo DESCONOCIDO no recibe effort y se le quita el sampling: omitir ambos
-// es siempre válido.
+// Un modelo DESCONOCIDO no recibe effort: omitirlo es siempre válido. El sampling
+// lo quitan, en las rutas del dashboard, el propio AI SDK (modelos que rechazan
+// sampling) y el hecho de que ninguna ruta lo envía; `sampling` queda para las
+// Edge Functions (paridad con _shared/models.ts).
 
 export type ModelCaps = { effort: boolean; sampling: boolean };
 
@@ -27,46 +29,6 @@ export function capsFor(model: string): ModelCaps {
 }
 
 export type RequestEffort = "low" | "medium" | "high";
-
-/**
- * Ajusta el body JSON de /v1/messages al modelo del propio body: quita
- * temperature/top_p/top_k si no los acepta e inyecta output_config.effort si lo
- * soporta. El AI SDK v4 manda `temperature: 0` por DEFAULT (ai/dist: "TODO v5
- * remove default 0 for temperature") y @ai-sdk/anthropic solo lo descarta con
- * thinking habilitado: sin esto, Haiku 5.5 devolvería 400 en cada generación.
- */
-export function shapeAnthropicBody(
-  body: Record<string, unknown>,
-  effort: RequestEffort,
-): Record<string, unknown> {
-  const caps = capsFor(typeof body.model === "string" ? body.model : "");
-  const out: Record<string, unknown> = { ...body };
-  if (!caps.sampling) {
-    delete out.temperature;
-    delete out.top_p;
-    delete out.top_k;
-  }
-  if (caps.effort) {
-    const prev = (out.output_config && typeof out.output_config === "object" ? out.output_config : {}) as Record<string, unknown>;
-    out.output_config = { ...prev, effort };
-  }
-  return out;
-}
-
-/** fetch que normaliza el body de las requests a la Messages API (ver shapeAnthropicBody). */
-export function shapedFetch(effort: RequestEffort, baseFetch: typeof fetch = fetch): typeof fetch {
-  return (input, init) => {
-    if (typeof init?.body === "string") {
-      try {
-        const body = JSON.parse(init.body) as Record<string, unknown>;
-        return baseFetch(input, { ...init, body: JSON.stringify(shapeAnthropicBody(body, effort)) });
-      } catch {
-        // body no-JSON: se envía tal cual.
-      }
-    }
-    return baseFetch(input, init);
-  };
-}
 
 /** Modelo REAL de una sesión CMA (copia de _shared/usage.ts; paridad testeada). */
 export function sessionModelId(session: unknown): string | null {

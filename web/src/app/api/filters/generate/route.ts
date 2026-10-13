@@ -5,7 +5,7 @@ import { fetchPipelines } from "@/lib/kommo";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -77,8 +77,7 @@ export async function POST(request: Request) {
 
   try {
     const { object, usage } = await generateObject({
-      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
-      model: dashboardModel(apiKey, "low"),
+      model: dashboardModel(apiKey, DASHBOARD_TASKS.filters),
       schema: z.object({
         textRules: z
           .array(

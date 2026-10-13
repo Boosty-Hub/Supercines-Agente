@@ -3,7 +3,7 @@ import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
 import { streamText } from "ai";
 import { recordWebUsage } from "@/lib/usage";
-import { DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
+import { DASHBOARD_LONG_OUTPUT_TOKENS, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -69,7 +69,7 @@ interface Body {
 }
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -145,9 +145,9 @@ export async function POST(request: Request) {
     model: dashboardModel(apiKey, "medium"),
     system,
     prompt,
-    // El thinking de Haiku 5.5 cuenta contra maxTokens: holgura sobre el prompt
+    // El thinking de Haiku 5.5 cuenta contra maxOutputTokens: holgura sobre el prompt
     // (~4K tokens) para que no se corte antes de la línea END.
-    maxTokens: 16000,
+    maxOutputTokens: DASHBOARD_LONG_OUTPUT_TOKENS,
     onFinish: ({ usage, finishReason }) => {
       // Sin END el cliente ya detecta el corte; acá queda el motivo en el log
       // ("length" = tope de tokens, "unknown" = rechazo por políticas de seguridad).

@@ -4,7 +4,7 @@ import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 // an instruction, decide whether to EDIT an existing section or INSERT a new
 // one, and (for new) where it belongs thematically. Tiny output → no timeout.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -47,6 +47,7 @@ export async function POST(request: Request) {
   try {
     const numbered = sections.map((t, i) => `${i + 1}. ${t}`).join("\n");
     const { object, usage } = await generateObject({
+      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
       model: dashboardModel(apiKey, "low"),
       schema: z.object({
         action: z

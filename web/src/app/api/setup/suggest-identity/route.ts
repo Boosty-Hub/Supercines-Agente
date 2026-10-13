@@ -4,7 +4,7 @@ import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 // AI assistant can fill those fields too (the prompt itself is built by the
 // streaming /generate-agent route).
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -44,6 +44,7 @@ export async function POST(request: Request) {
 
   try {
     const { object, usage } = await generateObject({
+      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
       model: dashboardModel(apiKey, "low"),
       schema: z.object({
         operatorName: z

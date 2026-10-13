@@ -7,11 +7,9 @@ function safeName(base: string): string {
 
 // Descarga el texto extraído del documento (lo que el agente realmente ve).
 // No guardamos el binario original, solo el texto parseado en raw_text.
-export async function GET(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function GET(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -40,11 +38,9 @@ export async function GET(
   });
 }
 
-export async function DELETE(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

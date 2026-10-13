@@ -5,7 +5,7 @@ import { fetchPipelines } from "@/lib/kommo";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
-import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel, DASHBOARD_MAX_OUTPUT_TOKENS } from "@/lib/dashboard-ai";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -25,7 +25,7 @@ const CHANNEL_VALUES = [
 // texto, canales y etapas de Kommo. Le pasamos las etapas reales para que
 // mapee nombres → status_id.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -77,6 +77,7 @@ export async function POST(request: Request) {
 
   try {
     const { object, usage } = await generateObject({
+      maxOutputTokens: DASHBOARD_MAX_OUTPUT_TOKENS,
       model: dashboardModel(apiKey, "low"),
       schema: z.object({
         textRules: z

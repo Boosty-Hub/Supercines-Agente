@@ -48,7 +48,7 @@ async function fetchAllRows<T>(buildQuery: () => RangeableQuery<T>): Promise<T[]
 }
 
 export default async function StatusPage() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const cutoffIso = new Date(Date.now() - WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
   const cutoffDay = cutoffIso.slice(0, 10);
 

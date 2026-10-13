@@ -19,7 +19,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -60,7 +60,7 @@ export default async function DashboardLayout({
   const bcv = pubCfg?.bcv_rate_enabled === true ? await getBcvRateCached() : null;
 
 
-  const isEmbed = cookies().get("embed_mode")?.value === "1";
+  const isEmbed = (await cookies()).get("embed_mode")?.value === "1";
 
   // Onboarding no bloqueante: el wizard vive como panel lateral (drawer) SOBRE
   // el dashboard. Se computa el estado desde runtime_config (DB) solo para

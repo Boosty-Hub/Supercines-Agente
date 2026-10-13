@@ -10,7 +10,7 @@ const RESERVED_NAMES = new Set(["search_kb", "agent_toolset_20260401"]);
 
 /** GET /api/tools — list all tools (system + http) ordered by type desc, created_at asc */
 export async function GET() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -28,7 +28,7 @@ export async function GET() {
 
 /** POST /api/tools — create a new http tool */
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

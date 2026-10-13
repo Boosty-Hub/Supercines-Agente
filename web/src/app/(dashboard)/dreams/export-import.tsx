@@ -62,6 +62,8 @@ export default function ExportImportButtons() {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center gap-2">
       <div className="flex flex-wrap items-center gap-2">
+        {/* Descarga de archivo desde una ruta de API (no una página): next/link no aplica. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
           href="/api/dreams/export"
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"

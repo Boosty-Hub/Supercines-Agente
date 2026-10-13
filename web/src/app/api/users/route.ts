@@ -11,7 +11,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // /api/users, pero esta ruta escribe con la service-role key (bypassa RLS) y no
 // puede depender de que un solo gate esté bien configurado.
 async function requireConfiguracion() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

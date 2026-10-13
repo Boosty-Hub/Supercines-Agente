@@ -15,8 +15,9 @@ export const dynamic = "force-dynamic";
 // posición a gusto. Va por apply_lead_position (0061): respeta el orden de los
 // eventos (no pisa una posición más nueva), registra el movimiento solo si se
 // aplicó y limpia la marca «no existe en Kommo» (que Kommo conteste es señal de vida).
-export async function POST(_request: Request, { params }: { params: { id: string } }) {
-  const supabase = createSupabaseServerClient();
+export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

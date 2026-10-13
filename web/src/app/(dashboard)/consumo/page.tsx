@@ -72,16 +72,17 @@ type HeatmapRow = {
   cost_usd: number | null;
 };
 
-export default async function ConsumoPage({
-  searchParams,
-}: {
-  searchParams: { range?: string };
-}) {
+export default async function ConsumoPage(
+  props: {
+    searchParams: Promise<{ range?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const range = parseInt(searchParams.range ?? "30", 10);
   const validRange = [7, 30, 90].includes(range) ? range : 30;
   const since = new Date(Date.now() - validRange * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   // Cambiar modelos y techo de gasto es configuración (el middleware ya lo exige
   // en las APIs); acá solo se deshabilita el control para quien no puede.
   const { data: { user } } = await supabase.auth.getUser();

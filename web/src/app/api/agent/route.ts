@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 // GET — returns the current agent identity (system prompt + display names) so
 // the editor page can prefill. Reads DB-first / env-fallback.
 export async function GET() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -45,7 +45,7 @@ export async function GET() {
 // the /setup wizard (Phase 3) can create the agent from it. We never block the
 // save on Anthropic — identity persistence and remote sync are independent.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

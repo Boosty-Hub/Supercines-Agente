@@ -120,13 +120,14 @@ function resolveStage(maps: StageMaps, stageId: number, pipelineId: number | nul
   return (pipelineId != null ? maps.byPair.get(`${pipelineId}:${stageId}`) : undefined) ?? maps.byId.get(stageId);
 }
 
-export default async function ConversationPage({
-  params,
-  searchParams,
-}: {
-  params: { leadId: string };
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
+export default async function ConversationPage(
+  props: {
+    params: Promise<{ leadId: string }>;
+    searchParams: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   // Estado del inbox (filtros, vista, pipeline), para que "← Volver" (móvil) lo conserve.
   const backParams = new URLSearchParams();
   for (const k of INBOX_URL_PARAMS) {
@@ -134,7 +135,7 @@ export default async function ConversationPage({
     if (typeof v === "string" && v) backParams.set(k, v);
   }
   const backQS = backParams.toString();
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const leadId = params.leadId;
   if (!/^[0-9a-f-]{36}$/i.test(leadId)) return <NotFound />;
 

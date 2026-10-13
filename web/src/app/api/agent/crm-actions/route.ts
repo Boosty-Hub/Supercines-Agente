@@ -30,7 +30,7 @@ const FIELDS = new Set([
 const CONFIG_FIELDS = new Set(["HANDOFF_STAGE_NAME", "HANDOFF_PIPELINE_NAME"]);
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

@@ -5,7 +5,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // últimas N horas. Lo más viejo se ignora (lo manejan los asesores). 0 = sin
 // límite (atiende todo el backlog). Evita arrastrar cola vieja tras una caída.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

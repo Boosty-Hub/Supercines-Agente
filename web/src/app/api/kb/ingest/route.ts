@@ -8,7 +8,7 @@ export const maxDuration = 60;
 const ACCEPTED = new Set(["pdf", "docx", "txt", "md", "srt", "vtt"]);
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

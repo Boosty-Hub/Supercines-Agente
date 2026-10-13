@@ -19,7 +19,7 @@ type Vertical = {
 };
 
 export default async function VerticalesPage() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const { data: verticals } = await supabase
     .from("verticals")
     .select("id, slug, name, description, system_prompt, auto_reply, requires_review, ignore, auto_assign, kommo_field_name, kommo_field_value")

@@ -7,7 +7,7 @@ import { configValue, setConfigValues } from "@/lib/runtime-config";
 // externa (OpenAI Whisper): para activarlo hace falta una OPENAI_API_KEY
 // en runtime_config (se puede mandar acá mismo como body.openaiKey).
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

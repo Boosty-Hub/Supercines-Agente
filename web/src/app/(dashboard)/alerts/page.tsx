@@ -47,9 +47,10 @@ function linkFor(alert: Alert, leadByAlert: Map<string, string>): string | null 
   return null;
 }
 
-export default async function AlertsPage({ searchParams }: { searchParams: { show?: string } }) {
+export default async function AlertsPage(props: { searchParams: Promise<{ show?: string }> }) {
+  const searchParams = await props.searchParams;
   const showAcked = searchParams.show === "all";
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   const query = supabase
     .from("alerts")

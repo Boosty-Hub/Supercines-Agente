@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
-export async function PATCH(request: Request, { params }: Params) {
-  const supabase = createSupabaseServerClient();
+export async function PATCH(request: Request, props: Params) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -39,8 +40,9 @@ export async function PATCH(request: Request, { params }: Params) {
   return NextResponse.json({ ok: true, template: data });
 }
 
-export async function DELETE(_request: Request, { params }: Params) {
-  const supabase = createSupabaseServerClient();
+export async function DELETE(_request: Request, props: Params) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

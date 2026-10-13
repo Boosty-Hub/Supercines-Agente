@@ -4,7 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // Configura el campo "Apagar Agente": guarda el id (+ nombre) del campo de Kommo
 // que actúa como interruptor por lead. null = desactivado.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

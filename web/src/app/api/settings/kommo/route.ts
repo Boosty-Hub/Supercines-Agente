@@ -6,7 +6,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // (POST /api/settings/control-panel), arriba de las pestañas de Ajustes; acá
 // NO se tocan para no pisarlos al guardar el campo/salesbot.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

@@ -7,8 +7,10 @@
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/testing@1": "1.0.20",
     "npm:@ai-sdk/anthropic@1.2.12": "1.2.12_zod@3.25.76",
+    "npm:@ai-sdk/anthropic@2.0.106": "2.0.106_zod@3.25.76",
     "npm:@anthropic-ai/sdk@0.95.1": "0.95.1_zod@3.25.76",
     "npm:ai@4.3.19": "4.3.19_react@19.3.0_zod@3.25.76",
+    "npm:ai@5.0.267": "5.0.267_zod@3.25.76",
     "npm:zod@3": "3.25.76"
   },
   "jsr": {
@@ -39,17 +41,44 @@
     "@ai-sdk/anthropic@1.2.12_zod@3.25.76": {
       "integrity": "sha512-YSzjlko7JvuiyQFmI9RN1tNZdEiZxc+6xld/0tq/VkJaHpEzGAb1yiNxxvmYVcjvfu/PcvCxAAYXmTYQQ63IHQ==",
       "dependencies": [
-        "@ai-sdk/provider",
-        "@ai-sdk/provider-utils",
+        "@ai-sdk/provider@1.1.3",
+        "@ai-sdk/provider-utils@2.2.8_zod@3.25.76",
+        "zod"
+      ]
+    },
+    "@ai-sdk/anthropic@2.0.106_zod@3.25.76": {
+      "integrity": "sha512-/VXtTdsOGCse8sZwhg7JgiFNZXK2g3VrR5sOaw6BQLBAlY/ieoqgMlAQlPnUUmeH1RBBg29WBi0U6XVQOvo4mw==",
+      "dependencies": [
+        "@ai-sdk/provider@2.0.5",
+        "@ai-sdk/provider-utils@3.0.39_zod@3.25.76",
+        "zod"
+      ]
+    },
+    "@ai-sdk/gateway@2.0.159_zod@3.25.76": {
+      "integrity": "sha512-gpdA2a4CRkGL8unNv+jcyunUwrAnO2nfs85rh67hhSNtlQRwCIaNlqD65VlbzSja+ziBcqE2qEsztp8LOi9YKg==",
+      "dependencies": [
+        "@ai-sdk/provider@2.0.5",
+        "@ai-sdk/provider-utils@3.0.39_zod@3.25.76",
+        "@vercel/oidc",
         "zod"
       ]
     },
     "@ai-sdk/provider-utils@2.2.8_zod@3.25.76": {
       "integrity": "sha512-fqhG+4sCVv8x7nFzYnFo19ryhAa3w096Kmc3hWxMQfW/TubPOmt3A6tYZhl4mUfQWWQMsuSkLrtjlWuXBVSGQA==",
       "dependencies": [
-        "@ai-sdk/provider",
+        "@ai-sdk/provider@1.1.3",
         "nanoid",
         "secure-json-parse",
+        "zod"
+      ]
+    },
+    "@ai-sdk/provider-utils@3.0.39_zod@3.25.76": {
+      "integrity": "sha512-Cb1GE1UKcZxouWhV7weIQoJTgyz4WMswQfapPClN4QQP1pO01ZNSbG9EVN5C0gCsikA8vM0wrJZIT7HiZmH3wA==",
+      "dependencies": [
+        "@ai-sdk/provider@2.0.5",
+        "@standard-schema/spec",
+        "eventsource-parser",
+        "undici",
         "zod"
       ]
     },
@@ -59,10 +88,16 @@
         "json-schema"
       ]
     },
+    "@ai-sdk/provider@2.0.5": {
+      "integrity": "sha512-cmG40u10QFEUrYXWYom6Lo6DLR+pND3wWABTTT9Nf7zg9F7BD46KNj+STekndp9Kg5ZAIPA0WxmTI0IwRvKvvQ==",
+      "dependencies": [
+        "json-schema"
+      ]
+    },
     "@ai-sdk/react@1.2.12_react@19.3.0_zod@3.25.76": {
       "integrity": "sha512-jK1IZZ22evPZoQW3vlkZ7wvjYGYF+tRBKXtrcolduIkQ/m/sOAVcVeVDUDvh1T91xCnWCdUGCPZg2avZ90mv3g==",
       "dependencies": [
-        "@ai-sdk/provider-utils",
+        "@ai-sdk/provider-utils@2.2.8_zod@3.25.76",
         "@ai-sdk/ui-utils",
         "react",
         "swr",
@@ -76,8 +111,8 @@
     "@ai-sdk/ui-utils@1.2.11_zod@3.25.76": {
       "integrity": "sha512-3zcwCc8ezzFlwp3ZD15wAPjf2Au4s3vAbKsXQVyhxODHcmu0iyPO2Eua6D/vicq/AUm/BAo60r97O6HU+EI0+w==",
       "dependencies": [
-        "@ai-sdk/provider",
-        "@ai-sdk/provider-utils",
+        "@ai-sdk/provider@1.1.3",
+        "@ai-sdk/provider-utils@2.2.8_zod@3.25.76",
         "zod",
         "zod-to-json-schema"
       ]
@@ -97,20 +132,29 @@
     "@babel/runtime@7.29.7": {
       "integrity": "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="
     },
+    "@fastify/busboy@2.1.1": {
+      "integrity": "sha512-vBZP4NlzfOlerQTnba4aqZoMhE/a9HY7HRqoOPaETQcSQuWEIyZMHGfVu6w9wGtGK5fED5qRs2DteVCjOH60sA=="
+    },
     "@opentelemetry/api@1.9.0": {
       "integrity": "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="
     },
     "@stablelib/base64@1.0.1": {
       "integrity": "sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ=="
     },
+    "@standard-schema/spec@1.1.0": {
+      "integrity": "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="
+    },
     "@types/diff-match-patch@1.0.36": {
       "integrity": "sha512-xFdR6tkm0MWvBfO8xXCSsinYxHcqkQUlcHeSpMC2ukzOb6lwQAfDmW+Qt0AvlGd8HpsS28qKsB+oPeJn9I39jg=="
+    },
+    "@vercel/oidc@3.1.0": {
+      "integrity": "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="
     },
     "ai@4.3.19_react@19.3.0_zod@3.25.76": {
       "integrity": "sha512-dIE2bfNpqHN3r6IINp9znguYdhIOheKW2LDigAMrgt/upT3B8eBGPSCblENvaZGoq+hxaN9fSMzjWpbqloP+7Q==",
       "dependencies": [
-        "@ai-sdk/provider",
-        "@ai-sdk/provider-utils",
+        "@ai-sdk/provider@1.1.3",
+        "@ai-sdk/provider-utils@2.2.8_zod@3.25.76",
         "@ai-sdk/react",
         "@ai-sdk/ui-utils",
         "@opentelemetry/api",
@@ -122,6 +166,16 @@
         "react"
       ]
     },
+    "ai@5.0.267_zod@3.25.76": {
+      "integrity": "sha512-9oIQgz0v4elRrZ1mZJK83OJTH6SwV1aZD2nRUk6tgZ+DAnPDdLnaTtsKrbNB04Sb1aiEWUzkSaqfr/a9FDxBLg==",
+      "dependencies": [
+        "@ai-sdk/gateway",
+        "@ai-sdk/provider@2.0.5",
+        "@ai-sdk/provider-utils@3.0.39_zod@3.25.76",
+        "@opentelemetry/api",
+        "zod"
+      ]
+    },
     "chalk@5.6.2": {
       "integrity": "sha512-7NzBL0rN6fMUW+f7A6Io4h40qQlG+xGmtMxfbnH/K7TAtt8JQWVQK+6g0UXKMeVJoyV5EkkNsErQ8pVD3bLHbA=="
     },
@@ -130,6 +184,9 @@
     },
     "diff-match-patch@1.0.5": {
       "integrity": "sha512-IayShXAgj/QMXgB0IWmKx+rOPuGMhqm5w6jvFxmVenXKIzRqTAAsbBPT3kWQeGANj3jGgvcvv4yK6SxqYmikgw=="
+    },
+    "eventsource-parser@3.1.1": {
+      "integrity": "sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ=="
     },
     "fast-sha256@1.3.0": {
       "integrity": "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ=="
@@ -183,6 +240,12 @@
     },
     "ts-algebra@2.0.0": {
       "integrity": "sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw=="
+    },
+    "undici@5.29.0": {
+      "integrity": "sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==",
+      "dependencies": [
+        "@fastify/busboy"
+      ]
     },
     "use-sync-external-store@1.7.0_react@19.3.0": {
       "integrity": "sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==",

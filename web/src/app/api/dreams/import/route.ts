@@ -9,7 +9,7 @@ type DreamEntry = { path: string; content: string };
 // Idempotente: paths ya presentes se omiten (skipped) para evitar duplicados
 // al re-subir el mismo archivo.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

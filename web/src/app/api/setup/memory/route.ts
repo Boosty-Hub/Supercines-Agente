@@ -27,7 +27,7 @@ const LEADS_DESCRIPTION =
 // Step 2: create/reconcile the two Memory Stores. Idempotent — finds existing
 // stores by name (reuses their IDs) and only creates the missing ones.
 export async function POST() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

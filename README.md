@@ -171,7 +171,7 @@ cp web/.env.example web/.env.local
 
 ## Stack
 
-- **Next.js 14** (App Router, TS, Tailwind) — dashboard + Route Handlers
+- **Next.js 15** (React 19) (App Router, TS, Tailwind) — dashboard + Route Handlers
 - **Supabase** — Postgres 17 + pgvector + Auth + Realtime + Edge Functions (Deno 2)
 - **Anthropic** — Haiku 5.5 (clasificación, agente CMA, graders, Dreams; tarifa escalonada por largo de prompt), Memory Stores
 - **Kommo CRM** — webhook entrante, REST v4, Salesbot v2
@@ -200,7 +200,7 @@ cp web/.env.example web/.env.local
 │   ├── migrations/               # SQL idempotentes; cron URLs usan ${SUPABASE_URL}
 │   ├── functions/                # Edge Functions Deno con verify_jwt=false
 │   └── config.toml
-├── web/                          # Next.js 14 dashboard
+├── web/                          # Next.js 15 (React 19) dashboard
 │   └── scripts/
 │       └── embed-provision.mjs  # codegen: embebe migrations + functions en TS
 ├── .env.example                  # referencia de vars (raíz — solo para dev local)

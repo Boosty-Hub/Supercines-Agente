@@ -19,7 +19,7 @@ function decodeJwt(jwt: string): Record<string, unknown> {
 // KOMMO_* to runtime_config. Ports scripts/save-kommo-credentials.mjs MINUS the
 // Management-API secret push — Edge Functions read these from runtime_config now.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

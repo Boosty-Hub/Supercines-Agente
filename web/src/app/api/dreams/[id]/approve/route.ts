@@ -4,11 +4,9 @@ import { approveDream, triggerDigestRebuild } from "@/lib/memory-list";
 
 // Aprueba un dream pendiente: lo mueve de /dreams-pending/ a /dreams/.
 // A partir de ahí el agente lo lee como regla implícita al responder.
-export async function POST(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

@@ -6,12 +6,13 @@ import { type Situacion } from "./situacion-utils";
 
 export const dynamic = "force-dynamic";
 
-export default async function PromosPage({
-  searchParams,
-}: {
-  searchParams: { tab?: string };
-}) {
-  const supabase = createSupabaseServerClient();
+export default async function PromosPage(
+  props: {
+    searchParams: Promise<{ tab?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const supabase = await createSupabaseServerClient();
 
   const [{ data: rawPromos }, { data: rawSituaciones }] = await Promise.all([
     supabase

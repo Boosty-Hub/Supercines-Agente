@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 // key against the API, and persist everything to runtime_config. No external
 // provisioning happens here — that's the memory/agent/kommo steps.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

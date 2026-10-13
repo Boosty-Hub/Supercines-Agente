@@ -14,8 +14,9 @@ type PipelineRef = { name?: string };
 //
 // Registro: leads.kommo_stage_id + kommo_pipeline_id y el evento de la línea de
 // tiempo, en el mismo paso (apply_lead_position, 0061).
-export async function POST(request: Request, { params }: { params: { id: string } }) {
-  const supabase = createSupabaseServerClient();
+export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

@@ -9,7 +9,7 @@ const FREQUENCIES = ["daily", "3d", "7d", "15d"] as const;
 // El cron sigue disparando a diario; dreams-run hace un due-check y saltea si
 // todavía no toca (según DREAMS_LAST_RUN).
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

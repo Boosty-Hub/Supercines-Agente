@@ -93,7 +93,8 @@ function BodyWithLeadLinks({ body, leadRefs }: { body: string; leadRefs: Record<
   );
 }
 
-export default async function DreamsPage({ searchParams }: { searchParams: SearchParams }) {
+export default async function DreamsPage(props: { searchParams: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   let items: Awaited<ReturnType<typeof listDreams>> = [];
   let pendingItems: Awaited<ReturnType<typeof listPendingDreams>> = [];
   let listError: string | null = null;

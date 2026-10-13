@@ -3,11 +3,10 @@
 
 import { redirect } from "next/navigation";
 
-export default function AgentRedirect({
-  searchParams,
-}: {
-  searchParams: { tab?: string };
+export default async function AgentRedirect(props: {
+  searchParams: Promise<{ tab?: string }>;
 }) {
+  const searchParams = await props.searchParams;
   const sec = searchParams.tab === "filtros" || searchParams.tab === "acciones"
     ? `&sec=${searchParams.tab}`
     : "";

@@ -16,7 +16,7 @@ type VerticalInput = {
 // re-running the step (or accepting on top of the seeded generics) never errors
 // on duplicates — existing rows are updated, new ones inserted.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

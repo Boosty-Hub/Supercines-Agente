@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 // /api/inbox, y la consulta corre con el JWT del usuario, así que sin sesión la
 // RLS (y el revoke a `anon` de inbox_lead_summaries) la rechaza igual.
 export async function GET() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   try {
     const [leads, cfg, pipelines] = await Promise.all([
       fetchLeadSummaries(supabase),

@@ -7,23 +7,27 @@ import { costUsd, parsePricingOverride } from "@/lib/ai-pricing";
 export async function recordWebUsage(p: {
   component: string;
   model: string;
-  /** AI SDK v4: usage tiene promptTokens/completionTokens */
-  usage: { promptTokens?: number; completionTokens?: number } | undefined;
+  /** AI SDK v5 (inputTokens/outputTokens); se aceptan también los nombres de v4. */
+  usage:
+    | { inputTokens?: number; outputTokens?: number; promptTokens?: number; completionTokens?: number }
+    | undefined;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
+  const inputTokens = p.usage?.inputTokens ?? p.usage?.promptTokens;
+  const outputTokens = p.usage?.outputTokens ?? p.usage?.completionTokens;
   try {
     const override = parsePricingOverride(await configValue("AI_PRICING_OVERRIDES"));
     const cost = costUsd({
       model: p.model,
-      inputTokens: p.usage?.promptTokens,
-      outputTokens: p.usage?.completionTokens,
+      inputTokens,
+      outputTokens,
       pricingOverride: override,
     });
     await createServiceClient().from("usage_events").insert({
       component: p.component,
       model: p.model,
-      input_tokens: p.usage?.promptTokens ?? null,
-      output_tokens: p.usage?.completionTokens ?? null,
+      input_tokens: inputTokens ?? null,
+      output_tokens: outputTokens ?? null,
       is_estimated: false,
       estimated_cost_usd: cost,
       metadata: p.metadata ?? null,

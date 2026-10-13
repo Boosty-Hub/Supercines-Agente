@@ -5,7 +5,7 @@ const MATCH_TYPES = ["contains", "regex", "mention_tag"] as const;
 type MatchType = (typeof MATCH_TYPES)[number];
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

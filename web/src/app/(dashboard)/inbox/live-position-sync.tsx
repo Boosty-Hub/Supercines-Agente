@@ -14,10 +14,13 @@ export default function LivePositionSync({ leadId }: { leadId: string }) {
   useEffect(() => {
     if (hecho.current === leadId) return;
     hecho.current = leadId;
-    let cancelado = false;
+    // SIN bandera de cancelación: con el guard `hecho` de arriba, el StrictMode de
+    // React 19 (monta, desmonta y vuelve a montar) corría el efecto UNA vez, lo
+    // cancelaba en el cleanup y la segunda pasada salía por el guard — la respuesta
+    // se perdía y la etapa nunca se guardaba. Un refresh tras desmontar es inocuo.
     void fetch(`/api/leads/${leadId}/position`, { method: "POST" })
       .then(async (res) => {
-        if (cancelado || !res.ok) return;
+        if (!res.ok) return;
         const json = await res.json().catch(() => ({}));
         if (json?.outcome === "applied") {
           window.dispatchEvent(new Event("inbox:reload"));
@@ -27,9 +30,6 @@ export default function LivePositionSync({ leadId }: { leadId: string }) {
       .catch(() => {
         /* fail-open: se sigue mostrando lo de Kommo; el webhook o el backfill lo guardan */
       });
-    return () => {
-      cancelado = true;
-    };
   }, [leadId, router]);
 
   return null;

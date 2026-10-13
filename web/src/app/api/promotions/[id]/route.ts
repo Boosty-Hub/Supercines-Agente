@@ -3,11 +3,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export async function PATCH(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function PATCH(request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -79,11 +77,9 @@ export async function PATCH(
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

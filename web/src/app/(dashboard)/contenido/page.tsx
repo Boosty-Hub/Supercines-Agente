@@ -5,16 +5,17 @@ import ContentTabs from "./content-tabs";
 
 export const dynamic = "force-dynamic";
 
-export default async function ContenidoPage({
-  searchParams,
-}: {
-  searchParams: { tab?: string };
-}) {
+export default async function ContenidoPage(
+  props: {
+    searchParams: Promise<{ tab?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   // Promos y eventos se mudaron a su propio módulo (/promos). Deep-links viejos
   // (?tab=promos) redirigen ahí para no romper marcadores.
   if (searchParams.tab === "promos") redirect("/promos");
 
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   const [{ data: rawSamples }, { data: rawDocs }] = await Promise.all([
     supabase

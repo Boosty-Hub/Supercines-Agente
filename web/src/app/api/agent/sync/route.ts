@@ -16,7 +16,7 @@ export const runtime = "nodejs";
 //   - overwrite:   empuja el prompt de la DB igual (pisa lo de afuera);
 //   - import_live: no empuja; trae el prompt vivo del operador a la DB.
 export async function POST(request: Request) {
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
 // GET /api/agent/sync — ¿hay un conflicto de prompt pendiente? (sin modificar nada)
 export async function GET() {
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({ ok: true, conflict: await checkAgentPromptConflict() });

@@ -5,11 +5,9 @@ import { callInternalFunction } from "@/lib/internal-call";
 // Resuelve un mensaje marcado para revisión humana: limpia el flag y dispara
 // al agente en modo force_review (el draft queda 'pending' para que el humano
 // lo apruebe o edite en la misma conversación).
-export async function POST(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

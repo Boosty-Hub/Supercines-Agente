@@ -15,7 +15,7 @@ export const runtime = "nodejs";
 //   inferior en sesiones CMA), el margen compensa. Ausente no lo toca.
 // Las Edge Functions toman el cambio en <60s (cache de runtime_config).
 export async function POST(request: Request) {
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

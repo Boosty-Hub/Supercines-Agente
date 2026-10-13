@@ -4,7 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // Persiste el debounce (segundos de silencio a esperar antes de responder el
 // batch de mensajes seguidos de un lead). 0 = responde al instante.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

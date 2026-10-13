@@ -32,7 +32,7 @@ export const dynamic = "force-dynamic";
 const RESTART_COOLDOWN_SECONDS = 15 * 60;
 
 export async function GET() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase
     .from("kommo_backfill")
     .select("status, scanned, updated, last_error, finished_at, updated_at, lease_until")
@@ -65,7 +65,7 @@ export async function GET() {
 }
 
 export async function POST() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

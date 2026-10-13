@@ -64,7 +64,7 @@ async function fetchDeclaredToolRows(): Promise<AgentToolRow[]> {
 // Step 3: create/reconcile the Anthropic Environment + Managed Agent. Idempotent
 // — finds existing resources by name (reuses + updates) and creates missing ones.
 export async function POST() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

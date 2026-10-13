@@ -20,7 +20,7 @@ function normalizeList(raw: unknown): string[] {
 // con los canales ignorados — un canal por el que el agente responde ya se
 // clasifica, marcarlo acá no significaría nada y solo dejaría basura en la DB.
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

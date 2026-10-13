@@ -9,7 +9,7 @@ const POLICIES = ["all", "error", "none"] as const;
 //   error → solo errores se auto-activan; el resto espera aprobación
 //   none  → todo espera aprobación manual en /dreams
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

@@ -17,7 +17,7 @@ const BATCH_SIZE = 200;
 // El cliente llama en loop hasta done=true.
 export async function POST(request: Request) {
   // Auth obligatorio
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

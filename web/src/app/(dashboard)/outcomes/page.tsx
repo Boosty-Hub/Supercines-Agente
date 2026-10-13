@@ -25,7 +25,7 @@ type AggRow = {
 };
 
 export default async function OutcomesPage() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   const { data: graders } = await supabase
     .from("graders")

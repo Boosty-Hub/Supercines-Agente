@@ -2,3 +2,24 @@ packages:
   - "."
 allowBuilds:
   unrs-resolver: true
+# Overrides de dependencias TRANSITIVAS con vulnerabilidades conocidas (pnpm audit).
+# pnpm >=10 lee ESTE archivo e ignora el campo "pnpm.overrides" de package.json: es la
+# única fuente. Directas: next 15.5.x (parche de la RCE de Image Optimization), react 19,
+# ai 5 / @ai-sdk/anthropic 2 (provider-utils >=3.0.28).
+overrides:
+  # mammoth declara argparse solo para su CLI (bin/mammoth, que esta app no ejecuta; la API
+  # de lib/ no lo importa); argparse arrastraba sprintf-js (DoS sin parche publicado).
+  # "-" lo elimina del árbol.
+  "argparse@~1.0.3": "-"
+  "brace-expansion@<1.1.18": ">=1.1.18 <2.0.0"
+  "brace-expansion@>=2.0.0 <2.1.4": ">=2.1.4 <3.0.0"
+  "brace-expansion@>=3.0.0 <5.0.12": ">=5.0.12"
+  "js-yaml@<5.4.1": ">=5.4.1"
+  "glob@>=10.2.0 <10.5.0": ">=10.5.0"
+  "postcss@<8.5.23": ">=8.5.23"
+  "jsondiffpatch@<0.7.2": ">=0.7.2"
+  "@xmldom/xmldom@<0.8.15": ">=0.8.15 <0.9.0"
+  "nanoid@<3.3.18": ">=3.3.18 <4.0.0"
+  "postcss-selector-parser@<7.1.6": ">=7.1.6"
+  "source-map-js@<1.2.2": ">=1.2.2"
+  "undici@<6.28.0": ">=6.28.0 <7.0.0"

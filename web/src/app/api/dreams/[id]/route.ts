@@ -4,11 +4,9 @@ import { deleteDream, triggerDigestRebuild } from "@/lib/memory-list";
 
 // Borra un aprendizaje del master Memory Store. Al eliminarse el archivo,
 // el agente deja de leerlo y no lo adopta en próximas respuestas.
-export async function DELETE(
-  _request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createSupabaseServerClient();
+export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

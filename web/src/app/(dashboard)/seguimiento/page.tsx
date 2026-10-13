@@ -61,7 +61,7 @@ type FollowUpSendRow = {
 };
 
 export default async function SeguimientoPage() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   const [templatesRes, stepsRes, configRes, sendsRes] = await Promise.all([
     supabase

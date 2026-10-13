@@ -7,11 +7,12 @@ export const dynamic = "force-dynamic";
 // viejos `/inbox?lead=<id>` (alertas, Dreams, favoritos del navegador) se
 // resuelven en next.config.mjs; este redirect es la red de seguridad si el id no
 // tiene forma de UUID. Conserva los filtros.
-export default function InboxPage({
-  searchParams,
-}: {
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
+export default async function InboxPage(
+  props: {
+    searchParams: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const { lead, ...rest } = searchParams;
   if (typeof lead === "string" && lead) {
     const qs = new URLSearchParams(

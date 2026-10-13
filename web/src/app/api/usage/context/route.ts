@@ -16,7 +16,7 @@ const BYTES_PER_TOKEN = 4;
 // 100% dinámico: lee los stores del deployment actual, sirve para cualquier
 // cliente/agente que se monte con este template.
 export async function GET() {
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

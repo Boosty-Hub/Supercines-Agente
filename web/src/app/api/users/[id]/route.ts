@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 // Ver la nota de /api/users/route.ts: el middleware ya gatea este prefijo, esto
 // es la segunda capa porque abajo se escribe con service-role.
 async function requireConfiguracion() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -20,7 +20,8 @@ async function requireConfiguracion() {
   return { user };
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const gate = await requireConfiguracion();
   if (gate.error) return gate.error;
 
@@ -80,7 +81,8 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
 }
 
-export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const gate = await requireConfiguracion();
   if (gate.error) return gate.error;
 

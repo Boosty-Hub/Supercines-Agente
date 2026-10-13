@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 // real de las sesiones CMA); si esa actualización falla, NO se persiste la
 // key para que config y agente no diverjan.
 export async function POST(request: Request) {
-  const authClient = createSupabaseServerClient();
+  const authClient = await createSupabaseServerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

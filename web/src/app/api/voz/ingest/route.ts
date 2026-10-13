@@ -8,7 +8,7 @@ const VALID_TYPES = ["chat_export", "transcript", "rule", "example_response"] as
 type SampleType = (typeof VALID_TYPES)[number];
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

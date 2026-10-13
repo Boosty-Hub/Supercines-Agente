@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 //   - url/apiKey → runtime_config BCV_RATE_URL / BCV_RATE_APIKEY (fuente custom;
 //     vacío = usar el fallback público sin credenciales)
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

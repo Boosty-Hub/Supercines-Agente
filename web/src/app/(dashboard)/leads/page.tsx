@@ -57,12 +57,13 @@ type LeadRow = {
   }>;
 };
 
-export default async function LeadsPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
-  const supabase = createSupabaseServerClient();
+export default async function LeadsPage(
+  props: {
+    searchParams: Promise<SearchParams>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const supabase = await createSupabaseServerClient();
   const { data } = await supabase
     .from("leads")
     .select(

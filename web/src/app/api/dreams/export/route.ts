@@ -6,7 +6,7 @@ import { listDreams, readDream } from "@/lib/memory-list";
 // archivo JSON. Cada entrada conserva `path` y `content` originales para
 // poder reimportarse vía POST /api/dreams/import sin pérdida.
 export async function GET() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

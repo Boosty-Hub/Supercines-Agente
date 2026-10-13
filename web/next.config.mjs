@@ -1,5 +1,12 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // El repo tiene DOS lockfiles (raíz y web/): sin esto Next infiere el workspace root
+  // por el lockfile más cercano a la raíz y avisa en cada build. La app solo traza
+  // archivos de web/ en runtime (embed-provision lee ../supabase únicamente en el build).
+  outputFileTracingRoot: path.dirname(fileURLToPath(import.meta.url)),
   async redirects() {
     return [
       {

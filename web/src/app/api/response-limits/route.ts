@@ -4,7 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 // Persiste los límites de respuesta por lead en el singleton kommo_publish_config.
 // Enteros no negativos; ventana mínima 1h. 0 = desactivado (cooldown / tope).
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

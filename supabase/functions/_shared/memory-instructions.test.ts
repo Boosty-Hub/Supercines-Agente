@@ -17,7 +17,7 @@ Deno.test("leads: solo learnings.md; nunca conversation.md como algo a leer/escr
     const around = t.slice(Math.max(0, m.index! - 80), m.index! + 80);
     assert(/no |nunca|ya viene/i.test(around), `menciona conversation.md sin prohibirlo: ${around}`);
   }
-  assertStringIncludes(t, "[HISTORIAL]");
+  assertStringIncludes(t, "historial reciente");
 });
 
 Deno.test("leads: permite no escribir nada cuando no hay nada duradero", () => {

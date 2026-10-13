@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { turn } from "./untrusted.ts";
 
 // Reconstrucción DETERMINÍSTICA del historial de un lead, leída de la DB.
 //
@@ -38,13 +39,14 @@ export type LeadHistoryOptions = {
   truncateChars?: number;
 };
 
-function truncate(s: string, n: number): string {
-  const t = (s ?? "").trim();
-  return t.length > n ? `${t.slice(0, n)}…` : t;
-}
-
-// Devuelve un transcript cronológico "Lead:/Agente:" listo para inyectar en un
-// prompt, o "" si no hay historial previo. fail-soft ABSOLUTO: ante cualquier
+// Devuelve un transcript cronológico, UN TURNO POR LÍNEA, listo para inyectar en
+// un prompt, o "" si no hay historial previo. FORMATO (cambió por seguridad):
+//   <turno rol="lead">…</turno>  /  <turno rol="agente">…</turno>
+// en vez de las líneas crudas "Lead: …" / "Agente: …". El texto del lead es
+// entrada NO confiable: se sanea (ver _shared/untrusted.ts) para que nada dentro
+// de un turno pueda falsificar un turno del agente ni cerrar el bloque. El
+// llamador DEBE anteponer UNTRUSTED_NOTICE al insertarlo en el prompt. La firma
+// y el tipo de retorno (string) no cambian. fail-soft ABSOLUTO: ante cualquier
 // error de query devuelve "" y el llamador cae al comportamiento previo (nunca
 // rompe la clasificación ni la respuesta).
 export async function fetchLeadHistory(
@@ -80,7 +82,7 @@ export async function fetchLeadHistory(
     let pendingDraftId: string | null = null;
     const flush = () => {
       if (pendingBody !== null) {
-        lines.push(`Agente: ${truncate(pendingBody, truncChars)}`);
+        lines.push(turn("agente", pendingBody, { maxChars: truncChars }));
         pendingBody = null;
         pendingDraftId = null;
       }
@@ -100,9 +102,9 @@ export async function fetchLeadHistory(
       if (pendingDraftId !== null && (!sentDraft || sentDraft.id !== pendingDraftId)) {
         flush();
       }
-      const who = m.direction === "inbound" ? "Lead" : "Agente";
+      const rol = m.direction === "inbound" ? "lead" : "agente";
       if (m.content && m.content.trim()) {
-        lines.push(`${who}: ${truncate(m.content, truncChars)}`);
+        lines.push(turn(rol, m.content, { maxChars: truncChars }));
       }
       // Diferimos la respuesta del agente hasta cerrar su batch.
       if (sentDraft) {

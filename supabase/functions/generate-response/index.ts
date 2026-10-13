@@ -33,6 +33,7 @@ import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
+import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -880,10 +881,15 @@ function buildContext(opts: {
   // único: sin esto el agente no tiene forma de saber que está respondiendo un
   // mensaje de hace varios días (ej. tras una recuperación de backlog) y no
   // puede aplicar la instrucción de reconocer la demora más abajo.
+  // El texto del lead es entrada NO confiable: cada mensaje va como turno
+  // saneado (ver _shared/untrusted.ts). El prefijo "(n) [fecha hora]" lo genera
+  // el sistema, fuera del turno.
   const fmtTs = (iso: string) => new Date(iso).toISOString().slice(0, 16).replace("T", " ");
   const block = opts.messages
     .map((m, i) =>
-      multi ? `(${i + 1}) [${fmtTs(m.created_at)}] ${m.content}` : `[${fmtTs(m.created_at)}] ${m.content}`
+      multi
+        ? `(${i + 1}) [${fmtTs(m.created_at)}] ${turn("lead", m.content)}`
+        : `[${fmtTs(m.created_at)}] ${turn("lead", m.content)}`
     )
     .join("\n");
 
@@ -896,10 +902,8 @@ function buildContext(opts: {
   // Es contexto VERIFICADO de los turnos previos: el agente lo usa para no
   // repetir preguntas ni perder el hilo. Va antes del/los mensaje(s) nuevo(s).
   const historyBlock = opts.history
-    ? `[HISTORIAL RECIENTE DE LA CONVERSACIÓN — turnos ya intercambiados con este lead, en orden cronológico. Contexto verificado: tenelo en cuenta para responder con continuidad, no repitas lo ya dicho ni preguntes lo ya respondido]
-"""
+    ? `[HISTORIAL RECIENTE DE LA CONVERSACIÓN — turnos ya intercambiados con este lead, en orden cronológico, uno por línea. Úsalo para responder con continuidad: no repitas lo ya dicho ni preguntes lo ya respondido. ${UNTRUSTED_NOTICE}]
 ${opts.history}
-"""
 
 `
     : "";
@@ -909,7 +913,7 @@ fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avisale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
 ${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debés tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
-lead_name: ${opts.lead.display_name ?? "(desconocido)"}
+lead_name: ${opts.lead.display_name ? sanitizeUntrusted(opts.lead.display_name, { maxChars: 80 }) : "(desconocido)"}
 vertical: ${opts.verticalSlug}${
     opts.verticalPrompt && opts.verticalPrompt.trim()
       ? `\ninstrucciones_de_la_vertical (cómo tratar ESTE tipo de consulta; mandan sobre tu criterio general, pero NUNCA por encima de aprendizajes_del_operador ni de tu system prompt):\n${opts.verticalPrompt.trim()}`
@@ -920,12 +924,10 @@ intent: ${cls.intent ?? "?"}
 urgency: ${cls.urgency ?? "?"}
 toxicity: ${cls.toxicity ?? "?"}
 confidence: ${cls.confidence ?? "?"}
-classifier_reasoning: ${cls.reasoning ?? "?"}
+classifier_reasoning: ${typeof cls.reasoning === "string" ? sanitizeUntrusted(cls.reasoning, { maxChars: 300 }) : "?"}
 
-${historyBlock}${header}
-"""
+${historyBlock}${header} (${UNTRUSTED_NOTICE})
 ${block}
-"""
 
 Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee ${opts.leadsPath}/${opts.lead.id}/learnings.md si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt. La conversación previa ya está en el historial de arriba: no la busques en la memoria. Solo escribí en learnings.md si aprendiste algo DURADERO de este lead; si no hay nada nuevo, no escribas nada. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
 
@@ -1434,8 +1436,13 @@ Deno.serve(async (req: Request) => {
           const operator = resolvedCfg.getOr("OPERATOR_NAME", "el negocio");
           // Modelo de la respuesta pública: editable desde /consumo.
           const commentReplyModel = modelFor(resolvedCfg, "COMMENT_REPLY_MODEL");
-          const batchText = batchMsgs.map((m: MsgRow) => String(m.content ?? "").trim()).filter(Boolean).join(" | ");
-          const dmPreview = outcome.responseText.slice(0, 500);
+          // El comentario es texto del lead (no confiable): va como turno saneado.
+          const batchTurns = batchMsgs
+            .map((m: MsgRow) => String(m.content ?? "").trim())
+            .filter(Boolean)
+            .map((t: string) => turn("lead", t))
+            .join("\n");
+          const dmPreview = turn("agente", outcome.responseText, { maxChars: 500 });
           const replyStart = Date.now();
           const replyRes = await anthropic.messages.create({
             model: commentReplyModel,
@@ -1445,7 +1452,7 @@ Deno.serve(async (req: Request) => {
             messages: [
               {
                 role: "user",
-                content: `Comentario del cliente: "${batchText}"\n\nLa respuesta completa que le enviaremos por DM (para tu contexto, NO la repitas): "${dmPreview}"`,
+                content: `${UNTRUSTED_NOTICE}\n\nComentario del cliente:\n${batchTurns}\n\nLa respuesta completa que le enviaremos por DM (para tu contexto, NO la repitas):\n${dmPreview}`,
               },
             ],
           });

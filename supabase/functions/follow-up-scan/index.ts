@@ -31,6 +31,8 @@ import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
+import { fetchLeadHistory } from "../_shared/history.ts";
+import { UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -112,12 +114,6 @@ type LeadRow = {
   kommo_stage_id: number | null;
 };
 
-type MessageRow = {
-  content: string;
-  direction: string;
-  created_at: string;
-};
-
 type Deps = {
   anthropic: Anthropic;
   agentId: string;
@@ -171,17 +167,6 @@ async function getLead(leadId: string): Promise<LeadRow | null> {
   return data;
 }
 
-async function getRecentMessages(leadId: string, limit = 10): Promise<MessageRow[]> {
-  const { data, error } = await supabase
-    .from("messages")
-    .select("content, direction, created_at")
-    .eq("lead_id", leadId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) throw new Error(`getRecentMessages: ${error.message}`);
-  return ((data ?? []) as MessageRow[]).reverse(); // más viejo primero
-}
-
 async function getMaxFollowUps(): Promise<number> {
   const { data } = await supabase
     .from("follow_up_config")
@@ -197,18 +182,12 @@ async function runFollowUpAgent(opts: {
   lead: LeadRow;
   template: FollowUpTemplate;
   stepNumber: number;
-  recentMessages: MessageRow[];
+  /** Historial determinístico (fetchLeadHistory): turnos lead/agente saneados, uno por línea. */
+  history: string;
   deps: Deps;
 }): Promise<string> {
-  const { lead, template, stepNumber, recentMessages, deps } = opts;
+  const { lead, template, stepNumber, history, deps } = opts;
   const { anthropic, agentId, environmentId, memstoreMaster, memstoreLeads, masterPath, leadsPath } = deps;
-
-  // Construir lista de mensajes recientes formateada
-  const messagesBlock = recentMessages.length > 0
-    ? recentMessages
-        .map((m) => `[${new Date(m.created_at).toISOString().slice(0, 16)}] ${m.direction === "inbound" ? "lead" : "agente"}: ${m.content}`)
-        .join("\n")
-    : "(sin mensajes previos)";
 
   // Construir lista de variables que la plantilla necesita completar
   const variablesBlock = template.variables.length > 0
@@ -219,12 +198,10 @@ async function runFollowUpAgent(opts: {
 
 Fecha y hora actual: ${formatNow(deps.timezone)} (zona horaria ${deps.timezone}).
 
-Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. Los últimos mensajes están abajo: no los busques en la memoria.
+Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. El historial de la conversación está abajo: no lo busques en la memoria.
 ${deps.dreamsDigest ? `\naprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${deps.dreamsDigest}\n` : ""}
-Últimos mensajes del lead:
-"""
-${messagesBlock}
-"""
+Historial reciente de la conversación (turnos en orden cronológico, uno por línea). ${UNTRUSTED_NOTICE}
+${history || "(sin mensajes previos)"}
 
 PASO ${stepNumber} de la secuencia. Plantilla a enviar (texto fijo, ya aprobado por Meta):
 """
@@ -448,12 +425,14 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   }
 
   // Cargar mensajes recientes
-  const recentMessages = await getRecentMessages(leadId);
+  // Misma fuente que generate-response: respuestas del agente incluidas (viven
+  // en drafts, no en messages) y texto del lead saneado. fail-soft: "" si falla.
+  const history = await fetchLeadHistory(supabase, leadId, { maxMessages: 20, truncateChars: 400 });
 
   // Ejecutar sesión CMA en modo seguimiento
   let rawOutput: string;
   try {
-    rawOutput = await runFollowUpAgent({ lead, template, stepNumber: row.step_number, recentMessages, deps });
+    rawOutput = await runFollowUpAgent({ lead, template, stepNumber: row.step_number, history, deps });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`follow-up-scan: CMA session failed for lead ${leadId}:`, msg);

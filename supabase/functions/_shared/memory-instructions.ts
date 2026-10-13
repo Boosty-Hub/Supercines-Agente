@@ -25,7 +25,7 @@ export const MASTER_STORE_INSTRUCTIONS =
 export function leadsStoreInstructions(leadId: string): string {
   return (
     `Memoria por lead. El lead actual es ${leadId}. Si existe, leé /${leadId}/learnings.md (datos duraderos de este lead). ` +
-    "El historial de la conversación ya viene en el [CONTEXTO] ([HISTORIAL]); no lo busques en este store ni lo reescribas. " +
+    "El historial de la conversación ya viene en el mensaje de la sesión (historial reciente, tanto al responder como en seguimientos); no lo busques en este store ni lo reescribas. " +
     `Solo si aprendiste algo DURADERO sobre este lead en este turno (preferencia, dato de contacto verificado, reclamo abierto, estado en el funnel), agregalo a /${leadId}/learnings.md. ` +
     "Si no hay nada duradero que registrar, no escribas nada."
   );

@@ -4,14 +4,30 @@
 // funnel de los 3 Salesbots nativos de Kommo (Cumpleaños / Alquiler de Salas,
 // uno por sede: Caracas="Altos Mirandinos", Valencia, Maracay). El bot vive
 // 100% dentro de Kommo — Muvito no interviene — y va llenando custom fields
-// del lead sin mover nunca la etapa del pipeline. Kommo descarta los
-// webhooks `leads.update` (ver kommo-webhook/index.ts → isActionable), así
-// que no hay forma de capturar esto en tiempo real vía webhook: esta función
-// lee directo de la API de Kommo y upsertea un snapshot en
-// `salesbot_funnel_leads`. Los campos son acumulativos (nunca se revierten),
-// así que el snapshot alcanza para reconstruir el funnel completo.
+// del lead sin mover nunca la etapa del pipeline.
+//
+// POR QUÉ UN SNAPSHOT Y NO EVENTOS. Desde 0061 el webhook `leads.update` /
+// `leads.status` SÍ se procesa (process-inbound → syncLeadPositions), pero solo
+// para sincronizar la etapa y el pipeline del lead (el tablero del inbox), y
+// únicamente de los leads que ya tienen conversación con el agente. NO guarda
+// los custom fields que va llenando el bot: ese avance (paso a paso, por lead
+// del bot) sigue sin tener historial de eventos. Esta función lo lee directo de
+// la API de Kommo y upsertea un snapshot en `salesbot_funnel_leads`. Los campos
+// son acumulativos (nunca se revierten), así que el snapshot alcanza para
+// reconstruir el funnel completo.
+//
+// UNA SOLA FUENTE DE VERDAD DE LA POSICIÓN. La lectura de cada sede ya trae el
+// pipeline y la etapa de cada lead: se vuelcan también en `leads`
+// (reconcile_funnel_lead_positions, 0062) en vez de pedirlos otra vez o de dejar
+// que dos jobs distintos mantengan la misma columna. Es una reconciliación: solo
+// escribe lo que cambió y repara cualquier webhook de movimiento que se haya
+// perdido. El recorrido completo de la cuenta (histórico) es de sync-pipelines.
+//
+// verify_jwt = false pero CON GATE: exige x-internal-secret (_shared/auth.ts);
+// pg_cron lo manda desde trigger_kommo_funnel_sync() (0062).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
 import {
   fetchLeadsByPipelineSince,
@@ -82,7 +98,29 @@ function classifyFlow(eventoValue: string): "cumpleanos" | "alquiler_salas" | nu
   return null; // valor inesperado (ej: "Función Privada") → no es este funnel
 }
 
-type SyncResult = { sede: Sede; processed: number; skipped: number };
+// Vuelca pipeline + etapa de los leads leídos a `leads` (ver 0062). Por lotes
+// para no mandar un JSON gigante; devuelve cuántos leads CAMBIARON.
+const POSITIONS_BATCH = 500;
+async function reconcilePositions(leads: KommoLeadRaw[], sede: Sede): Promise<number> {
+  let changed = 0;
+  for (let i = 0; i < leads.length; i += POSITIONS_BATCH) {
+    const batch = leads.slice(i, i + POSITIONS_BATCH).map((l) => ({
+      id: l.id,
+      pipeline_id: l.pipeline_id,
+      status_id: l.status_id,
+    }));
+    try {
+      const { data, error } = await supabase.rpc("reconcile_funnel_lead_positions", { p_leads: batch });
+      if (error) throw new Error(error.message);
+      changed += Number(data) || 0;
+    } catch (err) {
+      console.error(`kommo-funnel-sync posiciones (${sede}, lote ${i}):`, err instanceof Error ? err.message : String(err));
+    }
+  }
+  return changed;
+}
+
+type SyncResult = { sede: Sede; processed: number; skipped: number; positions_updated: number };
 
 async function syncSede(
   sede: Sede,
@@ -92,6 +130,11 @@ async function syncSede(
 ): Promise<SyncResult> {
   const pipelineId = SEDE_PIPELINES[sede];
   const leads: KommoLeadRaw[] = await fetchLeadsByPipelineSince(pipelineId, sinceUnix, kommoDomain, kommoToken);
+
+  // La misma lectura trae el pipeline y la etapa de cada lead: se reconcilian en
+  // `leads` (tablero del inbox) antes de filtrar por el bot. Fail-open: un fallo
+  // acá nunca debe impedir el snapshot del funnel.
+  const positionsUpdated = await reconcilePositions(leads, sede);
 
   // Solo nos interesan los que entraron al bot (Evento de Interés presente) y
   // el flow_type resuelve a uno conocido.
@@ -106,7 +149,7 @@ async function syncSede(
     candidates.push({ lead, flowType, eventoValue });
   }
 
-  if (candidates.length === 0) return { sede, processed: 0, skipped };
+  if (candidates.length === 0) return { sede, processed: 0, skipped, positions_updated: positionsUpdated };
 
   // Batch de contactos (nombre + email) — una sola llamada por sede en vez de
   // N+1 por lead.
@@ -178,7 +221,7 @@ async function syncSede(
     }
   }
 
-  return { sede, processed, skipped };
+  return { sede, processed, skipped, positions_updated: positionsUpdated };
 }
 
 Deno.serve(async (req: Request) => {
@@ -188,6 +231,10 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  // Gate: verify_jwt = false (el cron no manda JWT de usuario), así que la
+  // autorización es el secreto interno de bajo privilegio (ver 0062).
+  const denied = await authorizeInternal(req, supabase);
+  if (denied) return denied;
 
   try {
     const runtimeCfg = await loadConfig(supabase);
@@ -204,7 +251,7 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`kommo-funnel-sync (${sede}):`, msg);
-        results.push({ sede, processed: 0, skipped: 0 });
+        results.push({ sede, processed: 0, skipped: 0, positions_updated: 0 });
       }
     }
 

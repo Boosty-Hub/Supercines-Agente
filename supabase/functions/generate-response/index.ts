@@ -25,12 +25,15 @@ import {
   isBusinessHours,
   businessHoursLabel,
   type BusinessHoursConfig,
+  DEFAULT_TIMEZONE,
 } from "../_shared/business-hours.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
+import { evaluateClaim } from "../_shared/claim-batch.ts";
+import { extractResponseBlock, detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
@@ -943,9 +946,21 @@ Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }
 
+// Detector de fuga: patrones del guard compartido (_shared/response-guard.ts) +
+// la red propia de SuperCines (decisión de silencio / cita de aprendizajes del
+// operador que el agente a veces redacta en vez del mensaje real).
+const INTERNAL_REASONING_RE =
+  /aprendizajes del operador|an[aá]lisis interno|silencio absoluto|no\s+env[ií]o\s+respuesta|no\s+respondo\b|NO RESPONDER/i;
+function leakOf(text: string): string | null {
+  return detectInternalLeak(text) ?? (INTERNAL_REASONING_RE.test(text) ? "razonamiento interno del agente" : null);
+}
+
 // ---------------- Orquestar sesión CMA ----------------
 type Outcome = {
   responseText: string;
+  // Verificador de fuga interna (_shared/response-guard.ts): `reason` != null o
+  // `wellFormed` false => el draft NUNCA se auto-aprueba.
+  leak: { attempts: number; reason: string | null; wellFormed: boolean };
   rawResponseText: string;
   toolCalls: number;
   durationMs: number;
@@ -1015,6 +1030,14 @@ async function runAgent(opts: {
   // 3) Loop de eventos
   let responseText = "";
   let toolCalls = 0;
+
+  // VERIFICADOR DE FUGA INTERNA: reprocesa en la MISMA sesión (reusa contexto y
+  // memoria) cuando el bloque <respuesta> viene malformado o el texto trae
+  // residuo de razonamiento/tool-calling. Acotado; si tras los reintentos sigue
+  // mal, el caller fuerza revisión humana.
+  const MAX_LEAK_RETRIES = 2;
+  let leakAttempts = 0;
+  let leakReason: string | null = null;
 
   for await (const event of stream) {
     // deno-lint-ignore no-explicit-any
@@ -1104,6 +1127,27 @@ async function runAgent(opts: {
       if (stop && stop !== "end_turn") {
         console.warn(`generate-response: sesión ${session.id} quedó idle con stop_reason=${stop} (draft ${opts.draftId ?? "?"})`);
       }
+
+      // VERIFICADOR DE FUGA INTERNA — el agente terminó el turno. Si el bloque
+      // <respuesta>...</respuesta> no cierra bien, o el texto extraído trae
+      // residuo que nunca debe llegar al cliente, se pide el formato correcto
+      // en la misma sesión, hasta MAX_LEAK_RETRIES veces.
+      const extracted = extractResponseBlock(responseText);
+      leakReason = !extracted.wellFormed
+        ? "el bloque <respuesta>...</respuesta> vino malformado o ausente"
+        : leakOf(extracted.text);
+      if (leakReason && leakAttempts < MAX_LEAK_RETRIES) {
+        leakAttempts++;
+        console.warn(
+          `generate-response: VERIFICADOR fuga (intento ${leakAttempts}/${MAX_LEAK_RETRIES}) draft ${opts.draftId ?? "?"}: ${leakReason} → reprocesando en sesión`
+        );
+        await opts.anthropic.beta.sessions.events.send(session.id, {
+          events: [
+            { type: "user.message", content: [{ type: "text", text: leakCorrectionMessage(leakReason) }] },
+          ],
+        });
+        continue;
+      }
       break;
     } else if (ev.type === "session.status_terminated") {
       break;
@@ -1113,26 +1157,27 @@ async function runAgent(opts: {
     }
   }
 
-  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>. Si el
-  // modelo omite las etiquetas, NO usar el texto crudo como fallback: eso
-  // filtra razonamiento interno ("Silencio absoluto", "ANÁLISIS INTERNO") al
-  // cliente como si fuera el mensaje real — pasó 171 veces en producción.
-  // Sin etiquetas se interpreta como decisión de no responder.
-  const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
-  let clean = (match ? match[1] : "").trim();
-
-  // Red de seguridad: aunque venga bien envuelto en <respuesta>, si el texto
-  // describe una decisión de silencio o cita los aprendizajes del operador
-  // en vez de ser el mensaje real, se trata como respuesta vacía (no enviar).
-  const INTERNAL_REASONING_RE =
-    /aprendizajes del operador|an[aá]lisis interno|silencio absoluto|no\s+env[ií]o\s+respuesta|no\s+respondo\b|NO RESPONDER/i;
-  if (clean && INTERNAL_REASONING_RE.test(clean)) {
-    clean = "";
+  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>. NO hay
+  // fallback al texto crudo (filtró razonamiento interno al cliente 171 veces en
+  // producción): si el bloque no cierra bien, extractResponseBlock marca
+  // wellFormed=false y el llamador está obligado a forzar revisión humana en vez
+  // de auto-enviar.
+  const extractedFinal = extractResponseBlock(responseText);
+  const clean = extractedFinal.text;
+  if (!extractedFinal.wellFormed) {
+    leakReason = leakReason ?? "el bloque <respuesta>...</respuesta> vino malformado o ausente";
+    console.error(
+      `generate-response: VERIFICADOR fuga — bloque malformado tras ${leakAttempts} reintento(s) (draft ${opts.draftId ?? "?"}) → NO se auto-envía`
+    );
   }
+  // Chequeo final sobre el texto que efectivamente se devuelve, por si el turno
+  // que rompió el loop (p. ej. session.status_terminated) no pasó por el de arriba.
+  leakReason = leakReason ?? leakOf(clean);
 
   return {
     responseText: clean,
     rawResponseText: responseText.trim(),
+    leak: { attempts: leakAttempts, reason: leakReason, wellFormed: extractedFinal.wellFormed },
     toolCalls,
     durationMs: Date.now() - start,
     sessionId: session.id,
@@ -1184,7 +1229,7 @@ Deno.serve(async (req: Request) => {
     .select("timezone, business_hours, business_hours_start, business_hours_end, active_days")
     .eq("is_active", true)
     .maybeSingle();
-  const timezone = (fuCfg?.timezone as string) || "America/Guayaquil";
+  const timezone = (fuCfg?.timezone as string) || DEFAULT_TIMEZONE;
   const bizCfg: BusinessHoursConfig = {
     timezone,
     business_hours: (fuCfg?.business_hours as BusinessHoursConfig["business_hours"]) ?? null,
@@ -1292,13 +1337,34 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  // Marcar TODOS los mensajes del batch como cubiertos por este draft, para
-  // que el barrido no los vuelva a tomar (si el draft se borra por stale,
-  // el FK on delete set null los libera y se reprocesan).
-  await supabase
-    .from("messages")
-    .update({ answered_by_draft_id: draft.id })
-    .in("id", batchIds);
+  // CLAIM ATÓMICO del batch (RPC claim_message_batch, migración 0064): marca
+  // TODOS los mensajes como cubiertos por este draft en UNA sentencia. El
+  // SELECT-y-después-UPDATE anterior dejaba que dos invocaciones concurrentes
+  // (webhook, sweep de pg_cron, process-inbound, fan-out) eligieran el MISMO
+  // lead y respondieran dos veces (en KIA: 247 respuestas dobles ENVIADAS en
+  // un día). Si el draft se borra por stale, el FK on delete set null libera
+  // el batch y se reprocesa. evaluateClaim (puro) interpreta el resultado.
+  const { data: claimedCount, error: claimErr } = await supabase.rpc("claim_message_batch", {
+    p_message_ids: batchIds,
+    p_draft_id: draft.id,
+  });
+  const claim = evaluateClaim(claimedCount, claimErr, batchIds.length);
+  if (!claim.won) {
+    // Soltar lo tomado a medias ANTES de borrar el draft: si no, el batch queda
+    // huérfano.
+    if (claim.needsRelease) {
+      await supabase.from("messages").update({ answered_by_draft_id: null }).eq("answered_by_draft_id", draft.id);
+    }
+    // Solo si sigue pending: nunca borrar un draft ya publicado.
+    await supabase.from("drafts").delete().eq("id", draft.id).eq("status", "pending");
+    console.log(claim.message);
+    // ok:true a propósito: perder el claim bajo concurrencia es el camino
+    // NORMAL (otra invocación ya responde este lote), no una falla.
+    return new Response(
+      JSON.stringify({ ok: true, skipped: "batch_claimed_by_other_run" }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  }
 
   // Ya reclamamos este lead → disparamos una hermana para el siguiente, en
   // paralelo (hasta MAX_CONCURRENT). Así una ráfaga de leads se atiende junta
@@ -1510,10 +1576,23 @@ Deno.serve(async (req: Request) => {
       const contestPhoneGuard =
         batchHasContestMarker(batchMsgs) && VE_PHONE_RE.test(outcome.responseText);
 
+      // GUARD DE FUGA INTERNA (_shared/response-guard.ts): bloque malformado o
+      // residuo de razonamiento/tool-calling => NUNCA se auto-aprueba. Gana sobre
+      // forceReview, bypass y vertical: ninguna combinación autoriza enviar lo
+      // que puede ser el andamiaje interno en vez de una respuesta al cliente.
+      const guardBlocked = outcome.leak.reason != null || !outcome.leak.wellFormed;
+      if (guardBlocked) {
+        console.error(
+          `generate-response: GUARD (internal_leak) draft ${draft.id}: ${outcome.leak.reason ?? "bloque malformado"} → forzando revisión humana`
+        );
+      }
+
       // forceReview (revisión humana) → siempre pending para que el humano
       // apruebe/edite. bypass → siempre approved (publica todo, ignora review).
       // Resto → lógica normal por vertical.
-      const status = forceReview
+      const status = guardBlocked
+        ? "pending"
+        : forceReview
         ? "pending"
         : contestPhoneGuard
         ? "pending"
@@ -1537,6 +1616,14 @@ Deno.serve(async (req: Request) => {
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
             ...(contestPhoneGuard ? { forced_review_reason: "contest_marker_with_phone" } : {}),
+            ...(guardBlocked
+              ? { guard_blocked: true, guard_reason: outcome.leak.reason, guard_kind: "internal_leak" }
+              : {}),
+            // Observabilidad del verificador: solo si hubo reproceso en sesión
+            // o quedó algo pendiente sobre el texto final.
+            ...(outcome.leak.attempts > 0 || outcome.leak.reason || !outcome.leak.wellFormed
+              ? { leak_verify: outcome.leak }
+              : {}),
           },
         })
         .eq("id", draft.id)

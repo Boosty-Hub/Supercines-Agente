@@ -152,6 +152,10 @@ const PATH_SCOPES: ReadonlyArray<{ readonly prefix: string; readonly scope: Scop
   // pero POST /api/usage/models CAMBIA el modelo de producción y sincroniza el
   // Managed Agent en Anthropic. Eso es configuración del agente, no una métrica.
   { prefix: "/api/usage/models", scope: "configuracion" },
+  // Ídem POST /api/usage/budget: fija el techo de gasto mensual, que FRENA el
+  // pipeline en producción (al 100% deja de generar respuestas y seguimientos, al
+  // 110% deja de clasificar). Es un kill switch por gasto: configuración.
+  { prefix: "/api/usage/budget", scope: "configuracion" },
   { prefix: "/api/dreams", scope: "contenido" },
 
   // ── Configuración ──────────────────────────────────────────────────────
@@ -197,8 +201,8 @@ function coincide(pathname: string, prefix: string): boolean {
  *
  * GANA EL PREFIJO MÁS LARGO, no el primero de la lista. Es lo que permite una
  * excepción más estricta dentro de un grupo laxo —`/api/usage` es `contenido`
- * pero `/api/usage/models` es `configuracion`, porque cambia el modelo de
- * producción y actualiza el Managed Agent en Anthropic— sin que el resultado
+ * pero `/api/usage/models` y `/api/usage/budget` son `configuracion`, porque
+ * cambian el modelo de producción / el techo que frena el pipeline— sin que el resultado
  * dependa del ORDEN del array. Con `find()` bastaba con reordenar la lista para
  * degradar una ruta en silencio, y ese es justo el fallo que no se ve.
  */

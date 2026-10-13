@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { selectCls } from "@/components/ui";
 import { ALLOWED_MODELS, MODEL_LABELS, MODEL_KEY_INFO } from "@/lib/model-config";
 
-export function ModelsPanel({ current }: { current: Record<string, string> }) {
+export function ModelsPanel({ current, readOnly = false }: { current: Record<string, string>; readOnly?: boolean }) {
   const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>(current);
   const [saving, setSaving] = useState(false);
@@ -54,6 +54,7 @@ export function ModelsPanel({ current }: { current: Record<string, string> }) {
             <select
               value={values[key] ?? ""}
               onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+              disabled={readOnly}
               className={selectCls + " sm:w-72 shrink-0"}
             >
               {ALLOWED_MODELS.map((m) => (
@@ -82,11 +83,14 @@ export function ModelsPanel({ current }: { current: Record<string, string> }) {
         <button
           type="button"
           onClick={save}
-          disabled={!dirty || saving}
+          disabled={readOnly || !dirty || saving}
           className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40"
         >
           {saving ? "Guardando…" : "Guardar modelos"}
         </button>
+        {readOnly && (
+          <p className="text-xs text-neutral-500">Solo quien tiene acceso de configuración puede cambiar los modelos.</p>
+        )}
         {msg && (
           <p className={`text-xs ${msg.ok ? "text-emerald-700" : "text-red-600"}`}>{msg.text}</p>
         )}

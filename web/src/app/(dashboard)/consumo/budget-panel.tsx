@@ -17,10 +17,12 @@ export function BudgetPanel({
   budgetUsd,
   excludeBefore,
   spendUsd,
+  readOnly = false,
 }: {
   budgetUsd: number | null;
   excludeBefore: string | null;
   spendUsd: number;
+  readOnly?: boolean;
 }) {
   const router = useRouter();
   const [value, setValue] = useState(budgetUsd !== null ? String(budgetUsd) : "");
@@ -95,12 +97,13 @@ export function BudgetPanel({
             onChange={(e) => setValue(e.target.value)}
             placeholder="50"
             className={inputCls}
+            disabled={readOnly}
           />
         </div>
         <button
           type="button"
           onClick={save}
-          disabled={!dirty || saving}
+          disabled={readOnly || !dirty || saving}
           className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40"
         >
           {saving ? "Guardando…" : "Guardar techo"}
@@ -112,6 +115,9 @@ export function BudgetPanel({
           <input type="checkbox" checked={excludeSoFar} onChange={(e) => setExcludeSoFar(e.target.checked)} />
           No contar lo gastado este mes hasta ahora (activar a mitad de mes sin que dispare el freno)
         </label>
+      )}
+      {readOnly && (
+        <p className="text-xs text-neutral-500">Solo quien tiene acceso de configuración puede cambiar el techo.</p>
       )}
       {msg && <p className={`text-xs ${msg.ok ? "text-emerald-700" : "text-red-600"}`}>{msg.text}</p>}
     </div>

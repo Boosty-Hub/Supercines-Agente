@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getScope } from "@/lib/auth/roles";
 import {
   PageShell, StatRow, StatCard, SectionCard, EmptyState, BarChart3, TrendUp,
 } from "@/components/ui";
@@ -79,6 +80,10 @@ export default async function ConsumoPage({
   const since = new Date(Date.now() - validRange * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
   const supabase = createSupabaseServerClient();
+  // Cambiar modelos y techo de gasto es configuración (el middleware ya lo exige
+  // en las APIs); acá solo se deshabilita el control para quien no puede.
+  const { data: { user } } = await supabase.auth.getUser();
+  const puedeConfigurar = getScope(user) === "configuracion";
 
   // Timezone del negocio (default America/Guayaquil)
   const { data: tzRow } = await supabase
@@ -530,6 +535,7 @@ export default async function ConsumoPage({
         description="Red de seguridad contra un gasto disparado. Al 100% el agente deja de generar respuestas nuevas; al 110% deja de clasificar. Aplica en menos de 1 minuto."
       >
         <BudgetPanel
+          readOnly={!puedeConfigurar}
           budgetUsd={parseBudget(budgetCfg.MONTHLY_BUDGET_USD)}
           excludeBefore={budgetCfg.BUDGET_EXCLUDE_BEFORE ?? null}
           spendUsd={Number(monthSpend) || 0}
@@ -542,7 +548,7 @@ export default async function ConsumoPage({
         title="Modelos por componente"
         description="Elegí qué modelo usa cada pieza. Más barato = menos calidad; más caro = mejor. Aplica en menos de 1 minuto, sin redeploy."
       >
-        <ModelsPanel current={currentModels} />
+        <ModelsPanel current={currentModels} readOnly={!puedeConfigurar} />
       </SectionCard>
 
       {/* Calculadora para cotizar clientes */}

@@ -85,3 +85,19 @@ Deno.test("PARIDAD: parseBudget web == Edge", () => {
     assertEquals(parseBudgetWeb(v), parseBudgetEdge(v), String(v));
   }
 });
+
+import { scopeRequeridoPara, rutaPermitida } from "../../web/src/lib/auth/roles.ts";
+
+// Toda ruta que cambia el comportamiento de PRODUCCIÓN (modelo del agente,
+// techo de gasto que frena el pipeline) exige "configuracion"; leer el consumo
+// sigue siendo "contenido". Gana el prefijo más largo, no el orden del array.
+Deno.test("alcances: /api/usage/{models,budget} exigen configuracion; el resto de /api/usage, contenido", () => {
+  assertEquals(scopeRequeridoPara("/api/usage/models"), "configuracion");
+  assertEquals(scopeRequeridoPara("/api/usage/budget"), "configuracion");
+  assertEquals(scopeRequeridoPara("/api/usage/context"), "contenido");
+  assertEquals(scopeRequeridoPara("/api/usage/backfill"), "contenido");
+  assertEquals(rutaPermitida("contenido", "/api/usage/budget"), false);
+  assertEquals(rutaPermitida("operacion", "/api/usage/budget"), false);
+  assertEquals(rutaPermitida("configuracion", "/api/usage/budget"), true);
+  assertEquals(rutaPermitida("contenido", "/api/usage/context"), true);
+});

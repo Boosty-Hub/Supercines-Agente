@@ -10,7 +10,7 @@ import {
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { detectVoiceFiles, syncAgentTools } from "@/lib/sync-agent-tools";
-import { agentModelParam } from "@/lib/agent-model";
+import { agentModelParam } from "@/lib/model-capabilities";
 import { DEFAULT_MODEL } from "@/lib/model-config";
 import {
   findByName,

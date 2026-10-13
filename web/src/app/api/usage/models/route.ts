@@ -3,7 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 import { ALLOWED_MODELS, MODEL_KEYS } from "@/lib/model-config";
-import { agentModelMatches, agentModelParam } from "@/lib/agent-model";
+import { agentModelMatches, agentModelParam } from "@/lib/model-capabilities";
 
 export const runtime = "nodejs";
 

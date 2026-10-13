@@ -52,14 +52,14 @@ Las Edge Functions **sí** se pueden typechequear y testear localmente aunque De
 
 ```bash
 npx deno@2 check --node-modules-dir=auto supabase/functions/*/index.ts supabase/functions/_shared/*.ts
-npx deno@2 test  --allow-net --allow-read --node-modules-dir=auto supabase/tests supabase/functions/_shared/
+npx deno@2 test  --allow-net --allow-read --allow-env --node-modules-dir=auto supabase/tests supabase/functions/_shared/
 ```
 
 Hacelo SIEMPRE antes de deployar: el deploy no typechequea, así que un error de tipos llega a producción en silencio.
 
 ⚠️ `npx tsc --noEmit` NO sustituye a `pnpm build`. Next valida reglas propias que `tsc` no ve — por ejemplo, un `route.ts` **no puede exportar nada que no sea un handler** (`export function parseTerms` → `"parseTerms" is not a valid Route export field`, con `tsc` en verde). Los helpers compartidos entre rutas van en `src/lib/`, nunca exportados desde un `route.ts`.
 
-Incluye `supabase/tests/web-parity.test.ts`: vigila que las dos copias de `ai-pricing.ts` (web y Edge) y la tabla de modelos no se desincronicen.
+Incluye `supabase/tests/web-parity.test.ts` (paridad web↔Edge de pricing, modelos y alcances) y `dashboard-ai-body.test.ts`, que captura el body HTTP real del AI SDK (baja `ai`/`@ai-sdk/anthropic` de npm la primera vez) y afirma que no viaje `temperature`/`top_p`/`top_k`, que Haiku 5.5 rechaza con 400.
 
 ## Arquitectura — el pipeline (lo más importante)
 
@@ -132,8 +132,8 @@ Todo el LLM del template corre en **Haiku 5.5** (`claude-haiku-5-5`) por defecto
 - **Precio escalonado** (`ai-pricing.ts`, DOS copias idénticas — `supabase/tests/web-parity.test.ts` verifica paridad): Haiku 5.5 = $0.10/$0.50 por MTok (cache read $0.01, write 5m $0.125, 1h $0.20) si el prompt de la request es ≤100K tokens; si lo supera, **toda** la request paga $0.50/$2.50 (read $0.05, write $0.625/$1.00). El largo del prompt cuenta input + cache read + cache write. Las filas de sesión CMA son agregados de varias requests → se marcan `aggregated: true` y se valúan a tarifa base (cota inferior). Tokenizer nuevo: ~30% más tokens que Haiku 4.5 para el mismo texto.
 - **Adaptive thinking viene ACTIVO** y cuenta contra `max_tokens`. Nunca leer `content[0]`: `_shared/llm.ts` (`textOf`/`jsonOf`) toma el bloque de texto y tira errores tipados ante `stop_reason: "refusal"` (`LlmRefusalError`), `"max_tokens"` (`LlmTruncatedError`) o ausencia de texto (`LlmEmptyError`). Cada call site usa un perfil de `LLM_PROFILES` (effort explícito + `max_tokens` con holgura): classify=low/4096, grader=medium/4096, comment_reply=low/2048, dreams learnings=medium/16000, digest=low/8000. El `effort` se arma SIEMPRE con `effortFor(model, …)` (`_shared/models.ts`): Haiku 4.5 (histórico, aún asignable) lo rechaza con 400, así que no se envía. Las llamadas fallidas (refusal/corte) igual se registran en `usage_events` (`recordFailedLlmUsage`) para que el techo de gasto no las subestime. No enviar `temperature`/`top_p`/`top_k`/`budget_tokens` (400 en Haiku 5.5); no hay `fallbacks` server-side para refusals.
 - **Fallas**: classify con refusal o corte por `max_tokens` → `requires_human_review` + `classification.error = "recover: …"` (sale de la cola de reintentos; determinístico); comment_reply → sin respuesta pública (el DM sale igual); grader → outcome con `ERROR` visible; dreams → el run falla y el digest vivo NO se pisa.
-- **Managed Agent**: `model` se envía como objeto `{id, effort}` (`web/src/lib/agent-model.ts`, `AGENT_EFFORT="medium"`), tanto al crear (`/api/setup/agent`) como al cambiar de modelo (`/api/usage/models`, que compara contra el agente VIVO, no contra `runtime_config`). Haiku 4.5 (histórico) no admite effort → string plano.
-- **Rutas AI SDK del dashboard** (`lib/dashboard-ai.ts`): `ai@4`/`@ai-sdk/anthropic@1` no exponen `output_config.effort`; un `fetch` envuelto lo inyecta. `generateObject` fuerza tool_choice (Haiku 5.5 lo acepta y no emite thinking). Migrar al AI SDK v5 elimina el wrapper.
+- **Managed Agent**: `model` se envía como objeto `{id, effort}` (`web/src/lib/model-capabilities.ts`, `AGENT_EFFORT="medium"`), tanto al crear (`/api/setup/agent`) como al cambiar de modelo (`/api/usage/models`, que compara contra el agente VIVO, no contra `runtime_config`). Haiku 4.5 (histórico) no admite effort → string plano.
+- **Rutas AI SDK del dashboard** (`lib/dashboard-ai.ts` + `lib/model-capabilities.ts`): `ai@4` manda `temperature: 0` por DEFAULT (Haiku 5.5 lo rechaza con 400) y no expone `output_config.effort`; un `fetch` envuelto (`shapedFetch`) normaliza el body según `MODEL_CAPS` (quita sampling, inyecta effort). `MODEL_CAPS` está duplicada en `_shared/models.ts` (paridad testeada). `generateObject` fuerza tool_choice (Haiku 5.5 lo acepta y no emite thinking). Migrar al AI SDK v5 elimina el wrapper.
 
 ### Memoria y aprendizaje (Anthropic Managed Agents)
 

@@ -1,5 +1,5 @@
 // supabase/tests/web-parity.test.ts
-// (También cubre módulos web puros sin runner propio: agent-model.ts.)
+// (También cubre módulos web puros sin runner propio: model-capabilities.ts.)
 // Paridad entre código que vive DUPLICADO a ambos lados de la frontera Deno/Node
 // (los imports son incompatibles, no se puede compartir archivo). Vive FUERA de
 // supabase/functions/ a propósito: importa de web/, y todo lo de _shared/ viaja
@@ -7,10 +7,10 @@
 // Correr con: deno test --allow-read --node-modules-dir=none supabase/tests/web-parity.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
 import { AI_PRICING, costUsd } from "../functions/_shared/ai-pricing.ts";
-import { MODEL_DEFAULTS, MODELS_WITHOUT_EFFORT } from "../functions/_shared/models.ts";
+import { MODEL_CAPS, MODEL_DEFAULTS } from "../functions/_shared/models.ts";
 import * as web from "../../web/src/lib/ai-pricing.ts";
 import { ALLOWED_MODELS, MODEL_KEYS, MODEL_LABELS, MODEL_NAMES } from "../../web/src/lib/model-config.ts";
-import { AGENT_EFFORT, agentModelMatches, agentModelParam } from "../../web/src/lib/agent-model.ts";
+import { AGENT_EFFORT, agentModelMatches, agentModelParam } from "../../web/src/lib/model-capabilities.ts";
 
 Deno.test("PARIDAD: la copia web de ai-pricing es idéntica a la de Edge", () => {
   assertEquals(web.AI_PRICING, AI_PRICING);
@@ -102,8 +102,9 @@ Deno.test("alcances: /api/usage/{models,budget} exigen configuracion; el resto d
   assertEquals(rutaPermitida("contenido", "/api/usage/context"), true);
 });
 
-import { MODELS_WITHOUT_EFFORT as WEB_NO_EFFORT } from "../../web/src/lib/agent-model.ts";
+import { MODEL_CAPS as WEB_CAPS } from "../../web/src/lib/model-capabilities.ts";
 
-Deno.test("PARIDAD: modelos sin effort web == Edge", () => {
-  assertEquals([...MODELS_WITHOUT_EFFORT].sort(), [...WEB_NO_EFFORT].sort());
+Deno.test("PARIDAD: capacidades por modelo web == Edge, y todo modelo asignable tiene entrada", () => {
+  assertEquals(WEB_CAPS, MODEL_CAPS);
+  for (const m of ALLOWED_MODELS) assert(MODEL_CAPS[m], `sin capacidades: ${m}`);
 });

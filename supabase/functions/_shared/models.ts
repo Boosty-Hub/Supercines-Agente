@@ -14,16 +14,25 @@ export const MODEL_DEFAULTS = {
 
 export type ModelKey = keyof typeof MODEL_DEFAULTS;
 
-/** Modelos que rechazan `output_config.effort` con 400 (Haiku 4.5, histórico pero todavía asignable). */
-export const MODELS_WITHOUT_EFFORT: ReadonlySet<string> = new Set(["claude-haiku-4-5"]);
+// Capacidades de request por modelo. COPIA de web/src/lib/model-capabilities.ts
+// (web-parity.test.ts verifica que sean idénticas). Ver ahí qué rechaza cada
+// modelo con 400. Las llamadas Edge no mandan sampling (temperature/top_p/top_k);
+// `sampling` queda en la tabla para mantener una sola definición de la capacidad.
+export type ModelCaps = { effort: boolean; sampling: boolean };
+export const MODEL_CAPS: Record<string, ModelCaps> = {
+  "claude-haiku-5-5": { effort: true, sampling: false },
+  "claude-haiku-4-5": { effort: false, sampling: true },
+  "claude-sonnet-4-6": { effort: true, sampling: true },
+  "claude-opus-4-8": { effort: true, sampling: false },
+};
 
 /**
  * Fragmento de `output_config` con el effort, o {} si el modelo no lo soporta.
  * TODA llamada directa a la Messages API pasa por acá: `output_config: { ...effortFor(model, e), format }`.
- * Mantener en sync con web/src/lib/agent-model.ts (web-parity.test.ts lo verifica).
+ * Un modelo desconocido no recibe effort (omitirlo siempre es válido).
  */
 export function effortFor(model: string, effort: "low" | "medium" | "high"): { effort?: "low" | "medium" | "high" } {
-  return MODELS_WITHOUT_EFFORT.has(model) ? {} : { effort };
+  return MODEL_CAPS[model]?.effort ? { effort } : {};
 }
 
 /** Modelo configurado para `key` (DB-first/env-fallback) o el default del pipeline. */

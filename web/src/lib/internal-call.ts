@@ -8,6 +8,7 @@
 // Se lee AQUÍ, en el servidor, con la service key, y nunca llega al navegador. La
 // ruta que use este helper es la responsable de validar sesión y alcance ANTES de
 // llamarlo (getUser() + prefijo en lib/auth/roles.ts).
+import "server-only";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const INTERNAL_SECRET_KEY = "INTERNAL_FUNCTION_SECRET";

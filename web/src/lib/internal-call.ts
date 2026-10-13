@@ -9,6 +9,7 @@
 // ruta que use este helper es la responsable de validar sesión y alcance ANTES de
 // llamarlo (getUser() + prefijo en lib/auth/roles.ts).
 import "server-only";
+import { runTrigger, TRIGGER_TIMEOUT_MS, type TriggerOutcome } from "@/lib/internal-trigger";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const INTERNAL_SECRET_KEY = "INTERNAL_FUNCTION_SECRET";
@@ -71,4 +72,14 @@ export async function internalHeadersForUrl(url: string): Promise<Record<string,
   if (!base || !url.startsWith(`${base}/functions/v1/`)) return {};
   const secret = await internalSecret();
   return secret ? { [INTERNAL_SECRET_HEADER]: secret } : {};
+}
+
+/**
+ * Dispara una función interna cuyo resultado el usuario NO necesita (publicar, generar
+ * un draft): se ESPERA el acuse con timeout corto (en serverless un fetch sin await
+ * puede no salir) y un fallo no se propaga, solo se registra. El barrido de pg_cron es
+ * la red de seguridad. `context` identifica la acción en el log (p. ej. "draft <id>").
+ */
+export function triggerInternalFunction(slug: string, body: unknown, context: string): Promise<TriggerOutcome> {
+  return runTrigger(() => callInternalFunction(slug, body, { timeoutMs: TRIGGER_TIMEOUT_MS }), { slug, context });
 }

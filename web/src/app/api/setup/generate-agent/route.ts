@@ -145,14 +145,15 @@ export async function POST(request: Request) {
     model: dashboardModel(apiKey, DASHBOARD_TASKS.generateAgent),
     system,
     prompt,
-    onFinish: ({ usage, finishReason }) => {
+    onFinish: async ({ usage, finishReason }) => {
       // Sin END el cliente ya detecta el corte; acá queda el motivo en el log
       // ("length" = tope de tokens, "content-filter" = rechazo por políticas de seguridad).
       if (finishReason !== "stop") {
         console.warn(`generate-agent: finishReason=${finishReason} (la respuesta puede estar incompleta)`);
       }
-      // fail-open: no awaitar para no bloquear el stream
-      recordWebUsage({ component: "dashboard_generate_agent", model: DASHBOARD_MODEL, usage }).catch(() => {});
+      // El stream ya se entregó al cliente; se espera el registro para que serverless
+      // no congele la ejecución antes de escribir. recordWebUsage es fail-open (no lanza).
+      await recordWebUsage({ component: "dashboard_generate_agent", model: DASHBOARD_MODEL, usage });
     },
   });
 

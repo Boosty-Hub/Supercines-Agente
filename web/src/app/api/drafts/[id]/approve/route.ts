@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { triggerInternalFunction } from "@/lib/internal-call";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { callInternalFunction } from "@/lib/internal-call";
 
 export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -30,8 +30,10 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
     .eq("id", params.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Disparar publish (no esperar)
-  callInternalFunction("publish-to-kommo", {}).catch(() => {});
+  // Disparar publish: se espera el acuse (en serverless un fetch sin await se congela
+  // al devolver la respuesta). Si falla, el draft ya quedó 'approved' y el barrido de
+  // pg_cron lo publica; triggerInternalFunction lo registra sin romper la respuesta.
+  await triggerInternalFunction("publish-to-kommo", {}, `draft ${params.id}`);
 
   return NextResponse.json({ ok: true });
 }

@@ -37,10 +37,20 @@ export function sanitizeUntrusted(input: string, opts: { maxChars?: number } = {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Un turno serializado en UNA línea. El rol solo puede ser "lead" o "agente". */
-export function turn(rol: Rol, text: string, opts: { maxChars?: number } = {}): string {
+/**
+ * Un turno serializado en UNA línea. El rol solo puede ser "lead" o "agente".
+ * `at` (opcional): instante del turno, que se emite como `t="YYYY-MM-DDTHH:mm"` (UTC).
+ * Lo genera el sistema a partir de un Date (created_at / sent_at), NUNCA texto del
+ * lead; si no es una fecha válida se omite el atributo.
+ */
+export function turn(rol: Rol, text: string, opts: { maxChars?: number; at?: string | Date | null } = {}): string {
   if (!ROLES.has(rol)) throw new Error(`rol inválido: ${String(rol)}`);
-  return `<turno rol="${rol}">${sanitizeUntrusted(text, opts)}</turno>`;
+  let t = "";
+  if (opts.at) {
+    const ms = new Date(opts.at).getTime();
+    if (Number.isFinite(ms)) t = ` t="${new Date(ms).toISOString().slice(0, 16)}"`;
+  }
+  return `<turno rol="${rol}"${t}>${sanitizeUntrusted(text, opts)}</turno>`;
 }
 
 /** Varios turnos, uno por línea, en el orden dado. */

@@ -203,7 +203,7 @@ Fecha y hora actual: ${formatNow(deps.timezone)} (zona horaria ${deps.timezone})
 
 Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. El historial de la conversación está abajo: no lo busques en la memoria.
 ${deps.dreamsDigest ? `\naprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${deps.dreamsDigest}\n` : ""}
-Historial reciente de la conversación (turnos en orden cronológico, uno por línea). ${UNTRUSTED_NOTICE}
+Historial reciente de la conversación (turnos en orden cronológico, uno por línea; t = hora UTC de cada turno: úsala para saber cuánto hace que el lead dejó de escribir). ${UNTRUSTED_NOTICE}
 ${history || "(sin mensajes previos)"}
 
 PASO ${stepNumber} de la secuencia. Plantilla a enviar (texto fijo, ya aprobado por Meta):
@@ -445,7 +445,7 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   // Cargar mensajes recientes
   // Misma fuente que generate-response: respuestas del agente incluidas (viven
   // en drafts, no en messages) y texto del lead saneado. fail-soft: "" si falla.
-  const history = await fetchLeadHistory(supabase, leadId, { maxMessages: 20, truncateChars: 400 });
+  const history = await fetchLeadHistory(supabase, leadId, { maxMessages: 20, truncateChars: 400, timestamps: true });
 
   // Ejecutar sesión CMA en modo seguimiento
   let rawOutput: string;

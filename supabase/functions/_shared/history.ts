@@ -19,14 +19,21 @@ import { turn } from "./untrusted.ts";
 // viven en drafts.body / edited_body (publish-to-kommo solo marca el draft
 // auto_sent/sent), por eso reconstruimos vía el join y no leyendo outbound.
 const HISTORY_SELECT =
-  "id, direction, content, created_at, draft:drafts!messages_answered_by_draft_id_fkey(id, body, edited_body, status)";
+  "id, direction, content, created_at, draft:drafts!messages_answered_by_draft_id_fkey(id, body, edited_body, status, sent_at, created_at)";
 
 type HistoryRow = {
   id: string;
   direction: "inbound" | "outbound";
   content: string;
   created_at: string;
-  draft: { id: string; body: string; edited_body: string | null; status: string } | null;
+  draft: {
+    id: string;
+    body: string;
+    edited_body: string | null;
+    status: string;
+    sent_at?: string | null;
+    created_at?: string | null;
+  } | null;
 };
 
 export type LeadHistoryOptions = {
@@ -37,7 +44,16 @@ export type LeadHistoryOptions = {
   maxMessages?: number;
   // Largo máximo por turno en caracteres, para acotar tokens. Default 600.
   truncateChars?: number;
+  // Agrega a cada turno su instante (`t="YYYY-MM-DDTHH:mm"`, UTC). El seguimiento lo
+  // necesita: decide según cuánto hace que el lead dejó de escribir. Default false.
+  timestamps?: boolean;
 };
+
+// Normaliza para comparar textos (espacios y mayúsculas no distinguen un eco de un
+// mensaje distinto).
+function norm(s: string | null | undefined): string {
+  return (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
 
 // Devuelve un transcript cronológico, UN TURNO POR LÍNEA, listo para inyectar en
 // un prompt, o "" si no hay historial previo. FORMATO (cambió por seguridad):
@@ -57,6 +73,7 @@ export async function fetchLeadHistory(
   const maxMessages = opts.maxMessages ?? 24;
   const truncChars = opts.truncateChars ?? 600;
   const exclude = new Set(opts.excludeMessageIds ?? []);
+  const at = (iso: string | null | undefined) => (opts.timestamps ? iso ?? null : null);
   try {
     // Traemos de más para compensar los excluidos del batch actual.
     // deno-lint-ignore no-explicit-any
@@ -71,6 +88,16 @@ export async function fetchLeadHistory(
     // Vienen desc (más nuevos primero) → a cronológico ascendente.
     const rows = (data as HistoryRow[]).slice().reverse();
     const lines: string[] = [];
+    // Si Kommo devuelve por webhook el mensaje que el propio agente envió (eco
+    // saliente), existiría como fila `outbound` Y como draft enviado: la respuesta
+    // aparecería duplicada. Se descartan las filas salientes cuyo texto coincide con
+    // el de un draft enviado del historial. Un saliente DISTINTO (un asesor escribiendo
+    // a mano en Kommo) sí se muestra como turno de la empresa.
+    const sentBodies = new Set<string>();
+    for (const m of rows) {
+      const d = m.draft;
+      if (d && (d.status === "sent" || d.status === "auto_sent")) sentBodies.add(norm(d.edited_body ?? d.body));
+    }
     // Un draft cubre TODO el batch del lead (varios inbound consecutivos apuntan
     // al mismo draft). La respuesta del agente, cronológicamente, va DESPUÉS del
     // último mensaje de su batch — así que diferimos su emisión hasta detectar
@@ -80,11 +107,13 @@ export async function fetchLeadHistory(
     // el agente podría creer que el resto del batch quedó sin responder.)
     let pendingBody: string | null = null;
     let pendingDraftId: string | null = null;
+    let pendingAt: string | null = null;
     const flush = () => {
       if (pendingBody !== null) {
-        lines.push(turn("agente", pendingBody, { maxChars: truncChars }));
+        lines.push(turn("agente", pendingBody, { maxChars: truncChars, at: pendingAt }));
         pendingBody = null;
         pendingDraftId = null;
+        pendingAt = null;
       }
     };
     for (const m of rows) {
@@ -103,8 +132,9 @@ export async function fetchLeadHistory(
         flush();
       }
       const rol = m.direction === "inbound" ? "lead" : "agente";
+      if (m.direction === "outbound" && sentBodies.has(norm(m.content))) continue; // eco de un draft ya emitido
       if (m.content && m.content.trim()) {
-        lines.push(turn(rol, m.content, { maxChars: truncChars }));
+        lines.push(turn(rol, m.content, { maxChars: truncChars, at: at(m.created_at) }));
       }
       // Diferimos la respuesta del agente hasta cerrar su batch.
       if (sentDraft) {
@@ -112,6 +142,7 @@ export async function fetchLeadHistory(
         if (body && body.trim()) {
           pendingBody = body;
           pendingDraftId = sentDraft.id;
+          pendingAt = at(sentDraft.sent_at ?? sentDraft.created_at ?? null);
         }
       }
     }

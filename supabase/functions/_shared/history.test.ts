@@ -47,3 +47,38 @@ Deno.test("historial: solo el draft ENVIADO aparece como rol=agente, y también 
 Deno.test("historial: sin filas => '' (fail-soft, API estable: string)", async () => {
   assertEquals(await fetchLeadHistory(fakeClient([]), "x"), "");
 });
+
+Deno.test("historial: el eco saliente de un draft ya enviado NO duplica la respuesta", async () => {
+  const d = { id: "d1", body: "Te cotizo ahora.", edited_body: null, status: "sent", sent_at: "2026-10-01T09:01:00.000Z" };
+  const rows = [
+    // desc: más nuevo primero
+    { id: "m2", direction: "outbound", content: "  te cotizo   AHORA. ", created_at: "2026-10-01T09:01:05Z", draft: null },
+    { id: "m1", direction: "inbound", content: "Hola", created_at: "2026-10-01T09:00:00Z", draft: d },
+  ];
+  const lines = (await fetchLeadHistory(fakeClient(rows), "lead-1")).split("\n");
+  assertEquals(lines.length, 2);
+  assert(lines[0].startsWith('<turno rol="lead">'));
+  assert(lines[1].startsWith('<turno rol="agente">'));
+});
+
+Deno.test("historial: un saliente DISTINTO (asesor escribiendo en Kommo) se muestra como turno de la empresa", async () => {
+  const rows = [
+    { id: "m2", direction: "outbound", content: "Soy Ana, te llamo ahora", created_at: "2026-10-01T09:05:00Z", draft: null },
+    { id: "m1", direction: "inbound", content: "hola", created_at: "2026-10-01T09:00:00Z", draft: null },
+  ];
+  const lines = (await fetchLeadHistory(fakeClient(rows), "lead-1")).split("\n");
+  assertEquals(lines.length, 2);
+  assert(lines[1].startsWith('<turno rol="agente">') && lines[1].includes("Soy Ana"));
+});
+
+Deno.test("historial: timestamps agrega t= (UTC) a cada turno; la respuesta con su sent_at", async () => {
+  const rows = [{
+    id: "m1", direction: "inbound", content: "hola", created_at: "2026-10-01T09:00:30Z",
+    draft: { id: "d1", body: "buenas", edited_body: null, status: "sent", sent_at: "2026-10-01T09:02:00.000Z" },
+  }];
+  const lines = (await fetchLeadHistory(fakeClient(rows), "lead-1", { timestamps: true })).split("\n");
+  assertEquals(lines[0], '<turno rol="lead" t="2026-10-01T09:00">hola</turno>');
+  assertEquals(lines[1], '<turno rol="agente" t="2026-10-01T09:02">buenas</turno>');
+  // sin la opción, el formato no cambia
+  assertEquals((await fetchLeadHistory(fakeClient(rows), "lead-1")).split("\n")[0], '<turno rol="lead">hola</turno>');
+});

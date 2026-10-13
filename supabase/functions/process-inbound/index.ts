@@ -19,6 +19,7 @@ import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { isStaleBacklog } from "../_shared/backlog.ts";
 import { modelFor } from "../_shared/models.ts";
+import { getBudgetGate } from "../_shared/budget.ts";
 import { jsonOf, LLM_PROFILES, LlmRefusalError } from "../_shared/llm.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -1672,6 +1673,19 @@ Deno.serve(async (req: Request) => {
 
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
+
+    // Techo de gasto mensual al 110%: deja de clasificar. Los mensajes quedan
+    // 'pending' en inbound_queue (mismo mecanismo que system_halted): nada se
+    // pierde, el sweep los retoma al subir el techo o cambiar de mes. Ausente o
+    // "0" en MONTHLY_BUDGET_USD = sin freno; fail-open (ver _shared/budget.ts).
+    const budget = await getBudgetGate(supabase, cfg);
+    if (budget.blockClassify) {
+      return new Response(
+        JSON.stringify({ ok: true, accepted: false, skipped: "budget exceeded", pct: budget.pct }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+
     const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
 

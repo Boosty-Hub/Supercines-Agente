@@ -7,8 +7,10 @@ import { BackfillBanner } from "./BackfillBanner";
 import { BillingFlow, type BillingPoint } from "./billing-flow";
 import { CostCalculator, type CalculatorData, type TokenProfile } from "./cost-calculator";
 import { ModelsPanel } from "./models-panel";
+import { BudgetPanel } from "./budget-panel";
 import { ContextPanel } from "./context-panel";
 import { configValues } from "@/lib/runtime-config";
+import { parseBudget } from "@/lib/budget";
 import { MODEL_KEYS, MODEL_NAMES } from "@/lib/model-config";
 import { AI_PRICING, CMA_RUNTIME_USD_PER_HOUR } from "@/lib/ai-pricing";
 
@@ -250,7 +252,7 @@ export default async function ConsumoPage({
       palancas.push({
         id: "OPT-E",
         title: "Leer el material por primera vez domina el costo de respuestas",
-        description: `La 'primera leída' del material de cada sesión cuesta ≈${formatUsd(cacheWriteUsd)} (${(writeShare * 100).toFixed(0)}% del costo de respuestas). Cada respuesta arranca leyendo TODO: reglas, memoria del lead, dreams y la conversación.`,
+        description: `La 'primera leída' del material de cada sesión cuesta ≈${formatUsd(cacheWriteUsd)} (${(writeShare * 100).toFixed(0)}% del costo de respuestas). Cada respuesta arranca con TODO su material: reglas, aprendizajes (digest de dreams), historial de la conversación y memoria del lead.`,
         recommendation: "Anthropic no permite abaratar esa primera leída en este tipo de sesiones (el descuento de 1 hora no aplica acá). La palanca real es darle MENOS material a leer: memoria por lead recortada y prompt magro — cada KB menos se deja de leer y repasar en todas las sesiones del día.",
       });
     }
@@ -268,6 +270,10 @@ export default async function ConsumoPage({
       recommendation: "Considerá cachear sugerencias de verticales/graders, o reducir la frecuencia de uso de generaciones asistidas.",
     });
   }
+
+  // ---- Techo de gasto mensual (gasto del mes en curso vs MONTHLY_BUDGET_USD) ----
+  const budgetCfg = await configValues(["MONTHLY_BUDGET_USD", "BUDGET_EXCLUDE_BEFORE"]);
+  const { data: monthSpend } = await supabase.rpc("gasto_mes_actual");
 
   // ---- Modelos por componente (DB-first, default = diseño del pipeline) ----
   const modelCfg = await configValues(Object.keys(MODEL_KEYS));
@@ -365,7 +371,7 @@ export default async function ConsumoPage({
     {
       key: "generate_response", emoji: "💬", title: "2º cobro — Respuesta del agente (sesión CMA)",
       model: currentModels.AGENT_MODEL,
-      charges: "Antes de responder, el agente LEE todo su material (reglas, memoria del lead, dreams, la conversación) y después PIENSA y ESCRIBE la respuesta. Acá vive casi todo el gasto.",
+      charges: "Antes de responder, el agente recibe todo su material (reglas, aprendizajes consolidados, historial de la conversación, memoria del lead) y después PIENSA y ESCRIBE la respuesta. Acá vive casi todo el gasto.",
       avgCost: sResp.avg, unit: "por respuesta", calls: sResp.calls, share: share(sResp.cost),
       measuredWith: measuredWith("generate_response", currentModels.AGENT_MODEL),
       note: "el debounce de 45s agrupa varios mensajes en UNA respuesta",
@@ -514,6 +520,19 @@ export default async function ConsumoPage({
         <ContextPanel
           avgCacheWriteTok={Math.round(calculatorData.profiles.response.cwTok)}
           avgCacheReadTok={Math.round(calculatorData.profiles.response.crTok)}
+        />
+      </SectionCard>
+
+      {/* Techo de gasto mensual */}
+      <SectionCard
+        icon={<TrendUp size={17} />}
+        title="Techo de gasto mensual"
+        description="Red de seguridad contra un gasto disparado. Al 100% el agente deja de generar respuestas nuevas; al 110% deja de clasificar. Aplica en menos de 1 minuto."
+      >
+        <BudgetPanel
+          budgetUsd={parseBudget(budgetCfg.MONTHLY_BUDGET_USD)}
+          excludeBefore={budgetCfg.BUDGET_EXCLUDE_BEFORE ?? null}
+          spendUsd={Number(monthSpend) || 0}
         />
       </SectionCard>
 

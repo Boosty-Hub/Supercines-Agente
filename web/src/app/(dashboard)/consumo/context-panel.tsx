@@ -9,14 +9,16 @@ import { useState } from "react";
 
 type ContextData = {
   promptTokens: number;
+  digestTokens: number;
   master: { prefix: string; files: number; tokens: number; readByAgent: boolean }[];
   leads: { count: number; avgTokens: number; maxTokens: number };
 };
 
 const PREFIX_LABELS: Record<string, string> = {
   "/voice": "Voz del operador",
-  "/kb": "Knowledge base destilada",
-  "/dreams": "Dreams activos (el agente los lee SIEMPRE)",
+  "/kb": "Knowledge base destilada (se consulta con search_kb, no se lee entera)",
+  "/dreams": "Archivos de dreams activos (el agente NO los lee: recibe el digest)",
+  "/dreams-archive": "Dreams archivados (el agente NO los lee)",
   "/dreams-pending": "Dreams pendientes (el agente NO los lee)",
 };
 
@@ -54,8 +56,8 @@ export function ContextPanel({
     return (
       <div className="flex flex-col items-start gap-2">
         <p className="text-sm text-neutral-600">
-          Mide en vivo cuánto pesa cada pieza del material que el agente lee antes de responder (reglas, voz, KB,
-          dreams, memoria por lead) y lo compara con todo lo que cada sesión termina leyendo — para saber si
+          Mide en vivo cuánto pesa cada pieza del material que el agente lee antes de responder (reglas, voz,
+          digest de dreams, memoria por lead) y lo compara con todo lo que cada sesión termina leyendo — para saber si
           conviene recortar contenido o reducir los pasos de la sesión.
         </p>
         <button
@@ -73,6 +75,7 @@ export function ContextPanel({
 
   const knowledge =
     data.promptTokens +
+    data.digestTokens +
     data.master.filter((m) => m.readByAgent).reduce((s, m) => s + m.tokens, 0) +
     data.leads.avgTokens;
   const machinery = Math.max(0, avgCacheWriteTok - knowledge);
@@ -80,12 +83,13 @@ export function ContextPanel({
 
   const rows: { label: string; tokens: number; muted?: boolean }[] = [
     { label: "System prompt (voz + reglas + scaffold)", tokens: data.promptTokens },
+    { label: "Digest de dreams (viaja en el contexto de cada sesión)", tokens: data.digestTokens },
     ...data.master.map((m) => ({
       label: PREFIX_LABELS[m.prefix] ?? m.prefix,
       tokens: m.tokens,
       muted: !m.readByAgent,
     })),
-    { label: `Memoria del lead (promedio de ${data.leads.count} leads)`, tokens: data.leads.avgTokens },
+    { label: `Memoria del lead: learnings.md (promedio de ${data.leads.count} leads)`, tokens: data.leads.avgTokens },
   ];
   const maxTok = Math.max(...rows.map((r) => r.tokens), 1);
 
@@ -109,12 +113,12 @@ export function ContextPanel({
       <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
         <p className="font-semibold">Lectura del resultado</p>
         <p className="mt-1 text-xs text-indigo-800">
-          Todo el &quot;conocimiento&quot; junto (reglas + dreams + voz + KB + memoria del lead) suma ≈{tok(knowledge)} tokens
+          Todo el &quot;conocimiento&quot; junto (reglas + digest de dreams + voz + learnings del lead) suma ≈{tok(knowledge)} tokens
           — solo el {knowledgeShare.toFixed(0)}% de lo que cada sesión lee por primera vez (≈{tok(avgCacheWriteTok)} tok).
           El resto (≈{tok(machinery)} tok), más los ≈{tok(avgCacheReadTok)} tok que repasa durante la sesión, es la
           maquinaria: la conversación, el razonamiento y cada acción del agente que vuelve a repasar todo su material.
           {knowledgeShare < 40
-            ? " → Recortar dreams o memorias mueve poco; la palanca es que el agente haga menos vueltas por respuesta."
+            ? " → Recortar el digest o las memorias mueve poco; la palanca es que el agente haga menos vueltas por respuesta."
             : " → El contenido pesa: recortar memoria por lead y reglas sí mueve la aguja."}
         </p>
       </div>

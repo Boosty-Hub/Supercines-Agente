@@ -4,11 +4,16 @@
 //   - draft_failed:        drafts con status='failed' sin alerta previa
 //   - human_review_needed: mensajes inbound requires_human_review sin alerta y sin draft enviado
 //   - outcomes_regression: graders con score promedio últimas 24h < 70% del de la semana previa
+//   - budget_exceeded:     el gasto del mes alcanzó el 100% (deja de generar) o el 110%
+//                          (deja de clasificar) de MONTHLY_BUDGET_USD — una alerta por
+//                          (mes, nivel); ver _shared/budget.ts
 //
 // Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
+import { loadConfig } from "../_shared/config.ts";
+import { budgetAlertLevel, getBudgetGate, parseBudget } from "../_shared/budget.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -384,6 +389,48 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
   ];
 }
 
+// ---- Techo de gasto mensual ----
+// El gate (_shared/budget.ts) frena en el hot path pero NO avisa: el aviso sale
+// por acá para pasar por el mismo camino de dedupe/webhook/panel que el resto.
+// Una alerta por (mes, nivel): el 110% no repite la del 100% del mismo mes.
+async function detectBudgetExceeded(): Promise<AlertInput[]> {
+  try {
+    const cfg = await loadConfig(supabase);
+    const gate = await getBudgetGate(supabase, cfg);
+    const level = budgetAlertLevel(gate);
+    const budgetUsd = parseBudget(cfg.get("MONTHLY_BUDGET_USD"));
+    if (level === null || budgetUsd === null) return [];
+
+    const month = new Date().toISOString().slice(0, 7); // YYYY-MM (UTC, igual que gasto_mes_actual)
+    const { data: existing } = await supabase
+      .from("alerts")
+      .select("id")
+      .eq("kind", "budget_exceeded")
+      .eq("metadata->>month", month)
+      .eq("metadata->>nivel", String(level))
+      .limit(1);
+    if (existing && existing.length > 0) return [];
+
+    const spendUsd = (gate.pct / 100) * budgetUsd;
+    return [{
+      kind: "budget_exceeded",
+      severity: level >= 110 ? "critical" : "warning",
+      title: `Presupuesto mensual al ${level}%`,
+      description:
+        `El gasto de IA de este mes ($${spendUsd.toFixed(2)}) alcanzó el ${level}% del presupuesto ` +
+        `configurado ($${budgetUsd.toFixed(2)}). ` +
+        (level >= 110
+          ? "Se dejaron de clasificar mensajes nuevos (quedan pendientes en la cola) y de generar respuestas."
+          : "Se dejaron de generar respuestas y seguimientos nuevos (los mensajes se siguen clasificando)."),
+      metadata: { month, nivel: level, spend_usd: Number(spendUsd.toFixed(2)), budget_usd: budgetUsd },
+    }];
+  } catch (err) {
+    // Fail-open: un fallo acá no debe tumbar el resto del escaneo.
+    console.warn("detectBudgetExceeded:", err instanceof Error ? err.message : String(err));
+    return [];
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "GET") {
     return new Response("alerts-scan OK", { status: 200 });
@@ -394,14 +441,15 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, silence, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, budgetAlerts, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
+      detectBudgetExceeded(),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression, ...silence];
+    const newAlerts = [...failed, ...review, ...regression, ...silence, ...budgetAlerts];
 
     for (const a of newAlerts) {
       try {
@@ -421,6 +469,7 @@ Deno.serve(async (req: Request) => {
           human_review_needed: review.length,
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
+          budget_exceeded: budgetAlerts.length,
           provider_credit_resolved: providerCreditResolved,
         },
       }),

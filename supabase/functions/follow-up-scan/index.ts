@@ -29,6 +29,7 @@ import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
+import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -605,6 +606,18 @@ Deno.serve(async (req: Request) => {
     // Resolver toda la config ANTES del waitUntil boundary
     // (mismo patrón de generate-response para evitar drafts stuck)
     const runtimeCfg = await loadConfig(supabase);
+
+    // Techo de gasto mensual (>=100%): el seguimiento corre el agente CMA
+    // completo, así que se frena igual que las respuestas. Los leads siguen
+    // elegibles: se retoman solos cuando sube el techo o cambia el mes.
+    const budget = await getBudgetGate(supabase, runtimeCfg);
+    if (budget.blockGenerate) {
+      return new Response(
+        JSON.stringify({ ok: true, processed: 0, skipped: "budget exceeded", pct: budget.pct }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+
     const kommoDomain    = runtimeCfg.require("KOMMO_API_DOMAIN");
     const kommoToken     = runtimeCfg.require("KOMMO_ACCESS_TOKEN");
     const agentId        = runtimeCfg.require("ANTHROPIC_AGENT_ID");

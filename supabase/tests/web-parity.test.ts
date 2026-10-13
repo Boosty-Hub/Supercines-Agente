@@ -76,3 +76,12 @@ Deno.test("CORE_SCAFFOLD y system-prompt.example no piden conversation.md ni lee
   assert(!/conversation\.md/.test(example));
   assert(!/glob .*dreams/.test(example));
 });
+
+import { parseBudget as parseBudgetEdge } from "../functions/_shared/budget.ts";
+import { parseBudget as parseBudgetWeb } from "../../web/src/lib/budget.ts";
+
+Deno.test("PARIDAD: parseBudget web == Edge", () => {
+  for (const v of [undefined, null, "", "0", "-1", "abc", "NaN", "Infinity", "1", "12.5", "1e3"]) {
+    assertEquals(parseBudgetWeb(v), parseBudgetEdge(v), String(v));
+  }
+});

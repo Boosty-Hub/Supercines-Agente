@@ -10,7 +10,9 @@ export const maxDuration = 60;
 const BYTES_PER_TOKEN = 4;
 
 // GET /api/usage/context — composición REAL del contexto que cada sesión
-// monta: system prompt + master store (voz/kb/dreams) + memoria por lead.
+// monta: system prompt + digest de dreams (inyectado en el contexto) + voz del
+// master store + learnings.md por lead. Lo demás (/dreams/*, /kb/*, conversation.md
+// legacy) existe en los stores pero el agente NO lo lee en la sesión.
 // 100% dinámico: lee los stores del deployment actual, sirve para cualquier
 // cliente/agente que se monte con este template.
 export async function GET() {
@@ -23,6 +25,7 @@ export async function GET() {
     "ANTHROPIC_MEMORY_MASTER_ID",
     "ANTHROPIC_MEMORY_LEADS_ID",
     "SYSTEM_PROMPT",
+    "DREAMS_DIGEST",
   ]);
   if (!cfg.ANTHROPIC_API_KEY || !cfg.ANTHROPIC_MEMORY_MASTER_ID || !cfg.ANTHROPIC_MEMORY_LEADS_ID) {
     return NextResponse.json({ ok: false, error: "Faltan credenciales de Anthropic o IDs de Memory Stores en la configuración." }, { status: 400 });
@@ -44,9 +47,12 @@ export async function GET() {
       byPrefix.set(pfx, e);
     }
 
-    // Leads por carpeta (un lead = un directorio)
+    // Leads por carpeta (un lead = un directorio). Solo cuenta learnings.md: es
+    // lo único que el agente lee del store de leads (el historial viaja en el
+    // contexto); los conversation.md de leads viejos son legado inerte.
     const byLead = new Map<string, number>();
     for (const m of leads) {
+      if (!m.path.endsWith("/learnings.md")) continue;
       const lead = m.path.replace(/^\/+/, "").split("/")[0];
       byLead.set(lead, (byLead.get(lead) ?? 0) + (m.content_size_bytes ?? 0));
     }
@@ -58,13 +64,16 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       promptTokens: Math.round(promptChars / BYTES_PER_TOKEN),
+      digestTokens: Math.round((cfg.DREAMS_DIGEST ?? "").length / BYTES_PER_TOKEN),
       master: Array.from(byPrefix.entries())
         .map(([prefix, e]) => ({
           prefix,
           files: e.files,
           tokens: Math.round(e.bytes / BYTES_PER_TOKEN),
-          // /dreams-pending NO lo lee el agente: no cuesta nada en sesión.
-          readByAgent: prefix !== "/dreams-pending",
+          // Lo único del master que entra a la sesión es la voz (y de forma
+          // selectiva). /dreams* llega como digest (digestTokens); /kb se consulta
+          // por search_kb, no se lee entero. Cuenta como cota superior.
+          readByAgent: prefix === "/voice",
         }))
         .sort((a, b) => b.tokens - a.tokens),
       leads: {

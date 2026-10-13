@@ -31,6 +31,7 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { modelFor } from "../_shared/models.ts";
+import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
@@ -1184,6 +1185,20 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({ ok: true, picked: null, skipped: "agent disabled" }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
+  }
+
+  // Techo de gasto mensual (>=100%): no genera respuestas nuevas. No aplica a
+  // forceReview: un humano pidiendo un borrador puntual desde el inbox no debe
+  // quedar bloqueado por el gate agregado. Ausente/"0" en MONTHLY_BUDGET_USD =
+  // sin freno (getBudgetGate es fail-open, ver _shared/budget.ts).
+  if (!forceReview) {
+    const budget = await getBudgetGate(supabase, await loadConfig(supabase));
+    if (budget.blockGenerate) {
+      return new Response(
+        JSON.stringify({ ok: true, picked: null, skipped: "budget exceeded", pct: budget.pct }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
   }
 
   // Bypass de review: solo tiene efecto si publishing está habilitado.

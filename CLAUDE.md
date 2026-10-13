@@ -117,6 +117,14 @@ Reparte automáticamente los leads de una vertical entre el equipo de ventas, y 
 - Switches en `kommo_publish_config`: `routing_enabled` (kill switch, default OFF) y `routing_takeover_user_ids`. El equipo se administra en Ajustes → Agente → Acciones → "Ruteo de leads al equipo".
 - **Campos `select` de Kommo**: hay que mandar `enum_id`, no `value` — con un string arbitrario Kommo devuelve 200 y **no guarda nada**. Usá `patchEntityFieldTyped`/`resolveFieldValue` (`_shared/kommo.ts`). `patchLeadField` sigue existiendo solo para campos de texto/textarea.
 
+### Techo de gasto mensual (`MONTHLY_BUDGET_USD`)
+
+Segunda red de seguridad, independiente de los frenos por lead (cooldown / máx. respuestas): corta un gasto AGREGADO disparado (ráfaga de leads, cambio de modelo/precio, un bug). Ausente o `0` en `runtime_config.MONTHLY_BUDGET_USD` = **sin freno** (default; no cambia ningún despliegue existente). Se edita desde `/consumo` → "Techo de gasto mensual" (`/api/usage/budget`; opcional `BUDGET_EXCLUDE_BEFORE` para activarlo a mitad de mes sin contar lo ya gastado).
+
+- Gasto = `gasto_mes_actual()` (migración 0066): suma `usage_events.estimated_cost_usd` del mes calendario UTC. Por eso importa que `ai-pricing` valúe bien cada llamada.
+- **≥100%**: `generate-response` y `follow-up-scan` dejan de generar (no aplica a `force_review` desde el inbox: decisión humana puntual); `process-inbound` sigue clasificando. **≥110%**: `process-inbound` también corta ANTES de claim — los mensajes quedan `pending` en `inbound_queue` (mismo mecanismo que `system_halted`, nada se pierde; `answer_max_age_hours` evita contestar mensajes viejos al reanudar). No frena graders ni Dreams (jobs chicos).
+- `_shared/budget.ts`: cache 60s en module scope (cambiar el techo lo invalida) y **fail-open absoluto** (un error leyendo el gasto nunca frena el sistema). El aviso NO sale del hot path: `alerts-scan` (`detectBudgetExceeded`) crea la alerta `budget_exceeded` una vez por (mes, nivel) y la empuja al webhook (`alert_config.webhook_kinds`).
+
 ### Modelos: Haiku 5.5, thinking, effort y refusals
 
 Todo el LLM del template corre en **Haiku 5.5** (`claude-haiku-5-5`) por defecto; cada componente es intercambiable desde `/consumo`. Defaults en **dos** lugares que deben coincidir: `web/src/lib/model-config.ts` (`MODEL_KEYS`) y `supabase/functions/_shared/models.ts` (`MODEL_DEFAULTS`) — `supabase/tests/web-parity.test.ts` lo verifica. Agregar un modelo = `ALLOWED_MODELS` + `MODEL_LABELS` + `MODEL_NAMES` + fila en `AI_PRICING` (ambas copias).
@@ -220,5 +228,6 @@ usuario existente gana ni pierde acceso; ya no se escriben.
 | Canales que se clasifican pero no se responden | Ajustes → Agente → Comportamiento → Canales → "Clasificar y rutear igual" |
 | Prompts de graders | Dashboard `/outcomes` |
 | Custom field y salesbot de Kommo | Dashboard `/settings` |
+| Techo de gasto mensual | `/consumo` → "Techo de gasto mensual" (→ `runtime_config.MONTHLY_BUDGET_USD`; vacío = sin techo) |
 | Modelo por componente | `/consumo` (→ `runtime_config.AGENT_MODEL` / `CLASSIFY_MODEL` / `COMMENT_REPLY_MODEL` / `GRADER_MODEL` / `DREAMS_MODEL`; default `claude-haiku-5-5`). El wizard `/setup` fija el del agente al crearlo |
 | Secretos de arranque (irreducibles) | Host env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |

@@ -36,7 +36,7 @@ import Board, { NO_EXISTE, pipelineCounts, SIN_UBICAR } from "./board";
 const LISTA_MS = 5000;
 
 
-type Aviso = { tone: "error" | "ok"; text: string };
+type Aviso = { tone: "error" | "ok" | "info"; text: string };
 
 // Pestaña de la VISTA LISTA según si el agente atiende la etapa del lead. La
 // mayoría de los embudos de SuperCines están apagados (ventas por zona, equipo
@@ -168,7 +168,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   const [aviso, setAviso] = useState<Aviso | null>(null);
   useEffect(() => {
     if (!aviso) return;
-    const t = setTimeout(() => setAviso(null), aviso.tone === "error" ? 8000 : 3500);
+    const t = setTimeout(() => setAviso(null), aviso.tone === "error" ? 8000 : aviso.tone === "info" ? 6000 : 3500);
     return () => clearTimeout(t);
   }, [aviso]);
 
@@ -212,6 +212,10 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
         setAviso({ tone: "error", text: `No se pudo mover a ${nombre}: ${out.message}` });
       } else if (out.kind === "done") {
         setAviso({ tone: out.warning ? "error" : "ok", text: out.warning ?? `${nombre} → ${stageName}` });
+      } else if (out.kind === "deferred") {
+        // Otro movimiento del lead (otra pestaña/persona) siguió en vuelo: aviso neutro y
+        // se relee la posición REAL (no se revierte a una posición que puede ya no ser cierta).
+        setAviso({ tone: "info", text: `${nombre}: ${out.message}` });
       }
       if (!leadMoves.isBusy(leadId)) {
         pendingMoves.current.delete(leadId);
@@ -220,9 +224,10 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
           n.delete(leadId);
           return n;
         });
+        if (out.kind === "deferred") void load();
       }
     },
-    [data]
+    [data, load]
   );
 
   // ── Sincronizar con Kommo (pipelines/etapas + backfill) ──────────────────

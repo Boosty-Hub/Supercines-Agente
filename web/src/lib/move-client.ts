@@ -4,7 +4,7 @@
 // «Mover a…» de la conversación comparten esta instancia, así que dos movimientos del
 // mismo lead se serializan aunque salgan de componentes distintos.
 // La lógica vive en move-queue.ts (pura, con tests); acá solo el transporte HTTP.
-import { MoveQueue, type SendResult } from "./move-queue";
+import { interpretMoveResponse, MoveQueue, type SendResult } from "./move-queue";
 
 async function sendMove(
   leadId: string,
@@ -26,18 +26,7 @@ async function sendMove(
     return { kind: "error", message: e instanceof Error ? e.message : String(e) };
   }
   const json = await res.json().catch(() => ({}));
-  if (res.status === 409 && json?.code === "position_changed") {
-    const c = json.current ?? {};
-    return {
-      kind: "conflict",
-      current: {
-        pipeline: typeof c.pipeline_id === "number" ? c.pipeline_id : null,
-        stage: typeof c.stage_id === "number" ? c.stage_id : null,
-      },
-    };
-  }
-  if (!res.ok) return { kind: "error", message: json.error ?? `HTTP ${res.status}` };
-  return { kind: "ok", warning: typeof json.warning === "string" ? json.warning : undefined };
+  return interpretMoveResponse(res.status, json);
 }
 
 export const leadMoves = new MoveQueue(sendMove);

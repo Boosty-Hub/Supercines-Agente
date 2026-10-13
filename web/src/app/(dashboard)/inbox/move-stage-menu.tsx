@@ -26,11 +26,14 @@ export default function MoveStageMenu({
   const [value, setValue] = useState(current);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Aviso neutro (otro movimiento del lead en curso): no es un error de este movimiento.
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function mover() {
     const [p, s] = value.split(":").map(Number);
     setBusy(true);
     setError(null);
+    setNotice(null);
     // Misma cola que el tablero: si la tarjeta se está moviendo desde ahí, este
     // movimiento espera su turno y gana el último destino.
     const out = await leadMoves.enqueue(leadId, { pipeline: p, stage: s }, { pipeline: pipelineId, stage: stageId });
@@ -38,8 +41,13 @@ export default function MoveStageMenu({
       setError(out.message);
       setValue(current);
     } else {
-      // done / noop / superseded (otro movimiento posterior manda): recargar la posición real.
+      // done / noop / superseded (otro movimiento posterior manda) / deferred (otro movimiento
+      // del lead siguió en vuelo, aviso neutro): recargar la posición real.
       if (out.kind === "done" && out.warning) setError(out.warning);
+      if (out.kind === "deferred") {
+        setNotice(out.message);
+        setValue(current);
+      }
       window.dispatchEvent(new Event("inbox:reload"));
       router.refresh();
     }
@@ -81,6 +89,7 @@ export default function MoveStageMenu({
         </button>
       )}
       {error && <span className="text-[11px] text-red-600">{error}</span>}
+      {notice && <span className="text-[11px] text-neutral-600">{notice}</span>}
     </div>
   );
 }

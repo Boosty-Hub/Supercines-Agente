@@ -60,6 +60,35 @@ export function turn(rol: Rol, text: string, opts: { maxChars?: number; at?: str
   return `<turno rol="${rol}"${t}>${sanitizeUntrusted(text, opts)}</turno>`;
 }
 
+/**
+ * Turno que CONSERVA los saltos de línea del texto (para quien tiene que evaluar el
+ * formato real: viñetas, párrafos, listas), sin perder la garantía de seguridad: cada
+ * línea se sanea por separado (una sola línea, entidades escapadas) y se emite con el
+ * prefijo "| ", así que ningún renglón del lead puede parecer el encabezado de otro
+ * turno ni cerrar el bloque (el único </turno> es el que escribe esta función). Una
+ * línea en blanco queda como "|" (se ve el párrafo).
+ */
+export function turnPreservingLines(
+  rol: Rol,
+  text: string,
+  opts: { maxChars?: number; at?: string | Date | null } = {},
+): string {
+  if (!ROLES.has(rol)) throw new Error(`rol inválido: ${String(rol)}`);
+  let t = "";
+  if (opts.at) {
+    const ms = new Date(opts.at).getTime();
+    if (Number.isFinite(ms)) t = ` t="${new Date(ms).toISOString().slice(0, 16)}"`;
+  }
+  let raw = stripLoneSurrogates(String(text ?? "")).normalize("NFKC").replace(SALTOS, "\n");
+  if (opts.maxChars !== undefined && raw.length > opts.maxChars) {
+    raw = truncateGraphemes(raw, opts.maxChars, { ellipsis: "…" });
+  }
+  const lines = raw.split("\n").map((l) => sanitizeUntrusted(l.trim()));
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  while (lines.length > 0 && lines[0] === "") lines.shift();
+  return `<turno rol="${rol}"${t}>\n${lines.map((l) => (l ? `| ${l}` : "|")).join("\n")}\n</turno>`;
+}
+
 /** Varios turnos, uno por línea, en el orden dado. */
 export function turnsBlock(turns: ReadonlyArray<{ rol: Rol; text: string }>, opts: { maxChars?: number } = {}): string {
   return turns.map((t) => turn(t.rol, t.text, opts)).join("\n");

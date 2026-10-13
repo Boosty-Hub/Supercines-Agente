@@ -17,6 +17,7 @@ import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { enforceDigestWordCap } from "../_shared/dreams-digest-cap.ts";
+import { canSkipDigestRebuild, digestFingerprint } from "../_shared/dreams-digest-fingerprint.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { jsonOf, LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { modelFor } from "../_shared/models.ts";
@@ -297,6 +298,23 @@ async function writeLearning(
 // fuente de la próxima consolidación; el exceso más viejo se archiva a
 // /dreams-archive/ (fuera del dashboard y de futuras consolidaciones).
 const DIGEST_MAX_WORDS = 900;
+// Subir al cambiar el prompt de consolidación de rebuildDigest: invalida el
+// fingerprint guardado y fuerza un rebuild en el próximo run.
+const DIGEST_PROMPT_VERSION = "1";
+
+type DigestResult = { dreams: number; archived: number; digest_chars: number; skipped?: boolean };
+
+// Lectura FRESCA de runtime_config (sin el cache de 60s de loadConfig): el
+// fingerprint y el digest previo tienen que ser los que hay en la DB AHORA. Con
+// el cache, un run que sigue a otro dentro del minuto compararía contra valores
+// viejos y podría saltarse un rebuild necesario.
+async function readFreshConfig(keys: string[]): Promise<Record<string, string>> {
+  const { data, error } = await supabase.from("runtime_config").select("key, value").in("key", keys);
+  if (error) throw new Error(`readFreshConfig: ${error.message}`);
+  const out: Record<string, string> = {};
+  for (const r of data ?? []) if (typeof r.value === "string") out[r.key] = r.value;
+  return out;
+}
 
 // Memory API por fetch crudo (mismos endpoints que usa web/src/lib/anthropic-managed).
 function memHeaders(apiKey: string): Record<string, string> {
@@ -340,7 +358,7 @@ async function rebuildDigest(
   anthropic: Anthropic,
   memstoreMaster: string,
   cfg: ConfigReader
-): Promise<{ dreams: number; archived: number; digest_chars: number }> {
+): Promise<DigestResult> {
   const dreams = await listActiveDreams(apiKey, memstoreMaster);
   // Cronológico REAL: ordenar por basename (arranca con la fecha ISO), no por
   // path completo — el path lleva el período antes de la fecha
@@ -348,10 +366,29 @@ async function rebuildDigest(
   const baseName = (p: string) => p.split("/").pop() ?? p;
   dreams.sort((a, b) => baseName(a.path).localeCompare(baseName(b.path)));
 
-  const prevDigest = (cfg.get("DREAMS_DIGEST") ?? "").trim();
+  const maxActive = Math.max(10, parseInt(cfg.getOr("DREAMS_MAX_ACTIVE", "60"), 10) || 60);
+  const dreamsModel = modelFor(cfg, "DREAMS_MODEL");
+  const fresh = await readFreshConfig(["DREAMS_DIGEST", "DREAMS_DIGEST_FINGERPRINT"]);
+  const prevDigest = (fresh.DREAMS_DIGEST ?? "").trim();
+
+  // Saltar la llamada al modelo si el set de dreams activos, el digest previo,
+  // el modelo y el prompt son los mismos que produjeron el digest vigente
+  // (ver _shared/dreams-digest-fingerprint.ts). Mutaciones del dashboard
+  // (aprobar/borrar/importar) cambian el set → el digest_only sigue reconstruyendo.
+  const fpCtx = { model: dreamsModel, promptVersion: DIGEST_PROMPT_VERSION, maxWords: DIGEST_MAX_WORDS };
+  const fingerprintBefore = await digestFingerprint(dreams, prevDigest, fpCtx);
+  if (canSkipDigestRebuild({
+    stored: fresh.DREAMS_DIGEST_FINGERPRINT,
+    current: fingerprintBefore,
+    activeCount: dreams.length,
+    maxActive,
+  })) {
+    console.log(`rebuildDigest: sin cambios (${dreams.length} dreams activos) — se omite la llamada al modelo`);
+    return { dreams: dreams.length, archived: 0, digest_chars: prevDigest.length, skipped: true };
+  }
+
   let digest = "";
   if (dreams.length > 0 || prevDigest) {
-    const dreamsModel = modelFor(cfg, "DREAMS_MODEL");
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
     const body = dreams.map((d) => `### ${d.path}\n${d.content}`).join("\n\n");
     const response = await anthropic.messages.create({
@@ -409,13 +446,13 @@ Reglas del digest:
 
   // Cota de activos: el exceso MÁS VIEJO se archiva DESPUÉS de que su esencia
   // entró al digest rodante. Fail-open por archivo (un fallo no rompe el run).
-  const maxActive = Math.max(10, parseInt(cfg.getOr("DREAMS_MAX_ACTIVE", "60"), 10) || 60);
   // Cota por corrida: archivar es 2 llamadas HTTP por archivo — un backlog
   // grande en una sola invocación excede los recursos del worker
   // (WORKER_RESOURCE_LIMIT). Las corridas sucesivas (cron diario + triggers
   // del dashboard) drenan el excedente de a ARCHIVE_BATCH.
   const ARCHIVE_BATCH = 50;
   let archived = 0;
+  const archivedIds = new Set<string>();
   if (dreams.length > maxActive) {
     for (const d of dreams.slice(0, Math.min(dreams.length - maxActive, ARCHIVE_BATCH))) {
       try {
@@ -432,10 +469,27 @@ Reglas del digest:
         );
         if (!dRes.ok) throw new Error(`archive delete ${dRes.status}`);
         archived++;
+        archivedIds.add(d.id);
       } catch (err) {
         console.warn("archive dream:", d.path, err instanceof Error ? err.message : String(err));
       }
     }
+  }
+
+  // Fingerprint del estado FINAL: set activo POST-archivado (lo archivado ya
+  // quedó incorporado al digest rodante) + el digest recién escrito. Así la
+  // próxima corrida sin cambios coincide y se omite. Fail-open: si no se puede
+  // guardar, la próxima corrida simplemente reconstruye.
+  try {
+    const remaining = dreams.filter((d) => !archivedIds.has(d.id));
+    const fingerprintAfter = await digestFingerprint(remaining, digest, fpCtx);
+    const { error: fpErr } = await supabase.from("runtime_config").upsert(
+      { key: "DREAMS_DIGEST_FINGERPRINT", value: fingerprintAfter, updated_at: new Date().toISOString(), updated_by: "dreams-run" },
+      { onConflict: "key" }
+    );
+    if (fpErr) console.warn("upsert DREAMS_DIGEST_FINGERPRINT:", fpErr.message);
+  } catch (err) {
+    console.warn("DREAMS_DIGEST_FINGERPRINT:", err instanceof Error ? err.message : String(err));
   }
   return { dreams: dreams.length, archived, digest_chars: digest.length };
 }
@@ -641,7 +695,7 @@ Deno.serve(async (req: Request) => {
     // Tras cada corrida (haya o no learnings nuevos), reconsolidar el digest:
     // capta también aprobaciones/borrados hechos desde el dashboard entre
     // corridas. Fail-open: un fallo del digest no invalida los learnings.
-    let digestInfo: { dreams: number; archived: number; digest_chars: number } | null = null;
+    let digestInfo: DigestResult | null = null;
     try {
       digestInfo = await rebuildDigest(apiKey, anthropic, memstoreMaster, cfg);
     } catch (err) {

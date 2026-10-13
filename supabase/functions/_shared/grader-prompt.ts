@@ -6,9 +6,11 @@
 //
 // Todo texto que el lead controla (su mensaje, y lo que el agente le respondió,
 // que puede repetirlo) entra como turno saneado (_shared/untrusted.ts) y el
-// mensaje abre con UNTRUSTED_NOTICE.
+// mensaje abre con EVALUATION_NOTICE: aquí NINGÚN turno es confiable, ni siquiera el
+// del agente (es el objeto evaluado y pudo repetir lo que plantó el lead). Antes
+// de este modo el aviso lo declaraba "del sistema".
 
-import { turn, untrustedInline, UNTRUSTED_NOTICE } from "./untrusted.ts";
+import { turn, untrustedInline, EVALUATION_NOTICE } from "./untrusted.ts";
 
 export function buildGraderContext(input: {
   channel: string;
@@ -16,7 +18,7 @@ export function buildGraderContext(input: {
   leadText: string;
   agentText: string;
 }): string {
-  return `${UNTRUSTED_NOTICE}
+  return `${EVALUATION_NOTICE}
 
 [CONTEXTO]
 canal: ${untrustedInline(input.channel)}

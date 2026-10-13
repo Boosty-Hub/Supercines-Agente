@@ -16,6 +16,7 @@ import {
   scaffoldHash,
   buildAgentTools,
   composeSystem,
+  renderToolsList,
   type PlaceholderValues,
   filterToolRowsByGates,
   type AgentToolRow,
@@ -29,6 +30,7 @@ import type { AgentRetriever } from "@/lib/once-retriever";
 import {
   conflictMessage,
   detectPromptConflict,
+  checkResolveHash,
   extractOperatorPrompt,
   hashPrompt,
   type PromptConflict,
@@ -63,6 +65,11 @@ export interface SyncResult {
    * ofrecer «importar el vivo» o «sobrescribir con el de la DB» (ver agent-prompt-sync.ts).
    */
   conflict?: PromptConflict;
+  /**
+   * La resolución se ABORTÓ porque el prompt vivo cambió desde que se le mostró al operador
+   * (`expectedLiveHash` distinto). `conflict` (si lo hay) es el vivo de ahora; hay que volver a mostrarlo.
+   */
+  stale?: boolean;
   /** Se importó el prompt vivo a la DB (resolve = import_live); no se empujó nada. */
   imported?: boolean;
   /** Con import_live: qué placeholders se restituyeron y cuáles valores quedaron ambiguos (sin tocar). */
@@ -71,6 +78,9 @@ export interface SyncResult {
 
 /** Cómo resolver un conflicto de prompt (decisión EXPLÍCITA del usuario). */
 export type ConflictResolution = "overwrite" | "import_live";
+
+const STALE_ERROR =
+  "El prompt del agente en Anthropic cambió mientras lo revisabas. No se hizo nada: revisá el diff actualizado y elegí de nuevo.";
 
 const conflictError = (c: PromptConflict) =>
   `${conflictMessage(c)} No se sincronizó: resolvelo en la página Agente (importar el vivo o sobrescribir).`;
@@ -83,6 +93,8 @@ type Payload = {
   /** Línea base de la sincronización segura (releída de la DB, no memoizada). */
   baseline: Baseline;
   values: PlaceholderValues;
+  /** Texto con que se sustituyó {{TOOLS_LIST}} (para restituirlo al importar el vivo). */
+  toolsList: string;
 };
 
 /** Hash del último system enviado y versión registrada: contra lo que se detecta una edición externa. */
@@ -204,7 +216,7 @@ async function buildPayload(): Promise<Payload | null | { error: string }> {
     { hasVoice }
   );
 
-  return { apiKey, agentId, system, tools, baseline: await readBaseline(), values };
+  return { apiKey, agentId, system, tools, baseline: await readBaseline(), values, toolsList: renderToolsList(httpRows) };
 }
 
 const liveSystemOf = (agent: NamedResource): string | null => (typeof agent.system === "string" ? agent.system : null);
@@ -217,6 +229,7 @@ function conflictOf(p: Payload, live: NamedResource, baseline: Baseline = p.base
     registeredVersion: baseline.registeredVersion,
     composedSystem: p.system,
     placeholderValues: p.values,
+    toolsList: p.toolsList,
   });
 }
 
@@ -263,18 +276,35 @@ export async function checkAgentPromptConflict(
  */
 export async function syncAgentTools(
   actor: string,
-  opts: { resolve?: ConflictResolution } = {}
+  opts: {
+    resolve?: ConflictResolution;
+    /** Hash del system vivo que el operador VIO al elegir (PromptConflict.liveHash). Obligatorio con `resolve`. */
+    expectedLiveHash?: string;
+  } = {}
 ): Promise<SyncResult> {
   try {
     const payload = await buildPayload();
     if (!payload) return { version: null, synced: false };
     if ("error" in payload) return { version: null, synced: false, error: payload.error };
-    const { apiKey, agentId, system, tools, values } = payload;
+    const { apiKey, agentId, system, tools, values, toolsList } = payload;
+    if (opts.resolve && !opts.expectedLiveHash) {
+      return { version: null, synced: false, error: "Falta el hash del prompt vivo que se revisó (expectedLiveHash): recargá la página y volvé a elegir." };
+    }
 
     // Importar lo vivo a la DB: no se empuja nada.
     if (opts.resolve === "import_live") {
       const live = await retrieveAgent(apiKey, agentId);
       const liveSystem = liveSystemOf(live);
+      // TOCTOU: el operador eligió mirando un vivo; si cambió, NO se importa algo que no vio.
+      if (!checkResolveHash(opts.expectedLiveHash, liveSystem).ok) {
+        return {
+          version: null,
+          synced: false,
+          stale: true,
+          conflict: conflictOf(payload, live) ?? undefined,
+          error: STALE_ERROR,
+        };
+      }
       const operatorPrompt = liveSystem ? extractOperatorPrompt(liveSystem) : null;
       if (!liveSystem || operatorPrompt === null) {
         return {
@@ -288,7 +318,7 @@ export async function syncAgentTools(
       // El vivo trae los placeholders YA sustituidos: se restituyen los valores conocidos
       // (inversa de substitutePlaceholders) para que renombrar el operador o un store siga
       // propagándose. Los valores ambiguos (cortos / palabras comunes) NO se tocan y se informan.
-      const placeholders = placeholderize(operatorPrompt, values);
+      const placeholders = placeholderize(operatorPrompt, values, { toolsList });
       await setConfigValues(
         {
           SYSTEM_PROMPT: placeholders.text,
@@ -314,10 +344,19 @@ export async function syncAgentTools(
         // El 409 de versión, o un «conflict» explícito — NO la palabra «version» suelta (aparece
         // también en errores ajenos, p. ej. un header anthropic-version inválido).
         isVersionConflict: (err) => /\b409\b|conflict/i.test(err instanceof Error ? err.message : String(err)),
+        liveHash: (live) => hashPrompt(liveSystemOf(live) ?? ""),
       },
-      { overwrite: opts.resolve === "overwrite", initialBaseline: payload.baseline }
+      {
+        overwrite: opts.resolve === "overwrite",
+        initialBaseline: payload.baseline,
+        // La guardia solo aplica a una resolución explícita (la sincronización normal no tiene un diff mostrado).
+        expectedLiveHash: opts.resolve ? opts.expectedLiveHash : undefined,
+      }
     );
     if (!pushed.ok) {
+      if ("stale" in pushed) {
+        return { version: null, synced: false, stale: true, conflict: pushed.freshConflict ?? undefined, error: STALE_ERROR };
+      }
       if ("conflict" in pushed) {
         return { version: null, synced: false, error: conflictError(pushed.conflict), conflict: pushed.conflict };
       }

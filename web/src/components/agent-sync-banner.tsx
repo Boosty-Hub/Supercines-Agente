@@ -28,7 +28,7 @@ export function AgentSyncBanner({
   // 409 de /api/agent/sync: el prompt vivo se editó fuera del dashboard. No es un error
   // para mostrar crudo: se muestra el panel de resolución con el diff que trajo el 409.
   const [conflict, setConflict] = useState<PromptConflict | null>(null);
-  if (conflict) return <AgentPromptConflict conflict={conflict} onResolved={() => setConflict(null)} />;
+  if (conflict) return <AgentPromptConflict conflict={conflict} onResolved={() => setConflict(null)} onStale={setConflict} />;
   if (!scaffoldStale && !modelDrift) return null;
 
   async function sync() {
@@ -42,7 +42,7 @@ export function AgentSyncBanner({
         setConflict(o1.conflict);
         return;
       }
-      if (o1.kind === "error") throw new Error(o1.message);
+      if (o1.kind === "error" || o1.kind === "stale") throw new Error(o1.message);
       if (modelDrift) {
         const r2 = await fetch("/api/usage/models", {
           method: "POST",
@@ -54,7 +54,7 @@ export function AgentSyncBanner({
           setConflict(o2.conflict);
           return;
         }
-        if (o2.kind === "error") throw new Error(o2.message);
+        if (o2.kind === "error" || o2.kind === "stale") throw new Error(o2.message);
       }
       setMsg({ ok: true, text: "Agente sincronizado con Anthropic." });
       router.refresh();

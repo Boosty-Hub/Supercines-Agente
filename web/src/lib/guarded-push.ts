@@ -17,19 +17,27 @@ export type GuardedPushIO<Live extends { version?: unknown }> = {
   /** Empuja con la versión leída; devuelve la versión nueva. */
   push: (version: Live["version"]) => Promise<number>;
   isVersionConflict: (err: unknown) => boolean;
+  /** Hash del system del agente vivo (para la guardia TOCTOU de `expectedLiveHash`). */
+  liveHash?: (live: Live) => string;
 };
 
 export type GuardedPushResult =
   | { ok: true; version: number }
   | { ok: false; conflict: PromptConflict }
+  /** El vivo cambió desde que se le mostró al operador: se aborta sin empujar. `freshConflict` = el vivo de ahora (null si ya no hay nada que decidir). */
+  | { ok: false; stale: true; freshConflict: PromptConflict | null }
   | { ok: false; error: string };
 
 export async function guardedPush<Live extends { version?: unknown }>(
   io: GuardedPushIO<Live>,
-  opts: { overwrite: boolean; initialBaseline: PushBaseline }
+  opts: { overwrite: boolean; initialBaseline: PushBaseline; expectedLiveHash?: string }
 ): Promise<GuardedPushResult> {
   const attempt = async (baseline: PushBaseline): Promise<GuardedPushResult> => {
     const live = await io.retrieve();
+    // Guardia TOCTOU: se evalúa contra el vivo recién leído, en el MISMO intento que empuja.
+    if (opts.expectedLiveHash !== undefined && io.liveHash && io.liveHash(live) !== opts.expectedLiveHash) {
+      return { ok: false, stale: true, freshConflict: io.detect(live, baseline) };
+    }
     if (!opts.overwrite) {
       const conflict = io.detect(live, baseline);
       if (conflict) return { ok: false, conflict };

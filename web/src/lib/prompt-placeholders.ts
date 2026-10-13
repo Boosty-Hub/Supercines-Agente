@@ -14,6 +14,9 @@
 //  · Valores AMBIGUOS no se tocan y se informan: demasiado cortos (<4), palabras
 //    comunes (incluidos los defaults «el operador» / «master» / «leads» con que se
 //    sustituye cuando falta el valor) o compartidos entre dos placeholders.
+//  · {{TOOLS_LIST}} se sustituye por un bloque de texto largo y específico («Herramientas
+//    externas disponibles: …»): se restituye por coincidencia EXACTA de ese bloque (sin
+//    límites de palabra). Sin herramientas HTTP el bloque es "" y no se puede recuperar.
 //  · Las rutas `/mnt/memory/<store>` son inequívocas (el prefijo lo garantiza) salvo que
 //    los dos stores se llamen igual.
 import type { PlaceholderValues } from "./agent-prompt.ts";
@@ -38,24 +41,33 @@ const COMMON_WORDS = new Set(
   ["el operador", "operador", "master", "leads", "agente", "asesor", "equipo", "tienda", "empresa", "cliente", "clientes", "ventas"]
 );
 
-type Candidate = { placeholder: string; value: string; kind: "path" | "name" };
+type Candidate = { placeholder: string; value: string; kind: "path" | "name" | "block" };
 
 const WORD = String.raw`[\p{L}\p{N}_-]`;
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const alt = (c: Candidate) =>
-  c.kind === "path" ? `${escapeRe(c.value)}(?!${WORD})` : `(?<!${WORD})${escapeRe(c.value)}(?!${WORD})`;
+  c.kind === "block"
+    ? escapeRe(c.value)
+    : c.kind === "path"
+      ? `${escapeRe(c.value)}(?!${WORD})`
+      : `(?<!${WORD})${escapeRe(c.value)}(?!${WORD})`;
 
 function countOccurrences(text: string, c: Candidate): number {
   return text.match(new RegExp(alt(c), "gu"))?.length ?? 0;
 }
 
-export function placeholderize(text: string, values: PlaceholderValues): PlaceholderizeResult {
+export function placeholderize(
+  text: string,
+  values: PlaceholderValues,
+  opts: { /** Texto con que se sustituye {{TOOLS_LIST}} (agent-prompt.renderToolsList). */ toolsList?: string } = {}
+): PlaceholderizeResult {
   const all = ([
     { placeholder: "{{MASTER_PATH}}", value: `/mnt/memory/${values.masterStoreName}`, kind: "path" },
     { placeholder: "{{LEADS_PATH}}", value: `/mnt/memory/${values.leadsStoreName}`, kind: "path" },
     { placeholder: "{{MEMORY_STORE_MASTER}}", value: values.masterStoreName, kind: "name" },
     { placeholder: "{{MEMORY_STORE_LEADS}}", value: values.leadsStoreName, kind: "name" },
     { placeholder: "{{OPERATOR_NAME}}", value: values.operatorName, kind: "name" },
+    { placeholder: "{{TOOLS_LIST}}", value: opts.toolsList ?? "", kind: "block" },
   ] as Candidate[]).filter((c) => c.value.trim() !== "" && !c.value.endsWith("/"));
 
   const sharing = (c: Candidate) => all.some((o) => o !== c && o.value === c.value);

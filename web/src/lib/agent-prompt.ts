@@ -117,19 +117,24 @@ export function substitutePlaceholders(
   { operatorName, masterStoreName, leadsStoreName }: PlaceholderValues,
   enabledHttpTools: AgentToolRow[] = []
 ): string {
-  const toolsList =
-    enabledHttpTools.length > 0
-      ? `Herramientas externas disponibles: ${enabledHttpTools
-          .map((t) => `${t.name} — ${t.description}`)
-          .join("; ")}`
-      : "";
   return raw
     .replaceAll("{{MASTER_PATH}}", `/mnt/memory/${masterStoreName}`)
     .replaceAll("{{LEADS_PATH}}", `/mnt/memory/${leadsStoreName}`)
     .replaceAll("{{MEMORY_STORE_MASTER}}", masterStoreName)
     .replaceAll("{{MEMORY_STORE_LEADS}}", leadsStoreName)
     .replaceAll("{{OPERATOR_NAME}}", operatorName)
-    .replaceAll("{{TOOLS_LIST}}", toolsList);
+    .replaceAll("{{TOOLS_LIST}}", renderToolsList(enabledHttpTools));
+}
+
+/**
+ * El texto con que se sustituye {{TOOLS_LIST}} ("" sin herramientas HTTP habilitadas).
+ * Exportado para que la inversa (prompt-placeholders.placeholderize, usada al importar el
+ * prompt vivo) restituya EXACTAMENTE este texto a {{TOOLS_LIST}}.
+ */
+export function renderToolsList(enabledHttpTools: AgentToolRow[]): string {
+  return enabledHttpTools.length > 0
+    ? `Herramientas externas disponibles: ${enabledHttpTools.map((t) => `${t.name} — ${t.description}`).join("; ")}`
+    : "";
 }
 
 /**

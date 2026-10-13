@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { DiffLine, PromptConflict } from "@/lib/agent-prompt-sync";
+import { interpretSyncResponse } from "@/lib/sync-response";
 
 // El prompt del agente en Anthropic fue modificado FUERA del dashboard. Sincronizar
 // lo pisaría sin avisar, así que no se sincronizó: el usuario decide, de forma
@@ -51,8 +52,11 @@ function DiffBlock({ title, lines }: { title: string; lines: DiffLine[] }) {
 export function AgentPromptConflict({
   conflict,
   onResolved,
+  onStale,
 }: {
   conflict: PromptConflict;
+  /** El vivo cambió mientras se revisaba: recibe el conflicto actualizado (null si ya no hay nada que decidir). */
+  onStale?: (fresh: PromptConflict | null) => void;
   /** Se llama tras resolver con éxito (antes del refresh), p. ej. para cerrar un panel embebido. */
   onResolved?: () => void;
 }) {
@@ -77,10 +81,18 @@ export function AgentPromptConflict({
       const res = await fetch("/api/agent/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolve: kind }),
+        // expectedLiveHash: el vivo que se le MOSTRÓ al operador. Si cambió, el servidor aborta (409 stale).
+        body: JSON.stringify({ resolve: kind, expectedLiveHash: conflict.liveHash }),
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      const outcome = interpretSyncResponse(res.status, await res.json().catch(() => null));
+      if (outcome.kind === "stale") {
+        setErr(`${outcome.message} Se actualizó el diff.`);
+        onStale?.(outcome.conflict);
+        router.refresh();
+        return;
+      }
+      if (outcome.kind === "error") throw new Error(outcome.message);
+      if (outcome.kind === "conflict") throw new Error("El servidor devolvió un conflicto inesperado. Recargá la página.");
       onResolved?.();
       router.refresh();
     } catch (e) {

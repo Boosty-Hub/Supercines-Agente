@@ -14,6 +14,9 @@ export const runtime = "nodejs";
 // primera vez y difiere) NO sincroniza: responde 409 con el conflicto y el diff.
 // El usuario decide con `{ "resolve": "overwrite" | "import_live" }`:
 //   - overwrite:   empuja el prompt de la DB igual (pisa lo de afuera);
+//   Ambos exigen `expectedLiveHash` (el hash del vivo que se le mostró al operador): si el
+//   vivo cambió entre mostrar y resolver (TOCTOU) se ABORTA con 409 `{ stale: true }` y la UI
+//   vuelve a mostrar el diff.
 //   - import_live: no empuja; trae el prompt vivo del operador a la DB, restituyendo los
 //                  placeholders conocidos (los valores ambiguos se informan y no se tocan).
 export async function POST(request: Request) {
@@ -22,14 +25,28 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   let resolve: ConflictResolution | undefined;
+  let expectedLiveHash: string | undefined;
   try {
     const body = await request.json();
     if (body?.resolve === "overwrite" || body?.resolve === "import_live") resolve = body.resolve;
+    if (typeof body?.expectedLiveHash === "string" && body.expectedLiveHash) expectedLiveHash = body.expectedLiveHash;
   } catch {
     // sin cuerpo = sincronización normal
   }
+  if (resolve && !expectedLiveHash) {
+    return NextResponse.json(
+      { ok: false, error: "Falta expectedLiveHash: recargá la página y volvé a elegir." },
+      { status: 400 }
+    );
+  }
 
-  const res = await syncAgentTools(user.email ?? "agent-sync", { resolve });
+  const res = await syncAgentTools(user.email ?? "agent-sync", { resolve, expectedLiveHash });
+  if (res.stale) {
+    return NextResponse.json(
+      { ok: false, stale: true, error: res.error, conflict: res.conflict ?? null },
+      { status: 409 }
+    );
+  }
   if (res.conflict) {
     return NextResponse.json({ ok: false, error: res.error, conflict: res.conflict }, { status: 409 });
   }

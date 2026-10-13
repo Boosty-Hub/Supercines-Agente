@@ -31,16 +31,29 @@ export function hashPrompt(system: string): string {
 }
 
 /** Encabezado con que empieza el CORE_SCAFFOLD (lib/agent-prompt.ts): separa prompt del operador y scaffold. */
-const SCAFFOLD_MARKER = "\n\n---\n\n## Flujo obligatorio antes de redactar";
+const SCAFFOLD_START = "---\n\n## Flujo obligatorio antes de redactar";
+const SCAFFOLD_MARKER = `\n\n${SCAFFOLD_START}`;
+
+/**
+ * Dónde empieza el scaffold en un system normalizado, o -1. Con SYSTEM_PROMPT vacío (o solo
+ * espacios) el system compuesto ES el scaffold: tras normalizar, el marcador queda AL INICIO
+ * sin los `\n\n` previos, y buscar solo `\n\n---` lo daba por perdido (el prompt vacío del
+ * operador se tomaba por «scaffold editado» y no se podía separar ni importar).
+ */
+function scaffoldIndex(s: string): number {
+  if (s.startsWith(SCAFFOLD_START)) return 0;
+  return s.indexOf(SCAFFOLD_MARKER);
+}
 
 /**
  * La parte del prompt del OPERADOR dentro de un system compuesto (composeSystem pone
- * el prompt del operador primero y el scaffold fijo después). null si no se encuentra
- * el scaffold (alguien lo editó): no se puede separar con seguridad.
+ * el prompt del operador primero y el scaffold fijo después). "" si el operador no
+ * escribió nada. null si no se encuentra el scaffold (alguien lo editó): no se puede
+ * separar con seguridad.
  */
 export function extractOperatorPrompt(system: string): string | null {
   const s = normalize(system);
-  const i = s.indexOf(SCAFFOLD_MARKER);
+  const i = scaffoldIndex(s);
   return i < 0 ? null : s.slice(0, i).trim();
 }
 
@@ -50,7 +63,7 @@ export function extractOperatorPrompt(system: string): string | null {
  */
 export function extractScaffold(system: string): string | null {
   const s = normalize(system);
-  const i = s.indexOf(SCAFFOLD_MARKER);
+  const i = scaffoldIndex(s);
   return i < 0 ? null : s.slice(i).trim();
 }
 
@@ -109,6 +122,12 @@ export type ConflictScope = "operator" | "scaffold" | "both" | "none" | "unknown
 export type PromptConflict = {
   kind: PromptConflictKind;
   scope: ConflictScope;
+  /**
+   * Hash del system VIVO que se le mostró al operador. La resolución lo devuelve
+   * (`expectedLiveHash`) y el servidor ABORTA si el vivo cambió entre mostrar y resolver
+   * (TOCTOU): si no, «importar» o «sobrescribir» actuaría sobre un texto que el operador nunca vio.
+   */
+  liveHash: string;
   /** Texto para el usuario que dice EXACTAMENTE qué difiere (lo arma conflictMessage). */
   message: string;
   live: { version: number | null; operatorPrompt: string | null };
@@ -127,6 +146,18 @@ export type PromptConflict = {
   importPreview: (PlaceholderizeResult & { changed: boolean }) | null;
 };
 
+export type ResolveGuard = { ok: true } | { ok: false; reason: "missing_hash" | "stale" };
+
+/**
+ * Guardia anti-TOCTOU de la resolución explícita de un conflicto. `expected` es el hash del
+ * system vivo que se mostró al operador; `liveSystem`, el vivo AHORA. Sin hash no se resuelve
+ * (la UI siempre lo manda) y si el vivo cambió se aborta: hay que volver a mostrarle el diff.
+ */
+export function checkResolveHash(expected: string | null | undefined, liveSystem: string | null | undefined): ResolveGuard {
+  if (!expected) return { ok: false, reason: "missing_hash" };
+  return hashPrompt(liveSystem ?? "") === expected ? { ok: true } : { ok: false, reason: "stale" };
+}
+
 const sameText = (a: string, b: string) => normalize(a) === normalize(b);
 const hasChange = (d: DiffLine[]) => d.some((l) => l.type !== "same");
 
@@ -142,8 +173,10 @@ export function detectPromptConflict(input: {
   composedSystem: string;
   /** Valores de los placeholders (para re-placeholderizar al importar). Sin ellos no se restituye nada. */
   placeholderValues?: PlaceholderValues;
+  /** Texto con que se sustituye {{TOOLS_LIST}} (para restituirlo al importar). */
+  toolsList?: string;
 }): PromptConflict | null {
-  const { liveSystem, liveVersion, syncedHash, registeredVersion, composedSystem, placeholderValues } = input;
+  const { liveSystem, liveVersion, syncedHash, registeredVersion, composedSystem, placeholderValues, toolsList } = input;
   // Sin system vivo no hay nada que sobrescribir.
   if (!liveSystem || !normalize(liveSystem)) return null;
 
@@ -185,13 +218,14 @@ export function detectPromptConflict(input: {
   const scaffoldDiff = separable && scaffoldDiffers ? lineDiff(liveScaffold, dbScaffold) : null;
   let importPreview: PromptConflict["importPreview"] = null;
   if (liveOp !== null) {
-    const p = placeholderValues ? placeholderize(liveOp, placeholderValues) : { text: liveOp, replaced: [], ambiguous: [] };
+    const p = placeholderValues ? placeholderize(liveOp, placeholderValues, { toolsList }) : { text: liveOp, replaced: [], ambiguous: [] };
     importPreview = { ...p, changed: p.replaced.length > 0 };
   }
   const conflict: PromptConflict = {
     kind,
     scope,
     message: "",
+    liveHash: hashPrompt(liveSystem),
     live: { version: liveVersion, operatorPrompt: liveOp },
     db: { version: registeredVersion, operatorPrompt: dbOp },
     diff: separable ? lineDiff(liveOp, dbOp) : lineDiff(liveSystem, composedSystem),

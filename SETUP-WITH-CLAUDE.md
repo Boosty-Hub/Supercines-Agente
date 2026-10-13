@@ -132,15 +132,14 @@ git remote -v   # debe mostrar: origin <ORG>/<NOMBRE>.git
 ### Netlify
 
 1. netlify.com → "Add new site" → "Import from Git" → seleccionar el repo.
-2. **Build settings**: se leen desde `netlify.toml` — ya están correctos (`base = "web"`, `command = "pnpm build"`, Node 22 y `PNPM_VERSION` = el `packageManager` de `web/package.json`).
+2. **Build settings**: se leen desde `netlify.toml` — ya están correctos (`base = "web"`, `command = "pnpm build"`).
 3. Deploy inicial (va a fallar — no hay env vars aún). Eso es esperado.
 
 ### Vercel
 
 1. vercel.com → "Add New" → "Project" → importar repo.
 2. Root directory: `web/`. Build command: `pnpm build`.
-3. Variable de entorno `ENABLE_EXPERIMENTAL_COREPACK=1` (para que Vercel use el pnpm fijado en `web/package.json` → `packageManager`; con otro pnpm el install falla con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`) y Node.js Version `22.x` (Project Settings → General).
-4. Deploy inicial (va a fallar por las mismas razones).
+3. Deploy inicial (va a fallar por las mismas razones).
 
 **Importante — constraint de build**: el directorio `web/` necesita acceso a `../supabase/` para el codegen. Netlify y Vercel hacen checkout completo del repo — funciona sin configuración extra.
 

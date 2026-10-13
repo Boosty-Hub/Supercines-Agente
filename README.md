@@ -41,10 +41,6 @@ Deployá el repo en Netlify o Vercel. El proyecto Next.js vive en `web/`.
 
 **Constraint de build**: el directorio `web/` necesita acceso a `../supabase/` para correr el codegen (`predev`/`prebuild`). Asegurate de que el host clone el repo completo (no solo `web/`). Netlify y Vercel hacen checkout completo por defecto — no necesitás nada extra.
 
-**Versión de pnpm (importante)**: `web/pnpm-lock.yaml` lleva `overrides` (declarados en `web/pnpm-workspace.yaml`) y un pnpm antiguo falla con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` bajo `--frozen-lockfile`. La versión correcta está fijada en `web/package.json` (`"packageManager": "pnpm@10.32.1"`):
-- **Netlify**: `netlify.toml` fija `PNPM_VERSION = "10.32.1"` y `NODE_VERSION = "22"`. Si cambiás `packageManager`, cambiá también `PNPM_VERSION`.
-- **Vercel**: agregá la variable de entorno `ENABLE_EXPERIMENTAL_COREPACK=1` (así Vercel respeta `packageManager`; sin ella elige el pnpm por su cuenta según el lockfile) y en Project Settings → General → Node.js Version elegí `22.x`.
-
 ### Paso 3 — Configurar las 3 variables de entorno en el host
 
 Antes del primer redeploy, configurá estas variables en tu host (Site Settings en Netlify, o Project Settings en Vercel):

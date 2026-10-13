@@ -38,6 +38,19 @@ export class OutboundBlockedError extends Error {
 export { draftText };
 
 /** Devuelve el motivo si el texto no puede salir, o null si es apto. */
+/**
+ * Descarta los flags de un bloqueo ANTERIOR del guard (agent_metadata.guard_*) para que el
+ * guard vuelva a decidir sobre el texto actual (un DM bloqueado que se editó ya no debe seguir
+ * marcado). EXCEPCIÓN: el bloqueo de la RESPUESTA PÚBLICA (guard_part = "public_reply") se
+ * conserva con su motivo: esa parte no se vuelve a decidir al publicar el DM, y sin el motivo
+ * el inbox mostraba un mensaje genérico («no se envía sin revisión») que es falso: el DM sí salió.
+ */
+export function stripGuardFlags(meta: Record<string, unknown>): Record<string, unknown> {
+  if (meta.guard_part === "public_reply") return { ...meta };
+  const { guard_blocked: _a, guard_kind: _b, guard_reason: _c, guard_stage: _d, guard_part: _e, ...rest } = meta;
+  return rest;
+}
+
 export function outboundLeak(text: string | null | undefined): string | null {
   if (!text || !text.trim()) return "texto vacío";
   return detectInternalLeak(text);

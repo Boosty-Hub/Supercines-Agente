@@ -17,7 +17,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal, callInternal } from "../_shared/auth.ts";
 import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { loadConfig } from "../_shared/config.ts";
-import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
+import { draftText, OutboundBlockedError, outboundLeak, stripGuardFlags, writeClientText } from "../_shared/outbound.ts";
 import {
   runSalesbot,
   fetchOutgoingEventIds,
@@ -31,14 +31,6 @@ const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
-
-// Flags del guard de un bloqueo ANTERIOR (agent_metadata.guard_*): al volver a decidir
-// sobre el texto actual se descartan, o un draft ya enviado seguiría mostrando
-// «bloqueado» en el inbox.
-function stripGuard(meta: Record<string, unknown>): Record<string, unknown> {
-  const { guard_blocked: _a, guard_kind: _b, guard_reason: _c, guard_stage: _d, guard_part: _e, ...rest } = meta;
-  return rest;
-}
 
 type KommoConfig = {
   id: string;
@@ -371,7 +363,7 @@ Deno.serve(async (req: Request) => {
             .update({
               status: "auto_sent",
               sent_at: new Date().toISOString(),
-              agent_metadata: { ...stripGuard(baseMeta), ...(result.verified ? { delivery_verified: true } : {}), ...publicMeta },
+              agent_metadata: { ...stripGuardFlags(baseMeta), ...(result.verified ? { delivery_verified: true } : {}), ...publicMeta },
             })
             .eq("id", d.id);
           published++;
@@ -414,7 +406,7 @@ Deno.serve(async (req: Request) => {
             .update({
               status: "pending",
               agent_metadata: {
-                ...stripGuard(baseMeta),
+                ...stripGuardFlags(baseMeta),
                 guard_blocked: true,
                 guard_kind: "internal_leak",
                 guard_reason: err.reason,

@@ -153,3 +153,21 @@ Deno.test("PARIDAD: la copia web de draftText es idéntica a la de las Edge Func
   const web = await Deno.readTextFile(new URL("../../../web/src/lib/draft-text.ts", import.meta.url));
   assertEquals(fn(web), fn(edge));
 });
+
+// ---- stripGuardFlags: el motivo del bloqueo de la respuesta publica se conserva ----
+import { stripGuardFlags } from "./outbound.ts";
+
+Deno.test("stripGuardFlags: un bloqueo anterior del DM se descarta para que el guard decida de nuevo", () => {
+  const meta = { guard_blocked: true, guard_kind: "internal_leak", guard_reason: "x", guard_stage: "publish", otro: 1 };
+  assertEquals(stripGuardFlags(meta), { otro: 1 });
+});
+
+Deno.test("stripGuardFlags: el bloqueo de la respuesta PUBLICA conserva su motivo para el inbox", () => {
+  const meta = {
+    public_reply_blocked: true, guard_blocked: true, guard_kind: "internal_leak", guard_part: "public_reply",
+    guard_reason: "sintaxis de tool", guard_stage: "generate", otro: 1,
+  };
+  assertEquals(stripGuardFlags(meta), meta);
+  // es una copia: no muta el original
+  assert(stripGuardFlags(meta) !== meta);
+});

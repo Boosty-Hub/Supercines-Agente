@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MoveQueue, type Dest, type Position, type SendResult } from "./move-queue.ts";
-import { matchesExpected, parseExpected } from "./move-position.ts";
+import { parseExpected } from "./move-position.ts";
 
 type Call = { leadId: string; dest: Dest; expected: Position; resolve: (r: SendResult) => void };
 
@@ -141,13 +141,9 @@ test("un send que lanza se trata como fallo y libera la cola", async () => {
   assert.equal(q.isBusy("l1"), false);
 });
 
-test("servidor: parseExpected y matchesExpected", () => {
+test("servidor: parseExpected", () => {
   assert.equal(parseExpected(undefined), undefined);
   assert.equal(parseExpected("x"), null);
   assert.equal(parseExpected({ pipeline_id: 1 }), null);
   assert.deepEqual(parseExpected({ pipeline_id: null, stage_id: 5 }), { pipeline_id: null, stage_id: 5 });
-  assert.equal(matchesExpected(undefined, { pipeline_id: 1, stage_id: 2 }), true);
-  assert.equal(matchesExpected({ pipeline_id: 1, stage_id: 2 }, { pipeline_id: 1, stage_id: 2 }), true);
-  assert.equal(matchesExpected({ pipeline_id: 1, stage_id: 2 }, { pipeline_id: 1, stage_id: 3 }), false);
-  assert.equal(matchesExpected({ pipeline_id: null, stage_id: null }, { pipeline_id: 1, stage_id: 3 }), false);
 });

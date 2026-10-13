@@ -319,4 +319,35 @@ delete from auth.users where id = '00000000-0000-0000-0000-0000000000d1';
 select pg_temp.expect('borrar al usuario deja el evento con actor_user_id NULL y el nombre de respaldo',
   (select actor_user_id is null and actor_name like 'ana@x.com%' from lead_stage_events where to_stage_id = 13));
 
+-- 16) Serializacion de movimientos del panel por lead (claim_lead_move / release_lead_move).
+delete from lead_move_claims where true;
+delete from lead_stage_events where true;
+delete from leads where true;
+insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values
+  ('00000000-0000-0000-0000-0000000000e1', 501, 1, 10);
+select pg_temp.expect('claim con la posicion esperada: claimed',
+  (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
+select pg_temp.expect('segundo claim del mismo lead mientras hay uno en vuelo: busy',
+  (select outcome = 'busy' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
+select release_lead_move('00000000-0000-0000-0000-0000000000e1');
+select pg_temp.expect('liberado: se puede reservar de nuevo',
+  (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false)));
+-- la reserva vence sola (servidor caido): con ttl 0 un claim nuevo la toma
+select pg_temp.expect('una reserva vencida no bloquea el lead',
+  (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false, null, null, 0)));
+select release_lead_move('00000000-0000-0000-0000-0000000000e1');
+select pg_temp.expect('posicion distinta de la esperada: position_changed con la vigente',
+  (select outcome = 'position_changed' and stage_id = 10 and pipeline_id = 1
+     from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 99, 1)));
+select pg_temp.expect('position_changed no deja reserva tomada',
+  (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
+select release_lead_move('00000000-0000-0000-0000-0000000000e1');
+select pg_temp.expect('lead inexistente: missing',
+  (select outcome = 'missing' from claim_lead_move('00000000-0000-0000-0000-0000000000ff', false)));
+select pg_temp.expect('claim/release solo para service_role',
+  has_function_privilege('service_role', 'claim_lead_move(uuid,boolean,bigint,bigint,int)', 'execute')
+  and not has_function_privilege('authenticated', 'claim_lead_move(uuid,boolean,bigint,bigint,int)', 'execute')
+  and not has_function_privilege('anon', 'release_lead_move(uuid)', 'execute')
+  and not has_table_privilege('authenticated', 'lead_move_claims', 'select'));
+
 rollback;

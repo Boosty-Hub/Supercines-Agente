@@ -454,6 +454,73 @@ revoke execute on function apply_lead_position(uuid, bigint, bigint, timestamptz
 grant execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text, uuid)
   to service_role;
 
+-- ── Serialización de movimientos del panel por lead (varias pestañas / personas) ──
+-- El panel mueve en Kommo (HTTP) y recién después escribe acá: entre una cosa y la otra no
+-- hay una transacción. Dos movimientos simultáneos del MISMO lead podían llegar a Kommo en
+-- orden inverso al que se decidieron. claim_lead_move reserva el lead de forma atómica
+-- (select … for update): comprueba que la posición vigente sea la que el cliente vio
+-- (position_changed) y que no haya otro movimiento en vuelo (busy); la reserva vence sola
+-- (p_ttl_seconds) para que un servidor caído no bloquee el lead. release_lead_move la suelta.
+create table if not exists lead_move_claims (
+  lead_id    uuid primary key references leads(id) on delete cascade,
+  claimed_at timestamptz not null default now()
+);
+alter table lead_move_claims enable row level security;
+revoke all on lead_move_claims from anon, authenticated, public;
+
+create or replace function claim_lead_move(
+  p_lead_id          uuid,
+  p_check_position   boolean default false,
+  p_expected_stage   bigint  default null,
+  p_expected_pipeline bigint default null,
+  p_ttl_seconds      int     default 20
+)
+returns table (outcome text, stage_id bigint, pipeline_id bigint)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  l leads%rowtype;
+  v_claimed boolean;
+begin
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
+  select * into l from leads where id = p_lead_id for update;
+  if not found then
+    return query select 'missing'::text, null::bigint, null::bigint;
+    return;
+  end if;
+  if p_check_position
+     and (l.kommo_stage_id is distinct from p_expected_stage
+          or l.kommo_pipeline_id is distinct from p_expected_pipeline) then
+    return query select 'position_changed'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+    return;
+  end if;
+  insert into lead_move_claims (lead_id, claimed_at) values (l.id, clock_timestamp())
+  on conflict (lead_id) do update set claimed_at = clock_timestamp()
+   where lead_move_claims.claimed_at < clock_timestamp() - make_interval(secs => p_ttl_seconds)
+  returning true into v_claimed;
+  if v_claimed is not true then
+    return query select 'busy'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+    return;
+  end if;
+  return query select 'claimed'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+end;
+$$;
+revoke execute on function claim_lead_move(uuid, boolean, bigint, bigint, int) from public, anon, authenticated;
+grant execute on function claim_lead_move(uuid, boolean, bigint, bigint, int) to service_role;
+
+create or replace function release_lead_move(p_lead_id uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
+  delete from lead_move_claims where lead_id = p_lead_id;
+end;
+$$;
+revoke execute on function release_lead_move(uuid) from public, anon, authenticated;
+grant execute on function release_lead_move(uuid) to service_role;
+
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime')

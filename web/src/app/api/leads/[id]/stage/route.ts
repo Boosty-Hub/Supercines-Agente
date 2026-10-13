@@ -3,7 +3,7 @@ import { trustedActorName } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { moveLeadInKommo } from "@/lib/kommo";
 import { createServiceClient } from "@/lib/supabase/service";
-import { matchesExpected, parseExpected, type ExpectedPosition } from "@/lib/move-position";
+import { parseExpected, type ExpectedPosition } from "@/lib/move-position";
 
 export const dynamic = "force-dynamic";
 
@@ -66,51 +66,72 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
     return NextResponse.json({ ok: true, unchanged: true });
   }
 
-  // Serialización optimista: el cliente dice desde qué posición mueve. Si la real es otra,
-  // otro movimiento (de este panel o de Kommo) llegó en el medio y este es obsoleto:
-  // 409 con la posición vigente para que el cliente reencole sobre ella (ver
-  // lib/move-queue.ts). Va DESPUÉS del "sin cambios" para que reintentar un movimiento
-  // que ya se aplicó siga siendo idempotente.
-  if (!matchesExpected(expected, { pipeline_id: prevPipeline, stage_id: prevStage })) {
+  // Serialización de movimientos del MISMO lead (otra pestaña u otra persona), en la base:
+  // claim_lead_move reserva el lead atómicamente (select … for update) y comprueba que la
+  // posición vigente sea la que el cliente vio (`expected`). position_changed → 409 con la
+  // posición actual para que el cliente reencole (lib/move-queue.ts); busy → hay otro
+  // movimiento en vuelo. Va DESPUÉS del "sin cambios" para que reintentar un movimiento ya
+  // aplicado siga siendo idempotente. La reserva vence sola (20 s) y se suelta al terminar.
+  const svc = createServiceClient();
+  const { data: claimRows, error: claimErr } = await svc.rpc("claim_lead_move", {
+    p_lead_id: lead.id,
+    p_check_position: expected !== undefined,
+    p_expected_stage: expected?.stage_id ?? null,
+    p_expected_pipeline: expected?.pipeline_id ?? null,
+  });
+  if (claimErr) return NextResponse.json({ error: `No se pudo reservar el lead: ${claimErr.message}` }, { status: 500 });
+  const claim = (claimRows as Array<{ outcome: string; stage_id: number | null; pipeline_id: number | null }> | null)?.[0];
+  if (!claim || claim.outcome === "missing") return NextResponse.json({ error: "Lead no encontrado." }, { status: 404 });
+  if (claim.outcome === "position_changed") {
     return NextResponse.json(
       {
         error: "El lead cambió de etapa mientras tanto.",
         code: "position_changed",
-        current: { pipeline_id: prevPipeline, stage_id: prevStage },
+        current: { pipeline_id: claim.pipeline_id, stage_id: claim.stage_id },
       },
       { status: 409 }
     );
   }
+  if (claim.outcome === "busy") {
+    return NextResponse.json(
+      { error: "Ya hay un movimiento de este lead en curso.", code: "move_in_progress" },
+      { status: 409 }
+    );
+  }
 
-  const moved = await moveLeadInKommo(Number(lead.kommo_lead_id), stageId, pipelineId);
-  if (!moved.ok) return NextResponse.json({ error: moved.error }, { status: moved.status });
+  try {
+    const moved = await moveLeadInKommo(Number(lead.kommo_lead_id), stageId, pipelineId);
+    if (!moved.ok) return NextResponse.json({ error: moved.error }, { status: moved.status });
 
-  // Kommo ya lo movió: de acá en más, un fallo en la base no se le muestra como
-  // error al usuario (el webhook de Kommo igual va a actualizar la etapa).
-  const embedded = stage.kommo_pipelines as unknown as PipelineRef | PipelineRef[] | null;
-  const pipelineName = (Array.isArray(embedded) ? embedded[0]?.name : embedded?.name) ?? null;
-  // Autoría de AUDITORÍA: id de auth + nombre de fuentes que el usuario no controla.
-  // user_metadata lo edita el propio usuario (auth.updateUser) y permitía suplantar a otro.
-  const who = trustedActorName(user);
+    // Kommo ya lo movió: de acá en más, un fallo en la base no se le muestra como
+    // error al usuario (el webhook de Kommo igual va a actualizar la etapa).
+    const embedded = stage.kommo_pipelines as unknown as PipelineRef | PipelineRef[] | null;
+    const pipelineName = (Array.isArray(embedded) ? embedded[0]?.name : embedded?.name) ?? null;
+    // Autoría de AUDITORÍA: id de auth + nombre de fuentes que el usuario no controla.
+    // user_metadata lo edita el propio usuario (auth.updateUser) y permitía suplantar a otro.
+    const who = trustedActorName(user);
 
-  // La posición se escribe por apply_lead_position (0061), que solo ejecuta
-  // service_role: este handler ya validó la sesión y el alcance. Fija etapa +
-  // pipeline y registra el evento en un solo paso; Kommo manda leads.status de
-  // vuelta por este movimiento y la base lo descarta como eco (llegue antes o
-  // después), sin duplicarlo ni retroceder la etapa.
-  const { error: posErr } = await createServiceClient().rpc("apply_lead_position", {
-    p_lead_id: lead.id,
-    p_stage_id: stageId,
-    p_pipeline_id: pipelineId,
-    p_at: new Date().toISOString(),
-    p_moved_by: "kommo",
-    p_actor_name: `${who} (desde el panel)`,
-    p_actor_user_id: user.id,
-    p_to_stage_name: stage.name,
-    p_pipeline_name: pipelineName,
-  });
-  return NextResponse.json({
-    ok: true,
-    warning: posErr ? `Movido en Kommo, pero no se pudo registrar acá: ${posErr.message}` : undefined,
-  });
+    // La posición se escribe por apply_lead_position (0061), que solo ejecuta
+    // service_role: este handler ya validó la sesión y el alcance. Fija etapa +
+    // pipeline y registra el evento en un solo paso; Kommo manda leads.status de
+    // vuelta por este movimiento y la base lo descarta como eco (llegue antes o
+    // después), sin duplicarlo ni retroceder la etapa.
+    const { error: posErr } = await svc.rpc("apply_lead_position", {
+      p_lead_id: lead.id,
+      p_stage_id: stageId,
+      p_pipeline_id: pipelineId,
+      p_at: new Date().toISOString(),
+      p_moved_by: "kommo",
+      p_actor_name: `${who} (desde el panel)`,
+      p_actor_user_id: user.id,
+      p_to_stage_name: stage.name,
+      p_pipeline_name: pipelineName,
+    });
+    return NextResponse.json({
+      ok: true,
+      warning: posErr ? `Movido en Kommo, pero no se pudo registrar acá: ${posErr.message}` : undefined,
+    });
+  } finally {
+    await svc.rpc("release_lead_move", { p_lead_id: lead.id });
+  }
 }

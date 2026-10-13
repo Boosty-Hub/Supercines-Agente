@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
+import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
 import { ALLOWED_MODELS, MODEL_KEYS } from "@/lib/model-config";
 import { agentModelMatches, agentModelParam } from "@/lib/model-capabilities";
 
@@ -43,6 +44,20 @@ export async function POST(request: Request) {
   if (updates.AGENT_MODEL) {
     const cfg = await configValues(["ANTHROPIC_API_KEY", "ANTHROPIC_AGENT_ID"]);
     if (cfg.ANTHROPIC_API_KEY && cfg.ANTHROPIC_AGENT_ID) {
+      // Cambiar el modelo SUBE la versión del agente: si el prompt vivo fue editado
+      // fuera del dashboard, esa versión nueva taparía la señal de conflicto. No se
+      // toca el agente hasta que el usuario lo resuelva en la página Agente.
+      const conflict = await checkAgentPromptConflict();
+      if (conflict) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "El prompt del agente fue modificado fuera del dashboard: resolvelo en la página Agente antes de cambiar el modelo.",
+            conflict,
+          },
+          { status: 409 }
+        );
+      }
       try {
         const desired = agentModelParam(updates.AGENT_MODEL);
         const doUpdate = async () => {

@@ -59,6 +59,8 @@ export interface NamedResource {
   status?: string;
   /** Solo agents: string, u objeto `{ id, effort, … }` (la API devuelve el objeto). */
   model?: unknown;
+  /** Solo agents: el system prompt vivo (string). */
+  system?: unknown;
 }
 
 type Resource = "environments" | "agents" | "memory_stores";

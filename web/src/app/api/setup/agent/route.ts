@@ -11,6 +11,7 @@ import {
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { detectVoiceFiles, syncAgentTools } from "@/lib/sync-agent-tools";
+import { hashPrompt } from "@/lib/agent-prompt-sync";
 import { agentModelParam } from "@/lib/model-capabilities";
 import { DEFAULT_MODEL } from "@/lib/model-config";
 import {
@@ -173,6 +174,11 @@ export async function POST() {
       // Agent exists — use syncAgentTools for the update path (it handles
       // optimistic concurrency retry and persists the new version).
       const sync = await syncAgentTools(user.email ?? "setup-wizard");
+      // El prompt vivo fue editado fuera del dashboard: el wizard NO lo pisa ni registra
+      // como sincronizado algo que no se sincronizó. Se resuelve en la página Agente.
+      if (sync.conflict) {
+        return NextResponse.json({ ok: false, error: sync.error, conflict: sync.conflict }, { status: 409 });
+      }
       agentId = existingAgent.id;
       agentVersion = sync.version ?? existingAgent.version ?? 0;
     } else {
@@ -195,6 +201,9 @@ export async function POST() {
         ANTHROPIC_AGENT_ID: agentId,
         ANTHROPIC_AGENT_VERSION: String(agentVersion),
         AGENT_SCAFFOLD_HASH: scaffoldHash(),
+        // Hash del system EXACTO enviado al CREAR el agente: referencia de la próxima
+        // sincronización para detectar ediciones externas (lib/agent-prompt-sync.ts).
+        ...(agentCreated ? { AGENT_PROMPT_SYNCED_HASH: hashPrompt(system) } : {}),
       },
       user.email ?? "setup-wizard"
     );

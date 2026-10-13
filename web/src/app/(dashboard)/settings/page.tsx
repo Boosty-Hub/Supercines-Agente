@@ -9,6 +9,8 @@ import { headers } from "next/headers";
 import { configValues } from "@/lib/runtime-config";
 import { getAgentSyncStatus } from "@/lib/agent-sync-status";
 import { AgentSyncBanner } from "@/components/agent-sync-banner";
+import { AgentPromptConflict } from "@/components/agent-prompt-conflict";
+import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
@@ -53,7 +55,7 @@ export default async function SettingsPage({
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, crmExtraRes, syncStatus] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, crmExtraRes, syncStatus, promptConflict] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -116,6 +118,9 @@ export default async function SettingsPage({
       // quien llega acá puede sincronizar. Nunca se sincroniza solo: ver
       // lib/agent-sync-status.ts.
       getAgentSyncStatus(),
+      // ¿El prompt vivo fue editado fuera del dashboard? Si sí, ningún camino lo pisa
+      // hasta que el usuario elija (importar lo vivo o sobrescribir).
+      checkAgentPromptConflict(),
     ]);
 
   const p = pubRes.data;
@@ -235,6 +240,8 @@ export default async function SettingsPage({
           esté abierta — los interruptores críticos ya no viven dispersos
           dentro de las pestañas. */}
       <ControlPanel initial={controlPanelConfig} />
+
+      {promptConflict && <AgentPromptConflict conflict={promptConflict} />}
 
       {syncStatus.provisioned && (
         <AgentSyncBanner

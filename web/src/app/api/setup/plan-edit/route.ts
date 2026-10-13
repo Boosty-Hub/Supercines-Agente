@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -45,10 +45,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const numbered = sections.map((t, i) => `${i + 1}. ${t}`).join("\n");
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "low"),
       schema: z.object({
         action: z
           .enum(["edit", "new"])
@@ -76,10 +75,10 @@ export async function POST(request: Request) {
       }),
       prompt: `Sos un editor experto de system prompts. Estas son las secciones actuales, en orden:\n${numbered || "(todavía no hay secciones)"}\n\nInstrucción del usuario:\n${instruction}\n\nDecidí si modifica una sección existente o agrega una nueva, y dónde ubicarla.`,
     });
-    await recordWebUsage({ component: "dashboard_plan_edit", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_plan_edit", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, ...object });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

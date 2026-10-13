@@ -9,8 +9,8 @@
 // Cambiar de modelo NO cambia cuántos tokens usa el agente — solo su precio.
 
 import { useState } from "react";
-import { AI_PRICING, CMA_RUNTIME_USD_PER_HOUR } from "@/lib/ai-pricing";
-import { ALLOWED_MODELS } from "@/lib/model-config";
+import { AI_PRICING, CMA_RUNTIME_USD_PER_HOUR, rateCardFor } from "@/lib/ai-pricing";
+import { ALLOWED_MODELS, MODEL_NAMES } from "@/lib/model-config";
 
 export type TokenProfile = {
   inTok: number;
@@ -38,16 +38,15 @@ export type CalculatorData = {
   dreamsRunsPerDay: number;  // corridas de dreams por día
 };
 
-const SHORT_MODEL: Record<string, string> = {
-  "claude-haiku-4-5": "Haiku",
-  "claude-sonnet-4-6": "Sonnet",
-  "claude-opus-4-8": "Opus",
-};
-
-function costPerEvent(model: string, p: TokenProfile | null): number {
+// `aggregated`: el perfil es el TOTAL de una sesión CMA (varias requests
+// internas), cuyo largo de prompt por request no se conoce → tarifa base. En los
+// demás componentes (una request por evento) el escalón de Haiku 5.5 se decide
+// con el prompt PROMEDIO del perfil: es una estimación, no la factura exacta.
+function costPerEvent(model: string, p: TokenProfile | null, aggregated = false): number {
   if (!p) return 0;
-  const pr = AI_PRICING[model];
-  if (!pr) return 0;
+  const pricing = AI_PRICING[model];
+  if (!pricing) return 0;
+  const pr = rateCardFor(pricing, aggregated ? undefined : p.inTok + p.crTok + p.cwTok);
   const M = 1_000_000;
   return (
     (p.inTok / M) * pr.input +
@@ -70,7 +69,7 @@ export function CostCalculator({ data }: { data: CalculatorData }) {
 
   const sessions = msgs * data.sessionsPerMsg;
   const dClassify = msgs * costPerEvent(models.classify, data.profiles.classify);
-  const dResp = sessions * costPerEvent(models.response, data.profiles.response);
+  const dResp = sessions * costPerEvent(models.response, data.profiles.response, true);
   const dGrader = sessions * data.gradersPerSession * costPerEvent(models.grader, data.profiles.grader);
   const dDreams = data.dreamsRunsPerDay * costPerEvent(models.dreams, data.profiles.dreams);
   const daily = dClassify + dResp + dGrader + dDreams;
@@ -90,10 +89,10 @@ export function CostCalculator({ data }: { data: CalculatorData }) {
   ];
 
   const rows = [
-    { label: "Respuestas del agente", value: dResp * 30, hint: `≈ ${Math.round(sessions)} respuestas/día · ${SHORT_MODEL[models.response] ?? models.response}` },
-    { label: "Clasificación", value: dClassify * 30, hint: `${msgs} mensajes/día · ${SHORT_MODEL[models.classify] ?? models.classify}` },
-    { label: "Evaluación de calidad", value: dGrader * 30, hint: `${SHORT_MODEL[models.grader] ?? models.grader}` },
-    { label: "Dreams (aprendizaje)", value: dDreams * 30, hint: `fijo · ${SHORT_MODEL[models.dreams] ?? models.dreams}` },
+    { label: "Respuestas del agente", value: dResp * 30, hint: `≈ ${Math.round(sessions)} respuestas/día · ${MODEL_NAMES[models.response] ?? models.response}` },
+    { label: "Clasificación", value: dClassify * 30, hint: `${msgs} mensajes/día · ${MODEL_NAMES[models.classify] ?? models.classify}` },
+    { label: "Evaluación de calidad", value: dGrader * 30, hint: `${MODEL_NAMES[models.grader] ?? models.grader}` },
+    { label: "Dreams (aprendizaje)", value: dDreams * 30, hint: `fijo · ${MODEL_NAMES[models.dreams] ?? models.dreams}` },
   ].sort((a, b) => b.value - a.value);
 
   return (
@@ -135,7 +134,7 @@ export function CostCalculator({ data }: { data: CalculatorData }) {
               >
                 {ALLOWED_MODELS.map((m) => (
                   <option key={m} value={m}>
-                    {SHORT_MODEL[m] ?? m}
+                    {MODEL_NAMES[m] ?? m}
                   </option>
                 ))}
               </select>

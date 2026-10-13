@@ -3,9 +3,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -85,9 +85,8 @@ ${current.system_prompt ?? ""}`
     : "";
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "low"),
       schema: z.object({
         slug: z
           .string()
@@ -132,10 +131,10 @@ Reglas:
 - Si el pedido implica una ACCIÓN del agente (mover de etapa o guardar datos en el CRM), incluí esa instrucción dentro del system_prompt usando los nombres EXACTOS (ver capacidades del agente arriba). Si no aplica, no la agregues.
 - slug en snake_case. system_prompt en segunda persona dirigido al agente, sin el nombre literal del negocio.`,
     });
-    await recordWebUsage({ component: "dashboard_verticales_generate", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_verticales_generate", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, vertical: object });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

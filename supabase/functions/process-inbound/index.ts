@@ -3,7 +3,7 @@
 //  1. Parsea payload de Kommo (leads.add, message.add)
 //  2. Upsert leads (lead_id de Kommo)
 //  3. Insert messages
-//  4. Para incoming: clasifica con Haiku 4.5 según verticales en DB
+//  4. Para incoming: clasifica (CLASSIFY_MODEL, Haiku 5.5 por defecto) según verticales en DB
 //  5. Marca queue row como done
 //
 // Triggers: invocado por kommo-webhook (fire-and-forget) y por pg_cron (sweep).
@@ -18,6 +18,8 @@ import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } 
 import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { isStaleBacklog } from "../_shared/backlog.ts";
+import { modelFor } from "../_shared/models.ts";
+import { jsonOf, LLM_PROFILES, LlmRefusalError } from "../_shared/llm.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -611,10 +613,11 @@ Reglas:
 
   const response = await anthropic.messages.create({
     model,
-    max_tokens: 1024,
+    max_tokens: LLM_PROFILES.classify.maxTokens,
     system,
     messages: [{ role: "user", content: userContent }],
     output_config: {
+      effort: LLM_PROFILES.classify.effort,
       format: {
         type: "json_schema",
         schema: {
@@ -648,15 +651,26 @@ Reglas:
     },
   });
 
-  const block = response.content.find((b) => b.type === "text");
-  if (!block || block.type !== "text") throw new Error("classify: no text block in response");
-  const parsed = JSON.parse(block.text) as Classification & { media_summary?: string; __usage?: Anthropic.Usage };
+  // Adaptive thinking: content[0] puede ser un bloque `thinking`. jsonOf lee el
+  // bloque de texto y falla explícito ante refusal / max_tokens (ver _shared/llm.ts).
+  const parsed = jsonOf<Classification & { media_summary?: string; __usage?: Anthropic.Usage }>(response, "classify");
   // Clamp en código (los structured outputs no soportan min/max)
   parsed.urgency = Math.max(1, Math.min(5, Math.round(parsed.urgency ?? 1)));
   parsed.toxicity = Math.max(0, Math.min(1, parsed.toxicity ?? 0));
   parsed.confidence = Math.max(0, Math.min(1, parsed.confidence ?? 0));
   parsed.__usage = response.usage;
   return parsed;
+}
+
+// El clasificador de seguridad de Haiku 5.5 declinó el mensaje (HTTP 200,
+// stop_reason "refusal"; sin fallback server-side). Reintentar el mismo input da
+// el mismo resultado, así que se cierra el caso: prefijo "recover:" (convención
+// de este archivo para "fuera de la cola de reintentos") + revisión humana.
+function refusalOutcome(err: LlmRefusalError) {
+  return {
+    requires_human_review: true,
+    classification: { error: `recover: ${err.message}` },
+  };
 }
 
 // ---- Transcripción de audio (OpenAI Whisper) ----
@@ -840,8 +854,8 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   const filters = await getPublishFilters();
   // Creds de Kommo (DB-first, cache 60s) para el gate "Apagar Agente".
   const runtimeCfg = await loadConfig(supabase);
-  // Modelo del clasificador: editable desde /consumo (DB-first, fallback Haiku).
-  const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
+  // Modelo del clasificador: editable desde /consumo (DB-first, fallback Haiku 5.5).
+  const classifyModel = modelFor(runtimeCfg, "CLASSIFY_MODEL");
   const kommoDomain = runtimeCfg.get("KOMMO_API_DOMAIN");
   const kommoToken = runtimeCfg.get("KOMMO_ACCESS_TOKEN");
   // Key de OpenAI para transcribir notas de voz (Whisper). Sin key, los
@@ -1328,12 +1342,18 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         const errMsg = err instanceof Error ? err.message : String(err);
         // Si era un adjunto sin texto y la clasificación falló (p.ej. la URL no
         // es accesible), lo mandamos a revisión humana en vez de descartarlo.
+        // Un rechazo del modelo (refusal) es determinístico: ni se reintenta ni
+        // se deja sin clasificar — va directo a un humano.
         await supabase
           .from("messages")
-          .update({
-            classification: { error: errMsg },
-            ...(mediaForClassify && !text ? { requires_human_review: true } : {}),
-          })
+          .update(
+            err instanceof LlmRefusalError
+              ? refusalOutcome(err)
+              : {
+                  classification: { error: errMsg },
+                  ...(mediaForClassify && !text ? { requires_human_review: true } : {}),
+                }
+          )
           .eq("id", msg.id);
         console.error("classify failed:", errMsg);
       }
@@ -1394,7 +1414,7 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
     if (!rows || rows.length === 0) return 0;
 
     const runtimeCfg = await loadConfig(supabase);
-    const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
+    const classifyModel = modelFor(runtimeCfg, "CLASSIFY_MODEL");
     const verticals = await getVerticals();
     const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
     const kommoDomain = runtimeCfg.get("KOMMO_API_DOMAIN");
@@ -1490,6 +1510,11 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         });
         healed++;
       } catch (e) {
+        if (e instanceof LlmRefusalError) {
+          await supabase.from("messages").update(refusalOutcome(e)).eq("id", msg.id).is("vertical_id", null);
+          console.warn("recover classify: el modelo rechazó el mensaje → revisión humana:", e.message);
+          continue;
+        }
         // Falla al reintentar: contar el intento. Transitoria → vuelve al
         // próximo ciclo del cron; al llegar a RECOVER_MAX_ATTEMPTS se marca
         // con prefijo "recover:" (sale del select) + revisión humana, para

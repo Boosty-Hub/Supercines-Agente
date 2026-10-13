@@ -73,6 +73,10 @@ export async function captureSessionUsage(
         cacheCreation5m: (cc.ephemeral_5m_input_tokens as number) ?? null,
         cacheCreation1h: (cc.ephemeral_1h_input_tokens as number) ?? null,
         runtimeMs: Math.round(((s.stats?.active_seconds as number) ?? 0) * 1000),
+        // El GET de sesión devuelve el TOTAL de todas las requests internas del
+        // agente: el largo de prompt de cada una es desconocido, así que no hay
+        // escalón de tarifa que elegir (ver ai-pricing.ts: cota inferior).
+        aggregated: true,
         leadId: opts.leadId, draftId: opts.draftId, sessionId: opts.sessionId,
         metadata: { ...(opts.metadata ?? {}), status: s.status },
         pricingOverrideRaw: opts.pricingOverrideRaw,

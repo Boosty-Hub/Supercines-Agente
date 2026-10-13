@@ -67,7 +67,7 @@ git remote -v   # debe mostrar: origin <ORG>/<NOMBRE>.git
 1. **Operador**: nombre de la persona o marca detrás del agente.
 2. **Slug del agente**: kebab-case, único en la cuenta Anthropic (ej: `acme-responder`).
 3. **Label dashboard**: texto en el header del panel (ej: `Agente GMT`).
-4. **Modelo**: default `claude-sonnet-4-6`.
+4. **Modelo**: default `claude-haiku-5-5` (Haiku 5.5; se cambia luego desde `/consumo`).
 
 **Nota**: estos valores ya NO van en `.env.local`. Se ingresan directamente en el wizard `/setup` del dashboard después del deploy. Podés anotarlos para tenerlos a mano.
 

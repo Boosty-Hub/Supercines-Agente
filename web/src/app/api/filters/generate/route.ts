@@ -3,9 +3,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { fetchPipelines } from "@/lib/kommo";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -76,9 +76,8 @@ export async function POST(request: Request) {
       : "  (sin etapas disponibles)";
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "low"),
       schema: z.object({
         textRules: z
           .array(
@@ -137,7 +136,7 @@ Reglas:
         return { id, label: `${s.pipeline} · ${s.name}` };
       });
 
-    await recordWebUsage({ component: "dashboard_filters_generate", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_filters_generate", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({
       ok: true,
       textRules,
@@ -146,7 +145,7 @@ Reglas:
       summary: object.summary ?? "",
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

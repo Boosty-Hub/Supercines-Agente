@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Qué es
 
-Template para construir un **agente conversacional sobre Kommo CRM** con clasificación (Haiku 4.5), respuesta vía Anthropic Managed Agent (Sonnet 4.6 + Memory Stores), aprendizaje automático nocturno (Dreams) y evaluación de calidad (Outcomes). Se customiza para cualquier operador **desde el dashboard** (`/setup` + `/agent`), sin tocar código.
+Template para construir un **agente conversacional sobre Kommo CRM** con clasificación, respuesta vía Anthropic Managed Agent (+ Memory Stores) — todo sobre **Haiku 5.5** (`claude-haiku-5-5`) por defecto, aprendizaje automático nocturno (Dreams) y evaluación de calidad (Outcomes). Se customiza para cualquier operador **desde el dashboard** (`/setup` + `/agent`), sin tocar código.
 
 Repo: `web/` (Next.js 14 dashboard + API routes) + `supabase/` (Postgres migrations + Edge Functions Deno) + `agent/` (template de system prompt).
 
@@ -52,12 +52,14 @@ Las Edge Functions **sí** se pueden typechequear y testear localmente aunque De
 
 ```bash
 npx deno@2 check --node-modules-dir=auto supabase/functions/*/index.ts supabase/functions/_shared/*.ts
-npx deno@2 test  --allow-net --node-modules-dir=auto supabase/functions/_shared/
+npx deno@2 test  --allow-net --allow-read --node-modules-dir=auto supabase/tests supabase/functions/_shared/
 ```
 
 Hacelo SIEMPRE antes de deployar: el deploy no typechequea, así que un error de tipos llega a producción en silencio.
 
 ⚠️ `npx tsc --noEmit` NO sustituye a `pnpm build`. Next valida reglas propias que `tsc` no ve — por ejemplo, un `route.ts` **no puede exportar nada que no sea un handler** (`export function parseTerms` → `"parseTerms" is not a valid Route export field`, con `tsc` en verde). Los helpers compartidos entre rutas van en `src/lib/`, nunca exportados desde un `route.ts`.
+
+Incluye `supabase/tests/web-parity.test.ts`: vigila que las dos copias de `ai-pricing.ts` (web y Edge) y la tabla de modelos no se desincronicen.
 
 ## Arquitectura — el pipeline (lo más importante)
 
@@ -68,13 +70,14 @@ Kommo webhook ──> kommo-webhook ──> inbound_queue (pending)
                                           │ (waitUntil)
                                           ▼
                    process-inbound: parsea payload, upsert leads, inserta
-                   messages, clasifica inbound con Haiku 4.5 (vertical +
-                   intent/urgency/toxicity/requires_human_review)
+                   messages, clasifica inbound (CLASSIFY_MODEL, Haiku 5.5) (vertical +
+                   intent/urgency/toxicity/requires_human_review) — con
+                   contexto de los últimos turnos del lead
                                           │ (waitUntil, modo cola sin message_id)
                                           ▼
                    generate-response: DEBOUNCE 45s por lead → batch de
-                   TODOS los mensajes sin responder del lead → sesión CMA
-                   (Sonnet 4.6) con Memory Stores montados → 1 draft
+                   TODOS los mensajes sin responder + [HISTORIAL] determinístico
+                   de la DB → sesión CMA (AGENT_MODEL, Haiku 5.5) con Memory Stores → 1 draft
                                           │ (si approved)
                                           ▼
                    publish-to-kommo: PATCH custom field configurado +
@@ -114,13 +117,24 @@ Reparte automáticamente los leads de una vertical entre el equipo de ventas, y 
 - Switches en `kommo_publish_config`: `routing_enabled` (kill switch, default OFF) y `routing_takeover_user_ids`. El equipo se administra en Ajustes → Agente → Acciones → "Ruteo de leads al equipo".
 - **Campos `select` de Kommo**: hay que mandar `enum_id`, no `value` — con un string arbitrario Kommo devuelve 200 y **no guarda nada**. Usá `patchEntityFieldTyped`/`resolveFieldValue` (`_shared/kommo.ts`). `patchLeadField` sigue existiendo solo para campos de texto/textarea.
 
+### Modelos: Haiku 5.5, thinking, effort y refusals
+
+Todo el LLM del template corre en **Haiku 5.5** (`claude-haiku-5-5`) por defecto; cada componente es intercambiable desde `/consumo`. Defaults en **dos** lugares que deben coincidir: `web/src/lib/model-config.ts` (`MODEL_KEYS`) y `supabase/functions/_shared/models.ts` (`MODEL_DEFAULTS`) — `supabase/tests/web-parity.test.ts` lo verifica. Agregar un modelo = `ALLOWED_MODELS` + `MODEL_LABELS` + `MODEL_NAMES` + fila en `AI_PRICING` (ambas copias).
+
+- **Precio escalonado** (`ai-pricing.ts`, DOS copias idénticas — `supabase/tests/web-parity.test.ts` verifica paridad): Haiku 5.5 = $0.10/$0.50 por MTok (cache read $0.01, write 5m $0.125, 1h $0.20) si el prompt de la request es ≤100K tokens; si lo supera, **toda** la request paga $0.50/$2.50 (read $0.05, write $0.625/$1.00). El largo del prompt cuenta input + cache read + cache write. Las filas de sesión CMA son agregados de varias requests → se marcan `aggregated: true` y se valúan a tarifa base (cota inferior). Tokenizer nuevo: ~30% más tokens que Haiku 4.5 para el mismo texto.
+- **Adaptive thinking viene ACTIVO** y cuenta contra `max_tokens`. Nunca leer `content[0]`: `_shared/llm.ts` (`textOf`/`jsonOf`) toma el bloque de texto y tira errores tipados ante `stop_reason: "refusal"` (`LlmRefusalError`), `"max_tokens"` (`LlmTruncatedError`) o ausencia de texto (`LlmEmptyError`). Cada call site usa un perfil de `LLM_PROFILES` (effort explícito + `max_tokens` con holgura): classify=low/4096, grader=medium/4096, comment_reply=low/2048, dreams learnings=medium/16000, digest=low/8000. No enviar `temperature`/`top_p`/`top_k`/`budget_tokens` (400 en Haiku 5.5); no hay `fallbacks` server-side para refusals.
+- **Fallas**: classify con refusal → `requires_human_review` + `classification.error = "recover: …"` (sale de la cola de reintentos; determinístico); comment_reply → sin respuesta pública (el DM sale igual); grader → outcome con `ERROR` visible; dreams → el run falla y el digest vivo NO se pisa.
+- **Managed Agent**: `model` se envía como objeto `{id, effort}` (`web/src/lib/agent-model.ts`, `AGENT_EFFORT="medium"`), tanto al crear (`/api/setup/agent`) como al cambiar de modelo (`/api/usage/models`, que compara contra el agente VIVO, no contra `runtime_config`). Haiku 4.5 (histórico) no admite effort → string plano.
+- **Rutas AI SDK del dashboard** (`lib/dashboard-ai.ts`): `ai@4`/`@ai-sdk/anthropic@1` no exponen `output_config.effort`; un `fetch` envuelto lo inyecta. `generateObject` fuerza tool_choice (Haiku 5.5 lo acepta y no emite thinking). Migrar al AI SDK v5 elimina el wrapper.
+
 ### Memoria y aprendizaje (Anthropic Managed Agents)
 
 - Dos Memory Stores montados como filesystem en la sesión CMA. Sus nombres reales se configuran vía env vars (`MEMORY_STORE_MASTER_NAME` / `MEMORY_STORE_LEADS_NAME`):
   - **master** (read-only, global a todos los leads): `/voice/` (voz), `/kb/` (KB destilada), `/dreams/` (aprendizajes).
   - **leads** (read-write, por lead): `/<lead_id>/conversation.md` + `learnings.md`.
 - En el código (web + edge) usamos los labels semánticos `"master"` y `"leads"` para no acoplar el schema a un nombre específico de store. El ID real viene de `ANTHROPIC_MEMORY_MASTER_ID` / `_LEADS_ID`.
-- **Dreams**: `dreams-run` analiza conversaciones (24h/7d), Sonnet destila learnings y los escribe como `.md` en `<master>/dreams/`. El system prompt del agente obliga a leer `/dreams/` con **prioridad mayor que la voz base** antes de redactar. No es reentrenamiento: es retrieval en vivo. Cada learning lleva `severity` (sugerencia|advertencia|error, codificada también en el filename como `sug|adv|err`) y la política `runtime_config.DREAMS_AUTO_ACTIVATE` decide qué se activa solo: `all` (default), `error` (solo errores se auto-activan = autocorrección; el resto espera aprobación) o `none`. Lo no activado va a `/dreams-pending/` (el agente NO lo lee) y se aprueba/descarta desde `/dreams`. Todo dream `error` genera una alerta (`kind=dream_error`). El dashboard permite borrar activos (borra el archivo del Memory Store → el agente deja de adoptarlo).
+- **Historial determinístico de la conversación** (`supabase/functions/_shared/history.ts`): el contexto conversacional NO depende solo de que el modelo escriba/lea `conversation.md` (un tool call que el CMA puede omitir → respuestas sin contexto). `fetchLeadHistory` reconstruye el transcript real Lead/Agente desde `messages` + `drafts` (join `drafts!messages_answered_by_draft_id_fkey`, mismo patrón que `dreams-run`; solo cuenta drafts `sent`/`auto_sent`). `generate-response` lo inyecta como bloque `[HISTORIAL]` (~24 turnos) antes de los mensajes nuevos; `process-inbound` le pasa al clasificador los últimos ~6 turnos para desambiguar (`"sí, dale"`, `"y cuánto?"`). `fail-soft`: ante error devuelve `""` y cae al comportamiento previo. `conversation.md` queda como memoria semántica complementaria (datos del lead, estado en el funnel) que alimenta Dreams/learnings.
+- **Dreams**: `dreams-run` analiza conversaciones (24h/7d), DREAMS_MODEL (Haiku 5.5) destila learnings y los escribe como `.md` en `<master>/dreams/`. **El agente ya NO lee `/dreams/` por filesystem** (con muchos archivos activos eso costaba listado + lecturas + turnos extra en CADA respuesta): tras cada corrida, `dreams-run` consolida TODOS los dreams activos en un **digest rodante** (`rebuildDigest`, ≤900 palabras, parte del digest anterior + activos) guardado en `runtime_config.DREAMS_DIGEST`, y `generate-response` lo inyecta al contexto de cada sesión como bloque `aprendizajes_del_operador` (**prioridad mayor que la voz base**, TTL 60s, sin re-sync). Las mutaciones del dashboard (aprobar/borrar/importar) disparan `dreams-run {digest_only:true}` fire-and-forget (`triggerDigestRebuild`, `lib/memory-list.ts`) para que el cambio llegue al agente en <60s. Cota de activos: `DREAMS_MAX_ACTIVE` (default 60) — el exceso más viejo se archiva a `/dreams-archive/` (fuera del dashboard y de futuras consolidaciones; su esencia persiste en el digest rodante, en tandas de `ARCHIVE_BATCH=50` por corrida para no exceder los recursos del worker). Cada learning lleva `severity` (sugerencia|advertencia|error, codificada también en el filename como `sug|adv|err`) y la política `runtime_config.DREAMS_AUTO_ACTIVATE` decide qué se activa solo: `all` (default), `error` (solo errores se auto-activan = autocorrección; el resto espera aprobación) o `none`. Lo no activado va a `/dreams-pending/` (no entra al digest) y se aprueba/descarta desde `/dreams`. Todo dream `error` genera una alerta (`kind=dream_error`). Borrar un activo lo saca del digest en el próximo rebuild (<60s).
 - **Audio (notas de voz)**: si `respond_to_audio=true` y hay `OPENAI_API_KEY` en `runtime_config`, `process-inbound` transcribe con Whisper (`whisper-1`) y el texto sigue el pipeline normal (se guarda como `🎙️ <transcript>`). Sin key → `media_audio_no_key`; transcripción fallida → `requires_human_review`. La key se pide al activar el toggle en `/agent` → Filtros → Multimedia.
 - `search_kb` es un custom tool del agente: embeddings gte-small 384d (`embed` function) + RPC `search_kb` (vector 0.7 + FTS español 0.3).
 - Captura de mensajes salientes manuales de Kommo: **no resuelto**. El webhook `leads.add` no trae texto; los mensajes tecleados a mano viven en el sistema de chat de Kommo (amojo, credenciales aparte). Lo único recuperable vía API es lo que pasa por el custom field configurado (eventos `/api/v4/events`).
@@ -206,5 +220,5 @@ usuario existente gana ni pierde acceso; ya no se escriben.
 | Canales que se clasifican pero no se responden | Ajustes → Agente → Comportamiento → Canales → "Clasificar y rutear igual" |
 | Prompts de graders | Dashboard `/outcomes` |
 | Custom field y salesbot de Kommo | Dashboard `/settings` |
-| Modelo (Sonnet vs otro) | Wizard `/setup` (→ `runtime_config.AGENT_MODEL`, default `claude-sonnet-4-6`) |
+| Modelo por componente | `/consumo` (→ `runtime_config.AGENT_MODEL` / `CLASSIFY_MODEL` / `COMMENT_REPLY_MODEL` / `GRADER_MODEL` / `DREAMS_MODEL`; default `claude-haiku-5-5`). El wizard `/setup` fija el del agente al crearlo |
 | Secretos de arranque (irreducibles) | Host env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |

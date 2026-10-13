@@ -1,7 +1,7 @@
 "use client";
 
 // Panel "Modelos por componente": cada pieza del pipeline puede usar un modelo
-// distinto (Haiku barato, Sonnet equilibrado, Opus potente). Guarda en
+// distinto (Haiku 5.5 por defecto; Sonnet u Opus si una evaluación lo justifica). Guarda en
 // runtime_config vía /api/usage/models; las Edge Functions lo toman en <60s
 // sin redeploy. AGENT_MODEL además actualiza el agente en Anthropic.
 

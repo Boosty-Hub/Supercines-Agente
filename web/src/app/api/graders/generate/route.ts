@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -75,9 +75,8 @@ ${current.prompt ?? ""}`
     : "";
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "medium"),
       schema: z.object({
         slug: z
           .string()
@@ -116,10 +115,10 @@ Reglas:
 - Sé concreto sobre qué es un buen vs mal resultado. slug en snake_case.
 - Si te pasaron un GRADER ACTUAL, conservá su intención y solo aplicá el ajuste pedido.`,
     });
-    await recordWebUsage({ component: "dashboard_graders_generate", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_graders_generate", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, grader: object });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

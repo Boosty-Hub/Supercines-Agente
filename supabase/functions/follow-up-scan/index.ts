@@ -28,6 +28,7 @@ import {
 import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
+import { modelFor } from "../_shared/models.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -653,7 +654,7 @@ Deno.serve(async (req: Request) => {
       runUserIds,
       timezone,
       anthropicKey,
-      agentModel: runtimeCfg.getOr("AGENT_MODEL", "claude-haiku-4-5"),
+      agentModel: modelFor(runtimeCfg, "AGENT_MODEL"),
       pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES") ?? null,
     };
 

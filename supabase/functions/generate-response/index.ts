@@ -29,6 +29,8 @@ import {
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
+import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
+import { modelFor } from "../_shared/models.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -1078,7 +1080,13 @@ async function runAgent(opts: {
       }
     } else if (ev.type === "session.status_idle") {
       const stop = ev.stop_reason?.type;
-      if (stop !== "requires_action") break;
+      if (stop === "requires_action") continue; // aún faltan resultados de tools
+      // Cualquier idle que no sea un cierre normal queda en el log (cortes por
+      // max_tokens, refusals): sin turno completo no hay respuesta que publicar.
+      if (stop && stop !== "end_turn") {
+        console.warn(`generate-response: sesión ${session.id} quedó idle con stop_reason=${stop} (draft ${opts.draftId ?? "?"})`);
+      }
+      break;
     } else if (ev.type === "session.status_terminated") {
       break;
     } else if (ev.type === "session.error") {
@@ -1392,7 +1400,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- Respuesta pública IA (comentario de Instagram) — fail-open ----
       // Si el batch vino de un comentario y el operador tiene la feature activa,
-      // generamos una respuesta pública corta con Haiku gobernada por sus reglas.
+      // generamos una respuesta pública corta (COMMENT_REPLY_MODEL) gobernada por sus reglas.
       // CAP DURO: 280 chars. Falla → sin public_reply (el DM sigue igual).
       let publicReply: string | undefined;
       if (
@@ -1406,13 +1414,14 @@ Deno.serve(async (req: Request) => {
         try {
           const operator = resolvedCfg.getOr("OPERATOR_NAME", "el negocio");
           // Modelo de la respuesta pública: editable desde /consumo.
-          const commentReplyModel = resolvedCfg.getOr("COMMENT_REPLY_MODEL", "claude-haiku-4-5");
+          const commentReplyModel = modelFor(resolvedCfg, "COMMENT_REPLY_MODEL");
           const batchText = batchMsgs.map((m: MsgRow) => String(m.content ?? "").trim()).filter(Boolean).join(" | ");
           const dmPreview = outcome.responseText.slice(0, 500);
-          const haikuStart = Date.now();
-          const haikuRes = await anthropic.messages.create({
+          const replyStart = Date.now();
+          const replyRes = await anthropic.messages.create({
             model: commentReplyModel,
-            max_tokens: 200,
+            max_tokens: LLM_PROFILES.commentReply.maxTokens,
+            output_config: { effort: LLM_PROFILES.commentReply.effort },
             system: `Sos el community manager de ${operator}. Redactás UNA respuesta pública a un comentario de Instagram. Reglas OBLIGATORIAS del negocio:\n${replyRules}\nRespondé SOLO con el texto del comentario de respuesta, sin comillas ni explicaciones.`,
             messages: [
               {
@@ -1421,7 +1430,10 @@ Deno.serve(async (req: Request) => {
               },
             ],
           });
-          const rawReply = (haikuRes.content[0]?.type === "text" ? haikuRes.content[0].text : "").trim();
+          // Adaptive thinking: content[0] puede ser `thinking`. textOf lee el
+          // bloque de texto y tira ante refusal / max_tokens → cae al catch
+          // fail-open de abajo (el DM sale igual, sin respuesta pública).
+          const rawReply = textOf(replyRes, "comment_reply").trim();
           if (rawReply) {
             // Cap duro 280 chars: cortar en el último espacio antes del límite.
             if (rawReply.length <= 280) {
@@ -1432,13 +1444,13 @@ Deno.serve(async (req: Request) => {
               publicReply = lastSpace > 0 ? sub.slice(0, lastSpace) : sub;
             }
           }
-          // Registrar consumo de Haiku — fail-open.
+          // Registrar consumo de la respuesta pública — fail-open.
           await recordUsage(supabase, {
             component: "comment_reply",
             model: commentReplyModel,
-            inputTokens: haikuRes.usage?.input_tokens,
-            outputTokens: haikuRes.usage?.output_tokens,
-            runtimeMs: Date.now() - haikuStart,
+            inputTokens: replyRes.usage?.input_tokens,
+            outputTokens: replyRes.usage?.output_tokens,
+            runtimeMs: Date.now() - replyStart,
             leadId: batch.leadId,
             draftId: draft.id,
             metadata: { batch_size: batchMsgs.length },
@@ -1477,7 +1489,7 @@ Deno.serve(async (req: Request) => {
             session_id: outcome.sessionId,
             tool_calls: outcome.toolCalls,
             duration_ms: outcome.durationMs,
-            model: resolvedCfg.getOr("AGENT_MODEL", "claude-haiku-4-5"),
+            model: modelFor(resolvedCfg, "AGENT_MODEL"),
             vertical: vertical.slug,
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
@@ -1494,7 +1506,7 @@ Deno.serve(async (req: Request) => {
         apiKey: resolvedCfg.require("ANTHROPIC_API_KEY"),
         sessionId: outcome.sessionId,
         component: "generate_response",
-        model: resolvedCfg.getOr("AGENT_MODEL", "claude-haiku-4-5"),
+        model: modelFor(resolvedCfg, "AGENT_MODEL"),
         leadId: batch.leadId,
         draftId: draft.id,
         fallbackRuntimeMs: outcome.durationMs,

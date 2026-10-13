@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValue } from "@/lib/runtime-config";
 import { costUsd, parsePricingOverride } from "@/lib/ai-pricing";
+import { MODEL_KEYS } from "@/lib/model-config";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // backfill puede tomar varios minutos
@@ -108,7 +109,7 @@ export async function POST(request: Request) {
               const u = s.usage ?? {};
               const cc = (u.cache_creation ?? {}) as Record<string, unknown>;
               const runtimeMs = Math.round(((s.stats?.active_seconds as number) ?? 0) * 1000);
-              const model = (meta.model as string) ?? "claude-sonnet-4-6";
+              const model = (meta.model as string) ?? MODEL_KEYS.AGENT_MODEL;
               const cost = costUsd({
                 model,
                 inputTokens: (u.input_tokens as number) ?? null,
@@ -117,6 +118,7 @@ export async function POST(request: Request) {
                 cacheCreation5m: (cc.ephemeral_5m_input_tokens as number) ?? null,
                 cacheCreation1h: (cc.ephemeral_1h_input_tokens as number) ?? null,
                 runtimeMs,
+                aggregated: true, // total de la sesión CMA: sin escalón por request
                 pricingOverride,
               });
 
@@ -147,7 +149,7 @@ export async function POST(request: Request) {
         // Fallback estimado si GET falló o no hay API key
         if (!inserted) {
           const durationMs = (meta.duration_ms as number) ?? 0;
-          const model = (meta.model as string) ?? "claude-sonnet-4-6";
+          const model = (meta.model as string) ?? MODEL_KEYS.AGENT_MODEL;
           const cost = costUsd({ model, runtimeMs: durationMs, pricingOverride });
           await supabase.from("usage_events").insert({
             component: "generate_response",
@@ -198,7 +200,7 @@ export async function POST(request: Request) {
 
         await supabase.from("usage_events").insert({
           component: "classify",
-          model: "claude-haiku-4-5",
+          model: MODEL_KEYS.CLASSIFY_MODEL,
           is_estimated: true,
           estimated_cost_usd: 0,
           lead_id: msg.lead_id,
@@ -236,7 +238,7 @@ export async function POST(request: Request) {
 
         await supabase.from("usage_events").insert({
           component: "grader",
-          model: "claude-haiku-4-5",
+          model: MODEL_KEYS.GRADER_MODEL,
           is_estimated: true,
           estimated_cost_usd: 0,
           draft_id: outcome.draft_id,

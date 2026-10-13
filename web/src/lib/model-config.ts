@@ -1,23 +1,42 @@
 // Modelos por componente del pipeline — editable desde /consumo.
 // Cada key vive en runtime_config (DB-first); el default es el modelo con el
 // que se diseñó cada componente. Los precios viven en lib/ai-pricing — agregar
-// un modelo acá requiere también su fila de pricing.
+// un modelo acá requiere también su fila de pricing (ai-pricing.test.ts /
+// models.test.ts fallan si falta). Los defaults de Edge viven en
+// supabase/functions/_shared/models.ts y deben coincidir con MODEL_KEYS.
 
-export const ALLOWED_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"] as const;
+export const ALLOWED_MODELS = [
+  "claude-haiku-5-5",
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+] as const;
+
+export const DEFAULT_MODEL = "claude-haiku-5-5";
 
 export const MODEL_LABELS: Record<string, string> = {
-  "claude-haiku-4-5": "Haiku 4.5 — el más barato ($1/$5 por MTok)",
+  "claude-haiku-5-5": "Haiku 5.5 — el más barato ($0.10/$0.50 por MTok; $0.50/$2.50 si el prompt pasa 100K)",
+  "claude-haiku-4-5": "Haiku 4.5 — generación anterior ($1/$5 por MTok)",
   "claude-sonnet-4-6": "Sonnet 4.6 — equilibrio ($3/$15 por MTok)",
   "claude-opus-4-8": "Opus 4.8 — el más capaz ($5/$25 por MTok)",
 };
 
+// Nombre corto legible (tablas y flujo de /consumo). Con dos Haiku vigentes, la
+// versión es parte del nombre.
+export const MODEL_NAMES: Record<string, string> = {
+  "claude-haiku-5-5": "Haiku 5.5",
+  "claude-haiku-4-5": "Haiku 4.5",
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-opus-4-8": "Opus 4.8",
+};
+
 // key de runtime_config → default actual del pipeline
 export const MODEL_KEYS: Record<string, string> = {
-  AGENT_MODEL: "claude-haiku-4-5",
-  CLASSIFY_MODEL: "claude-haiku-4-5",
-  COMMENT_REPLY_MODEL: "claude-haiku-4-5",
-  GRADER_MODEL: "claude-haiku-4-5",
-  DREAMS_MODEL: "claude-haiku-4-5",
+  AGENT_MODEL: DEFAULT_MODEL,
+  CLASSIFY_MODEL: DEFAULT_MODEL,
+  COMMENT_REPLY_MODEL: DEFAULT_MODEL,
+  GRADER_MODEL: DEFAULT_MODEL,
+  DREAMS_MODEL: DEFAULT_MODEL,
 };
 
 // Descripción humana de qué gobierna cada key (para el panel de /consumo).

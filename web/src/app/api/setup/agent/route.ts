@@ -10,6 +10,8 @@ import {
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { detectVoiceFiles, syncAgentTools } from "@/lib/sync-agent-tools";
+import { agentModelParam } from "@/lib/agent-model";
+import { DEFAULT_MODEL } from "@/lib/model-config";
 import {
   findByName,
   retrieveResource,
@@ -23,7 +25,6 @@ import {
 // on Netlify's serverless runtime even for a valid key.
 export const runtime = "nodejs";
 
-const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_DESCRIPTION =
   "Responde mensajes entrantes de leads con la voz definida en el system prompt.";
 const ENV_DESCRIPTION =
@@ -177,7 +178,7 @@ export async function POST() {
       // Agent does not exist yet — create it with the current tool surface.
       const created = await createAgent(key, {
         name: agentName,
-        model: cfg.AGENT_MODEL || DEFAULT_MODEL,
+        model: agentModelParam(cfg.AGENT_MODEL || DEFAULT_MODEL),
         description: cfg.AGENT_DESCRIPTION || DEFAULT_DESCRIPTION,
         system,
         tools,

@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 import { ALLOWED_MODELS, MODEL_KEYS } from "@/lib/model-config";
+import { agentModelMatches, agentModelParam } from "@/lib/agent-model";
 
 export const runtime = "nodejs";
 
@@ -40,15 +41,19 @@ export async function POST(request: Request) {
 
   // AGENT_MODEL: sincronizar primero con Anthropic (el agente manda).
   if (updates.AGENT_MODEL) {
-    const cfg = await configValues(["ANTHROPIC_API_KEY", "ANTHROPIC_AGENT_ID", "AGENT_MODEL"]);
-    const currentModel = cfg.AGENT_MODEL || MODEL_KEYS.AGENT_MODEL;
-    if (updates.AGENT_MODEL !== currentModel && cfg.ANTHROPIC_API_KEY && cfg.ANTHROPIC_AGENT_ID) {
+    const cfg = await configValues(["ANTHROPIC_API_KEY", "ANTHROPIC_AGENT_ID"]);
+    if (cfg.ANTHROPIC_API_KEY && cfg.ANTHROPIC_AGENT_ID) {
       try {
+        const desired = agentModelParam(updates.AGENT_MODEL);
         const doUpdate = async () => {
           const current = await retrieveAgent(cfg.ANTHROPIC_API_KEY!, cfg.ANTHROPIC_AGENT_ID!);
+          // Se compara contra el AGENTE VIVO (no contra runtime_config): si la
+          // key de config está vacía o desfasada, igual se converge al modelo
+          // pedido en vez de dar por hecho un cambio que nunca llegó a Anthropic.
+          if (agentModelMatches(current.model, desired)) return (current.version as number) ?? 0;
           const updated = await updateAgent(cfg.ANTHROPIC_API_KEY!, cfg.ANTHROPIC_AGENT_ID!, {
             version: current.version,
-            model: updates.AGENT_MODEL,
+            model: desired,
           });
           return (updated.version as number) ?? 0;
         };

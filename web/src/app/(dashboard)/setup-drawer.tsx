@@ -20,6 +20,7 @@ import { VerticalsAssistant } from "@/components/verticals-assistant";
 import { Button } from "@/components/ui/button";
 import { inputCls, labelCls } from "@/components/ui/styles";
 import type { SetupState, SetupProvisioned } from "@/lib/setup-state";
+import { ALLOWED_MODELS, DEFAULT_MODEL, MODEL_LABELS } from "@/lib/model-config";
 
 type StepStatus = "idle" | "running" | "done" | "error";
 
@@ -198,7 +199,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
   const [agentEnvironmentName, setAgentEnvironmentName] = useState(
     state.prefill.agentEnvironmentName || existingDerived.agentEnvironmentName
   );
-  const [agentModel, setAgentModel] = useState(state.prefill.agentModel || "claude-sonnet-4-6");
+  const [agentModel, setAgentModel] = useState(state.prefill.agentModel || DEFAULT_MODEL);
   const [masterStoreName, setMasterStoreName] = useState(
     state.prefill.masterStoreName || existingDerived.masterStoreName
   );
@@ -661,15 +662,12 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                             onChange={(e) => setAgentModel(e.target.value)}
                             className={inputCls + " text-xs"}
                           >
-                            <option value="claude-sonnet-4-6">
-                              Sonnet 4.6 — Recomendado (equilibrio calidad/costo)
-                            </option>
-                            <option value="claude-opus-4-8">
-                              Opus 4.8 — Máxima capacidad (más caro)
-                            </option>
-                            <option value="claude-haiku-4-5">
-                              Haiku 4.5 — Rápido y económico
-                            </option>
+                            {ALLOWED_MODELS.map((m) => (
+                              <option key={m} value={m}>
+                                {MODEL_LABELS[m]}
+                                {m === DEFAULT_MODEL ? " — Recomendado" : ""}
+                              </option>
+                            ))}
                           </select>
                         </div>
                       </div>

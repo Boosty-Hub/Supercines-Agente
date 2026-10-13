@@ -30,7 +30,7 @@ Un export de n8n es un JSON con esta forma:
 **Buscar**: nodos de tipo `@n8n/n8n-nodes-langchain.anthropic`, `n8n-nodes-base.httpRequest` apuntando a `api.anthropic.com`, o nodos de OpenAI/cualquier LLM. Mirá `parameters.options.systemMessage`, `parameters.messages[0].content` (role system), o `parameters.jsonBody`.
 
 **Mapear a**: `agent/system-prompt.md`. Pegá el system prompt como está y ajustá:
-- Reemplazá referencias del modelo anterior (gpt-4, etc.) por la lógica del template (Sonnet 4.6).
+- Reemplazá referencias del modelo anterior (gpt-4, etc.) por la lógica del template (Haiku 5.5).
 - Si tiene instrucciones sobre paths de archivos (n8n usa otros), reemplazá por los placeholders `{{MASTER_PATH}}` y `{{LEADS_PATH}}` — se sustituyen automáticamente cuando guardás el prompt desde el dashboard (wizard `/setup` o editor `/agent`, vía `web/src/lib/agent-prompt.ts`).
 - Si menciona herramientas del workflow n8n (HTTP nodes, Function nodes), describí la intención pero quitá los detalles técnicos — el agente acá usa solo la tool `search_kb`.
 
@@ -39,7 +39,7 @@ Un export de n8n es un JSON con esta forma:
 **Buscar**: `parameters.model` (suele ser `claude-3-5-sonnet`, `gpt-4`, etc.), `temperature`, `maxTokens`.
 
 **Mapear a**:
-- `.env.local` → `AGENT_MODEL` (convertí al nombre Anthropic actual; si era OpenAI, recomendá `claude-sonnet-4-6`).
+- `.env.local` → `AGENT_MODEL` (convertí al nombre Anthropic actual; si era OpenAI, recomendá `claude-haiku-5-5`).
 - `temperature` y `maxTokens` del template no son configurables a nivel agent (vienen del CMA). Si el usuario los necesita custom, marcar como tarea pendiente y avisar.
 
 ### 3. Identidad del operador

@@ -9,7 +9,7 @@ import { CostCalculator, type CalculatorData, type TokenProfile } from "./cost-c
 import { ModelsPanel } from "./models-panel";
 import { ContextPanel } from "./context-panel";
 import { configValues } from "@/lib/runtime-config";
-import { MODEL_KEYS } from "@/lib/model-config";
+import { MODEL_KEYS, MODEL_NAMES } from "@/lib/model-config";
 import { AI_PRICING, CMA_RUNTIME_USD_PER_HOUR } from "@/lib/ai-pricing";
 
 export const dynamic = "force-dynamic";
@@ -240,8 +240,11 @@ export default async function ConsumoPage({
     .filter((r) => r.component === "generate_response")
     .reduce((s, r) => s + (r.total_cache_creation ?? 0), 0);
   if (genRespCost > 0 && genRespCacheWrite > 0) {
-    // Aproximación con tarifa write-5m de Sonnet ($3.75/MTok) — es la dominante.
-    const cacheWriteUsd = (genRespCacheWrite / 1_000_000) * 3.75;
+    // Tarifa write-5m del modelo con que corrió CADA fila (el período puede
+    // mezclar modelos); es la dominante del costo de caché.
+    const cacheWriteUsd = daily
+      .filter((r) => r.component === "generate_response")
+      .reduce((s, r) => s + ((r.total_cache_creation ?? 0) / 1_000_000) * (AI_PRICING[r.model]?.cacheWrite5m ?? 0), 0);
     const writeShare = cacheWriteUsd / genRespCost;
     if (writeShare > 0.30) {
       palancas.push({
@@ -306,11 +309,6 @@ export default async function ConsumoPage({
   // Con qué modelos se midió realmente el período (puede mezclar: ayer Sonnet,
   // hoy Haiku). Si difiere del modelo configurado AHORA, lo aclaramos en el
   // flujo — el promedio es histórico real, el badge es el modelo de acá en más.
-  const MODEL_SHORT: Record<string, string> = {
-    "claude-haiku-4-5": "Haiku 4.5",
-    "claude-sonnet-4-6": "Sonnet 4.6",
-    "claude-opus-4-8": "Opus 4.8",
-  };
   const measuredWith = (comp: string, configured: string): string | undefined => {
     const rows = daily.filter((r) => r.component === comp);
     const byModel = new Map<string, number>();
@@ -323,7 +321,7 @@ export default async function ConsumoPage({
     return (
       "promedio medido con " +
       entries
-        .map(([m, c]) => `${MODEL_SHORT[m] ?? m} (${((c / total) * 100).toFixed(0)}%)`)
+        .map(([m, c]) => `${MODEL_NAMES[m] ?? m} (${((c / total) * 100).toFixed(0)}%)`)
         .join(" + ")
     );
   };
@@ -332,6 +330,8 @@ export default async function ConsumoPage({
   // el modelo que realmente corrió). Responde "¿cuánto es caché vs output?".
   const respType = { cacheWrite: 0, output: 0, cacheRead: 0, input: 0, runtime: 0 };
   for (const r of genRespRows) {
+    // Filas de sesión CMA = agregados de varias requests → tarifa base (ver
+    // ai-pricing.ts, `aggregated`): no se conoce el prompt de cada request.
     const pr = AI_PRICING[r.model];
     if (!pr) continue;
     const M = 1_000_000;

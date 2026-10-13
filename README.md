@@ -1,6 +1,6 @@
 # Template-Agent-kommo
 
-Template para construir un agente conversacional sobre **Kommo CRM + Claude Sonnet (Anthropic Managed Agents) + Supabase**. Da out-of-the-box: clasificación de mensajes (Haiku), respuesta con voz custom (Sonnet + Memory Stores), debounce/batching, aprendizajes automáticos nocturnos (Dreams), evaluación de calidad (Outcomes), y panel de revisión humana.
+Template para construir un agente conversacional sobre **Kommo CRM + Claude Haiku 5.5 (Anthropic Managed Agents) + Supabase**. Da out-of-the-box: clasificación de mensajes, respuesta con voz custom (Memory Stores) — todo sobre Haiku 5.5 por defecto, intercambiable por componente desde `/consumo`, debounce/batching, aprendizajes automáticos nocturnos (Dreams), evaluación de calidad (Outcomes), y panel de revisión humana.
 
 ## Regla #1 — Nunca edites este repo
 
@@ -165,7 +165,7 @@ cp web/.env.example web/.env.local
 
 - **Next.js 14** (App Router, TS, Tailwind) — dashboard + Route Handlers
 - **Supabase** — Postgres 17 + pgvector + Auth + Realtime + Edge Functions (Deno 2)
-- **Anthropic** — Haiku 4.5 (clasificación), Sonnet 4.6 (CMA), Memory Stores
+- **Anthropic** — Haiku 5.5 (clasificación, agente CMA, graders, Dreams; tarifa escalonada por largo de prompt), Memory Stores
 - **Kommo CRM** — webhook entrante, REST v4, Salesbot v2
 
 ## Qué customizar por cliente

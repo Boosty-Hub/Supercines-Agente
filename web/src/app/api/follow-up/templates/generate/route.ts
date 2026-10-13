@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: el SDK oficial de Anthropic da 401 spurios en Netlify Edge.
-// Usar generateObject + createAnthropic (Vercel AI SDK) como en /api/verticales/generate.
+// Usar generateObject (Vercel AI SDK) vía dashboardModel, como en /api/verticales/generate.
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
@@ -61,9 +61,8 @@ export async function POST(request: Request) {
     .join("\n\n");
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "low"),
       schema: z.object({
         name: z
           .string()
@@ -121,10 +120,10 @@ Reglas:
 - La plantilla es fija (texto aprobado) — el agente NO modifica el body, solo rellena los placeholders.
 - name en snake_case, sin espacios.`,
     });
-    await recordWebUsage({ component: "dashboard_follow_up_templates", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_follow_up_templates", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, template: object });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

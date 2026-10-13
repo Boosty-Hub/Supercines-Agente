@@ -9,11 +9,13 @@
 //   POST {}                → sweep últimos N drafts enviados <72h sin todos los outcomes
 //
 // Graders:
-//   - source='llm_judge':  llama a Haiku 4.5 con el prompt del grader
+//   - source='llm_judge':  llama al GRADER_MODEL (Haiku 5.5 por defecto) con el prompt del grader
 //   - source='automatic':  dispatch por slug (length_appropriate, lead_replied, etc.)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
+import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
+import { modelFor } from "../_shared/models.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
@@ -138,17 +140,19 @@ Evaluá según las instrucciones del system prompt y devolvé JSON estricto.`;
 
   const response = await anthropic.messages.create({
     model,
-    max_tokens: 600,
+    max_tokens: LLM_PROFILES.grader.maxTokens,
     system: grader.prompt,
     messages: [{ role: "user", content: userContext }],
     output_config: {
+      effort: LLM_PROFILES.grader.effort,
       format: { type: "json_schema", schema },
     },
   });
 
-  const block = response.content.find((b) => b.type === "text");
-  if (!block || block.type !== "text") throw new Error("no text block");
-  const parsed = JSON.parse(block.text);
+  // Adaptive thinking: content[0] puede ser `thinking`. jsonOf lee el bloque de
+  // texto y falla explícito ante refusal / max_tokens (ver _shared/llm.ts); el
+  // catch de evaluateDraft lo registra como outcome con ERROR visible.
+  const parsed = jsonOf<{ passed?: boolean; score?: number; reasoning?: string }>(response, `grader:${grader.slug}`);
 
   if (isPassFail) {
     return {
@@ -264,8 +268,8 @@ async function runAutomatic(
 
 // ---------------- Evaluación principal ----------------
 async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthropic: Anthropic, cfg: ConfigReader): Promise<number> {
-  // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku).
-  const graderModel = cfg.getOr("GRADER_MODEL", "claude-haiku-4-5");
+  // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku 5.5).
+  const graderModel = modelFor(cfg, "GRADER_MODEL");
   const existing = await getExistingOutcomes(draft.id);
   let count = 0;
 

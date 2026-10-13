@@ -2,8 +2,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
 import { streamText } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { recordWebUsage } from "@/lib/usage";
+import { DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -141,15 +141,21 @@ export async function POST(request: Request) {
     prompt = instruction;
   }
 
-  const anthropic = createAnthropic({ apiKey });
   const result = streamText({
-    model: anthropic("claude-sonnet-4-6"),
+    model: dashboardModel(apiKey, "medium"),
     system,
     prompt,
-    maxTokens: 4000,
-    onFinish: ({ usage }) => {
+    // El thinking de Haiku 5.5 cuenta contra maxTokens: holgura sobre el prompt
+    // (~4K tokens) para que no se corte antes de la línea END.
+    maxTokens: 16000,
+    onFinish: ({ usage, finishReason }) => {
+      // Sin END el cliente ya detecta el corte; acá queda el motivo en el log
+      // ("length" = tope de tokens, "unknown" = rechazo por políticas de seguridad).
+      if (finishReason !== "stop") {
+        console.warn(`generate-agent: finishReason=${finishReason} (la respuesta puede estar incompleta)`);
+      }
       // fail-open: no awaitar para no bloquear el stream
-      recordWebUsage({ component: "dashboard_generate_agent", model: "claude-sonnet-4-6", usage }).catch(() => {});
+      recordWebUsage({ component: "dashboard_generate_agent", model: DASHBOARD_MODEL, usage }).catch(() => {});
     },
   });
 

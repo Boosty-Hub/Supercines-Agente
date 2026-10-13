@@ -2,6 +2,8 @@
 // con el modelo configurado y el costo promedio REAL medido en el período.
 // Server component puro — recibe todo por props desde page.tsx.
 
+import { MODEL_NAMES } from "@/lib/model-config";
+
 export type BillingPoint = {
   key: string;
   emoji: string;
@@ -24,11 +26,6 @@ function usd(n: number): string {
   return `$${n.toFixed(4)}`;
 }
 
-const SHORT_MODEL: Record<string, string> = {
-  "claude-haiku-4-5": "Haiku 4.5",
-  "claude-sonnet-4-6": "Sonnet 4.6",
-  "claude-opus-4-8": "Opus 4.8",
-};
 
 export function BillingFlow({ points }: { points: BillingPoint[] }) {
   return (
@@ -59,7 +56,7 @@ export function BillingFlow({ points }: { points: BillingPoint[] }) {
                 </span>
               ) : (
                 <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] font-medium text-white">
-                  {SHORT_MODEL[p.model] ?? p.model}
+                  {MODEL_NAMES[p.model] ?? p.model}
                 </span>
               )}
               {p.share > 0 && (

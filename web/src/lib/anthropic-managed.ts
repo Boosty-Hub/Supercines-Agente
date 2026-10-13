@@ -57,6 +57,8 @@ export interface NamedResource {
   name?: string;
   version?: number;
   status?: string;
+  /** Solo agents: string, u objeto `{ id, effort, … }` (la API devuelve el objeto). */
+  model?: unknown;
 }
 
 type Resource = "environments" | "agents" | "memory_stores";

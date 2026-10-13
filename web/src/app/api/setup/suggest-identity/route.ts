@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
+import { aiErrorMessage, DASHBOARD_MODEL, dashboardModel } from "@/lib/dashboard-ai";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -43,9 +43,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const anthropic = createAnthropic({ apiKey });
     const { object, usage } = await generateObject({
-      model: anthropic("claude-sonnet-4-6"),
+      model: dashboardModel(apiKey, "low"),
       schema: z.object({
         operatorName: z
           .string()
@@ -60,10 +59,10 @@ export async function POST(request: Request) {
       }),
       prompt: `Del siguiente negocio, extraé el nombre del operador/marca y un nombre para el panel.\n\n${description}`,
     });
-    await recordWebUsage({ component: "dashboard_suggest_identity", model: "claude-sonnet-4-6", usage });
+    await recordWebUsage({ component: "dashboard_suggest_identity", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, ...object });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = aiErrorMessage(err);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

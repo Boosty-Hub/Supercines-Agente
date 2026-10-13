@@ -38,6 +38,7 @@ import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { evaluateClaim } from "../_shared/claim-batch.ts";
+import { outboundLeak } from "../_shared/outbound.ts";
 import { extractResponseBlock, detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
@@ -1643,6 +1644,7 @@ Deno.serve(async (req: Request) => {
       // generamos una respuesta pública corta (COMMENT_REPLY_MODEL) gobernada por sus reglas.
       // CAP DURO: 280 chars. Falla → sin public_reply (el DM sigue igual).
       let publicReply: string | undefined;
+      let publicReplyBlocked: string | null = null;
       if (
         batchHasComment &&
         (cfg as Record<string, unknown> | null)?.comment_reply_enabled === true
@@ -1679,7 +1681,14 @@ Deno.serve(async (req: Request) => {
           // bloque de texto y tira ante refusal / max_tokens → cae al catch
           // fail-open de abajo (el DM sale igual, sin respuesta pública).
           const rawReply = textOf(replyRes, "comment_reply").trim();
-          if (rawReply) {
+          // La respuesta PÚBLICA la lee todo el mundo: pasa por el mismo verificador
+          // de fuga interna que el DM (_shared/outbound.ts). Con residuo no se
+          // genera pública (el DM sigue su camino) y queda registrado el motivo.
+          const publicLeak = rawReply ? outboundLeak(rawReply) : null;
+          if (publicLeak) {
+            publicReplyBlocked = publicLeak;
+            console.error(`generate-response: respuesta pública descartada por el guard (${publicLeak}) draft ${draft.id}`);
+          } else if (rawReply) {
             // Cap duro 280 chars: cortar en el último espacio antes del límite.
             if (rawReply.length <= 280) {
               publicReply = rawReply;
@@ -1756,6 +1765,9 @@ Deno.serve(async (req: Request) => {
             vertical: vertical.slug,
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
+            ...(publicReplyBlocked
+              ? { public_reply_blocked: publicReplyBlocked, guard_part: "public_reply" }
+              : {}),
             ...(contestPhoneGuard ? { forced_review_reason: "contest_marker_with_phone" } : {}),
             ...(guardBlocked
               ? { guard_blocked: true, guard_reason: outcome.leak.reason, guard_kind: "internal_leak" }

@@ -15,9 +15,8 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
-import { detectInternalLeak } from "../_shared/response-guard.ts";
+import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import {
-  patchLeadField,
   runSalesbot,
   fetchOutgoingEventIds,
   verifyOutgoingDelivery,
@@ -73,7 +72,7 @@ async function pickPending(publishFrom: string | null, limit = 10) {
   let q = supabase
     .from("drafts")
     .select(
-      "id, message_id, body, status, created_at, reviewer_id, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
+      "id, message_id, body, edited_body, status, created_at, reviewer_id, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
     )
     .eq("status", "approved")
     .is("sent_at", null);
@@ -149,6 +148,7 @@ async function publishOne(
   draft: {
     id: string;
     body: string;
+    edited_body: string | null;
     agent_metadata: Record<string, unknown> | null;
     // deno-lint-ignore no-explicit-any
     messages: any;
@@ -157,7 +157,7 @@ async function publishOne(
   kommoDomain: string,
   kommoToken: string,
   verify: { enabled: boolean; timeoutMs: number }
-): Promise<{ delivered: boolean; verified: boolean }> {
+): Promise<{ delivered: boolean; verified: boolean; publicBlocked: string | null }> {
   const kommoLeadId = draft.messages?.leads?.kommo_lead_id;
   if (!kommoLeadId) throw new Error("kommo_lead_id missing");
   if (!config.response_custom_field_id) throw new Error("response_custom_field_id no configurado");
@@ -169,6 +169,14 @@ async function publishOne(
   // ---- Respuesta pública IA (comentario de Instagram) — fail-open ----
   // Usa meta.public_reply generado por Haiku en generate-response.
   // Corre ANTES del flujo normal; si falla, el DM normal sigue igual.
+  // El DM se verifica ANTES de publicar la parte pública: si el DM va a quedar
+  // bloqueado, no puede haber salido ya un comentario público (al aprobar de
+  // nuevo se publicaría dos veces). writeClientText lo vuelve a verificar al
+  // escribir — este chequeo solo fija el ORDEN.
+  const dmLeak = outboundLeak(draftText(draft));
+  if (dmLeak) throw new OutboundBlockedError("dm", dmLeak);
+
+  let publicBlocked: string | null = null;
   const rawPublicReply = typeof meta.public_reply === "string" ? meta.public_reply : null;
   if (
     meta.from_comment === true &&
@@ -179,9 +187,22 @@ async function publishOne(
   ) {
     try {
       const publicText = capPublicReply(rawPublicReply);
-      await patchLeadField(leadId, config.comment_field_id, publicText, kommoDomain, kommoToken);
+      await writeClientText({
+        kind: "public_reply",
+        kommoLeadId: leadId,
+        fieldId: config.comment_field_id,
+        text: publicText,
+        kommoDomain,
+        kommoToken,
+      });
       await runSalesbot(config.comment_salesbot_id, leadId, kommoDomain, kommoToken);
     } catch (err) {
+      // Respuesta pública con residuo interno: NO se publica (la leería todo el
+      // mundo) pero el DM, si está limpio, sigue. El caller marca el draft y alerta.
+      if (err instanceof OutboundBlockedError) {
+        publicBlocked = err.reason;
+        console.error(`publish-to-kommo: respuesta pública del draft ${draft.id} bloqueada — ${err.reason}`);
+      }
       console.warn(
         `publish-to-kommo: respuesta pública comentario (draft ${draft.id}) falló — continúa con DM:`,
         err instanceof Error ? err.message : String(err)
@@ -191,7 +212,17 @@ async function publishOne(
 
   // ---- Flujo normal: DM por campo + salesbot estándar ----
   // SIEMPRE corre, independientemente de si la parte pública falló.
-  await patchLeadField(leadId, config.response_custom_field_id, draft.body, kommoDomain, kommoToken);
+  // El texto que realmente sale es el editado a mano en el inbox si lo hay.
+  // writeClientText lo verifica; si trae residuo interno lanza OutboundBlockedError
+  // (el caller manda el draft a revisión) y NO se toca Kommo.
+  await writeClientText({
+    kind: "dm",
+    kommoLeadId: leadId,
+    fieldId: config.response_custom_field_id,
+    text: draftText(draft),
+    kommoDomain,
+    kommoToken,
+  });
 
   // Antes de disparar, una "foto" de los mensajes salientes que el lead YA tenía,
   // para detectar el NUEVO que (si todo va bien) genere el salesbot.
@@ -202,9 +233,9 @@ async function publishOne(
   await runSalesbot(config.salesbot_id, leadId, kommoDomain, kommoToken);
 
   // El 202 success:true de salesbot/run NO prueba la entrega (ver _shared/kommo.ts).
-  if (!verify.enabled) return { delivered: true, verified: false };
+  if (!verify.enabled) return { delivered: true, verified: false, publicBlocked };
   const delivered = await verifyOutgoingDelivery(leadId, baseline, kommoDomain, kommoToken, verify.timeoutMs);
-  return { delivered, verified: true };
+  return { delivered, verified: true, publicBlocked };
 }
 
 Deno.serve(async (req: Request) => {
@@ -275,36 +306,39 @@ Deno.serve(async (req: Request) => {
       // deno-lint-ignore no-explicit-any
       const msgs = d.messages as any;
 
-      // ÚLTIMO FILTRO ANTES DE KOMMO. generate-response ya tiene su gate, pero
-      // este es el único punto por el que TODO draft pasa antes de salir: uno
-      // aprobado a mano en el inbox, o publicado por el sweep de pg_cron, no
-      // vuelve a pasar por el generador. No se descarta: se manda a revisión
-      // humana (el texto suele ser recuperable con una edición).
-      const fuga = detectInternalLeak(d.body);
-      if (fuga) {
-        await supabase
-          .from("drafts")
-          .update({
-            status: "pending",
-            agent_metadata: { ...baseMeta, guard_blocked: true, guard_kind: "internal_leak", guard_reason: fuga, guard_stage: "publish" },
-          })
-          .eq("id", d.id)
-          .eq("status", "approved");
-        failed++;
-        errors.push({ draft_id: d.id, error: `bloqueado por guard: ${fuga}` });
-        console.error(`publish-to-kommo: draft ${d.id} bloqueado antes de publicar — ${fuga}`);
-        continue;
-      }
-
       try {
         const result = await publishOne(d, config, kommoDomain, kommoToken, verify);
+        // Respuesta pública bloqueada por el verificador: el DM salió (estaba
+        // limpio) pero la parte pública NO. Se deja marcado y se alerta.
+        const publicMeta = result.publicBlocked
+          ? {
+              guard_blocked: true,
+              guard_kind: "internal_leak",
+              guard_part: "public_reply",
+              guard_reason: result.publicBlocked,
+              guard_stage: "publish",
+            }
+          : {};
+        if (result.publicBlocked) {
+          await supabase.from("alerts").insert({
+            kind: "outbound_blocked",
+            severity: "warning",
+            title: "Se bloqueó la respuesta pública a un comentario",
+            description:
+              `El texto de la respuesta pública traía residuo interno del agente (${result.publicBlocked}) y no se publicó. ` +
+              "El mensaje privado (DM) sí salió. Revisá el comentario y respondé a mano si corresponde.",
+            ref_table: "drafts",
+            ref_id: d.id,
+            metadata: { part: "public_reply", reason: result.publicBlocked },
+          });
+        }
         if (result.delivered) {
           await supabase
             .from("drafts")
             .update({
               status: "auto_sent",
               sent_at: new Date().toISOString(),
-              agent_metadata: result.verified ? { ...baseMeta, delivery_verified: true } : baseMeta,
+              agent_metadata: { ...baseMeta, ...(result.verified ? { delivery_verified: true } : {}), ...publicMeta },
             })
             .eq("id", d.id);
           published++;
@@ -338,6 +372,28 @@ Deno.serve(async (req: Request) => {
           failed++;
         }
       } catch (err) {
+        // DM con residuo interno: NO se envía. Vuelve a revisión humana (el texto
+        // suele ser recuperable con una edición) en vez de quedar failed.
+        if (err instanceof OutboundBlockedError && err.kind === "dm") {
+          await supabase
+            .from("drafts")
+            .update({
+              status: "pending",
+              agent_metadata: {
+                ...baseMeta,
+                guard_blocked: true,
+                guard_kind: "internal_leak",
+                guard_reason: err.reason,
+                guard_stage: "publish",
+              },
+            })
+            .eq("id", d.id)
+            .eq("status", "approved");
+          failed++;
+          errors.push({ draft_id: d.id, error: `bloqueado por guard: ${err.reason}` });
+          console.error(`publish-to-kommo: draft ${d.id} bloqueado antes de publicar — ${err.reason}`);
+          continue;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         await supabase
           .from("drafts")

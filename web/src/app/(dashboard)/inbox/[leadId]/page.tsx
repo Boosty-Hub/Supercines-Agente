@@ -564,6 +564,15 @@ function Timeline({
                         <DraftActions draftId={draft.id} body={draftBody} status={draft.status} />
                       </div>
                     )}
+                    {draft.agent_metadata?.guard_blocked === true && (
+                      <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                        ⚠️{" "}
+                        {draft.agent_metadata.guard_part === "public_reply"
+                          ? "La respuesta pública se bloqueó (el mensaje privado sí salió)"
+                          : "El verificador bloqueó este mensaje: no se envía sin revisión"}
+                        {typeof draft.agent_metadata.guard_reason === "string" ? ` — ${draft.agent_metadata.guard_reason}` : ""}.
+                      </p>
+                    )}
                     {typeof draft.agent_metadata?.publish_error === "string" && (
                       <details className="mt-2">
                         <summary className="cursor-pointer text-xs text-red-600">ver error de publicación</summary>

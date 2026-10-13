@@ -19,7 +19,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig } from "../_shared/config.ts";
 import {
-  patchLeadField,
   runSalesbot,
   fetchLeadStage,
   KOMMO_WON_STATUS,
@@ -30,6 +29,7 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
 import { DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
+import { OutboundBlockedError, writeClientText } from "../_shared/outbound.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
@@ -515,16 +515,43 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
       if (kommoFieldId == null) {
         throw new Error(`variable "${variable.name}" sin campo de Kommo resoluble`);
       }
-      await patchLeadField(
-        lead.kommo_lead_id,
-        kommoFieldId,
-        resolvedVars[variable.name],
-        deps.kommoDomain,
-        deps.kommoToken
-      );
+      // Texto al cliente: pasa por el verificador de fuga interna (outbound.ts).
+      await writeClientText({
+        kind: "follow_up",
+        kommoLeadId: lead.kommo_lead_id,
+        fieldId: kommoFieldId,
+        text: resolvedVars[variable.name],
+        kommoDomain: deps.kommoDomain,
+        kommoToken: deps.kommoToken,
+      });
     }
     await runSalesbot(template.salesbot_id, lead.kommo_lead_id, deps.kommoDomain, deps.kommoToken);
   } catch (err) {
+    // Una variable con residuo interno NO sale: se registra el seguimiento como
+    // fallido con el motivo, se alerta y se sella el cooldown (reintentar de
+    // inmediato volvería a quemar una sesión CMA con el mismo resultado).
+    if (err instanceof OutboundBlockedError) {
+      console.error(`follow-up-scan: texto bloqueado para lead ${leadId}: ${err.reason}`);
+      await supabase.from("follow_ups").insert({
+        lead_id: leadId,
+        template_id: template.id,
+        step: row.step_number,
+        status: "failed",
+        variables: resolvedVars,
+        error: `bloqueado por guard: ${err.reason}`,
+      });
+      await supabase.from("alerts").insert({
+        kind: "outbound_blocked",
+        severity: "warning",
+        title: "Se bloqueó un seguimiento automático",
+        description: `Una variable del seguimiento traía residuo interno del agente (${err.reason}) y no se envió.`,
+        ref_table: "leads",
+        ref_id: leadId,
+        metadata: { part: "follow_up", reason: err.reason, step: row.step_number },
+      });
+      await stampSkipCooldown(leadId);
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`follow-up-scan: Kommo API error for lead ${leadId}:`, msg);
     // On Kommo error: log + failed row, do NOT advance lead state

@@ -32,6 +32,7 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   human_review_needed: { label: "Necesita tu revisión", icon: "🟡" },
   outcomes_regression: { label: "Bajó la calidad", icon: "📉" },
   budget_exceeded: { label: "Presupuesto mensual", icon: "💸" },
+  outbound_blocked: { label: "Texto bloqueado antes de enviar", icon: "🛑" },
 };
 
 function kindLabel(kind: string): { label: string; icon: string } {

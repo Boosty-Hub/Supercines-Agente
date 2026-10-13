@@ -8,6 +8,19 @@
 //
 // El rango es [start, end) en la hora local del timezone configurado.
 
+/**
+ * Zona horaria por defecto cuando `follow_up_config` todavía no tiene fila
+ * activa. TIENE que coincidir con el default de la columna en la migración
+ * 0020 (`timezone text not null default 'America/Guayaquil'`).
+ *
+ * Vive acá porque estaba escrita a mano en cada llamador y ya había DIVERGIDO:
+ * `follow-up-scan` usaba 'America/Guayaquil' y `alerts-scan` 'America/Caracas',
+ * que son husos distintos. Con una config sin fila, una función creía que era
+ * horario laboral y la otra que no — y de eso dependen tanto los envíos de
+ * seguimiento como la alerta de silencio del webhook.
+ */
+export const DEFAULT_TIMEZONE = "America/Guayaquil";
+
 export type DayRange = { start: string; end: string };
 export type BusinessHoursConfig = {
   timezone: string;

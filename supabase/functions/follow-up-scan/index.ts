@@ -29,6 +29,7 @@ import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
+import { DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
@@ -628,7 +629,7 @@ Deno.serve(async (req: Request) => {
       .select("timezone, run_stage_ids")
       .eq("is_active", true)
       .maybeSingle();
-    const timezone = (cfgRow?.timezone as string) || "America/Guayaquil";
+    const timezone = (cfgRow?.timezone as string) || DEFAULT_TIMEZONE;
     const runStageIds = ((cfgRow?.run_stage_ids as number[] | null) ?? []).map(Number);
     // run_user_ids se lee aparte: si la migración 0041 aún no se aplicó, la columna
     // no existe y el select falla — leerlo en su propio query evita que ese fallo

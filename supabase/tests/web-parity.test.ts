@@ -124,6 +124,27 @@ Deno.test("sessionModelId: lee agent.model (string u objeto) de la sesión; web 
   }
 });
 
+import { maskDestination as maskEdge } from "../functions/_shared/webhook-mask.ts";
+import { maskDestination as maskWeb } from "../../web/src/lib/kommo-webhook.ts";
+
+Deno.test("PARIDAD: maskDestination (secreto del webhook) es idéntica en web y Edge", () => {
+  const casos = [
+    "https://x.supabase.co/functions/v1/kommo-webhook?token=abc123",
+    "https://x/f?secret=zz&a=1",
+    "https://x/f?TOKEN=Q#frag",
+    '{"detail":"destination https://x/f?token=SEC is invalid"}',
+    "sin secreto",
+  ];
+  for (const c of casos) assertEquals(maskEdge(c), maskWeb(c), c);
+  assertEquals(maskEdge(casos[0]).includes("abc123"), false);
+});
+
+Deno.test("alcances: /api/kommo (URL del webhook CON el secreto, rotación) exige configuracion", () => {
+  assertEquals(scopeRequeridoPara("/api/kommo/webhook-auth"), "configuracion");
+  assertEquals(rutaPermitida("contenido", "/api/kommo/webhook-auth"), false);
+  assertEquals(rutaPermitida("operacion", "/api/kommo/reconnect-webhook"), false);
+});
+
 Deno.test("alcances: /api/agent/sync (re-empuja el system prompt a producción) exige configuracion", () => {
   assertEquals(scopeRequeridoPara("/api/agent/sync"), "configuracion");
   assertEquals(rutaPermitida("contenido", "/api/agent/sync"), false);

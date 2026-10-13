@@ -14,6 +14,7 @@
 // se desincronizan, y la que quede vieja es la que deja pasar lo que no debe.
 import { filterOurWebhooks, type KommoWebhookHook } from "./alerts-kommo-webhook.ts";
 import type { IncidentInput } from "./health-incidentes.ts";
+import { maskDestination } from "./webhook-mask.ts";
 
 // ---------------- Webhook de Kommo: sin suscripción o deshabilitado ----------------
 /**
@@ -51,8 +52,9 @@ export function decidirWebhookKommo(
         "Kommo apaga la suscripción tras varias entregas fallidas seguidas. El sistema no recibe leads ni mensajes nuevos, y Kommo no reenvía lo perdido durante el apagón.",
       remedy:
         "Reactivalo desde el botón 'Reconectar webhook' en esta misma franja. Si se vuelve a apagar, revisá primero por qué fallaban las entregas.",
+      // system_incidents la lee cualquier usuario con sesión: el destino va SIN el secreto.
       metadata: {
-        destination: deshabilitados[0]?.destination ?? null,
+        destination: deshabilitados[0]?.destination ? maskDestination(deshabilitados[0].destination) : null,
       },
     };
   }

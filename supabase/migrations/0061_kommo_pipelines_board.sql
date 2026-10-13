@@ -830,6 +830,20 @@ insert into _app_secrets (clave, valor)
 values ('INTERNAL_FUNCTION_SECRET', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''))
 on conflict (clave) do nothing;
 
+-- ¿La petición que ejecuta esto viene de un usuario final (JWT de anon/authenticated
+-- vía PostgREST)? Lee los claims que PostgREST fija por petición, en sus dos formas
+-- (`request.jwt.claim.sub` legado y `request.jwt.claims` JSON), en vez de depender de
+-- auth.uid(), cuya definición cambió entre versiones de Supabase. service_role, pg_cron
+-- y el dueño NO traen `sub` de usuario → false. Es el guard de las funciones SECURITY
+-- DEFINER (que bypasean la RLS): defensa en profundidad además del REVOKE de EXECUTE.
+create or replace function end_user_request()
+returns boolean language sql stable set search_path = public, pg_temp as $$
+  select coalesce(
+           nullif(current_setting('request.jwt.claim.sub', true), ''),
+           nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub'
+         ) is not null
+$$;
+
 -- Headers para que pg_cron (vía pg_net) llame a una Edge Function interna: el
 -- secreto sale de _app_secrets, nunca del SQL ni del repo. SECURITY DEFINER porque
 -- el cron corre con un rol que no lee la tabla; sin ningún EXECUTE para nadie más
@@ -840,6 +854,13 @@ returns jsonb language plpgsql stable security definer set search_path = public,
 declare
   v_secret text;
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   select valor into v_secret from _app_secrets where clave = 'INTERNAL_FUNCTION_SECRET';
   if v_secret is null then
     raise warning 'internal_function_headers: falta INTERNAL_FUNCTION_SECRET en _app_secrets';
@@ -857,6 +878,13 @@ revoke execute on function internal_function_headers() from public, anon, authen
 create or replace function trigger_sync_pipelines()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/sync-pipelines',
     headers := internal_function_headers(),

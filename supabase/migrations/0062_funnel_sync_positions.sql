@@ -41,6 +41,13 @@ grant execute on function reconcile_funnel_lead_positions(jsonb, timestamptz) to
 create or replace function trigger_kommo_funnel_sync()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/kommo-funnel-sync',
     headers := internal_function_headers(),

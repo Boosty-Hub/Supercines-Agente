@@ -60,6 +60,13 @@ declare
   n bigint;
   total bigint;
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   total := 0;
   loop
     delete from public.inbound_queue

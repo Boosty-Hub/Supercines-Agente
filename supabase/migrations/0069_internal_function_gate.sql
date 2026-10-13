@@ -37,6 +37,13 @@
 create or replace function trigger_process_inbound()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/process-inbound',
     headers := internal_function_headers(),
@@ -49,6 +56,13 @@ $$;
 create or replace function trigger_publish_to_kommo()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/publish-to-kommo',
     headers := internal_function_headers(),
@@ -61,6 +75,13 @@ $$;
 create or replace function trigger_evaluate_outcomes()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/evaluate-outcomes',
     headers := internal_function_headers(),
@@ -73,6 +94,13 @@ $$;
 create or replace function trigger_dreams(p_period text)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/dreams-run',
     headers := internal_function_headers(),
@@ -85,6 +113,13 @@ $$;
 create or replace function trigger_alerts_scan()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/alerts-scan',
     headers := internal_function_headers(),
@@ -97,6 +132,13 @@ $$;
 create or replace function trigger_generate_response()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/generate-response',
     headers := internal_function_headers(),
@@ -109,6 +151,13 @@ $$;
 create or replace function trigger_follow_up_scan()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   perform net.http_post(
     url                  := '${SUPABASE_URL}/functions/v1/follow-up-scan',
     headers              := internal_function_headers(),

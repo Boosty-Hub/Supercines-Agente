@@ -37,10 +37,20 @@ create or replace function public.claim_message_batch(
   p_draft_id uuid
 )
 returns integer
-language sql
+language plpgsql
 security definer
 set search_path = public, pg_temp
 as $$
+declare
+  v_ganadas integer;
+begin
+  -- Guard (estándar de seguridad de Boosty): SECURITY DEFINER bypasea la RLS. Solo
+  -- service_role, pg_cron y el dueño (sin claims de usuario en la petición) pueden ejecutarla; un
+  -- usuario con JWT (anon/authenticated) no, aunque algún día alguien le re-otorgue
+  -- EXECUTE por error.
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
   with upd as (
     update public.messages
        set answered_by_draft_id = p_draft_id
@@ -48,7 +58,9 @@ as $$
        and answered_by_draft_id is null
     returning 1
   )
-  select count(*)::int from upd;
+  select count(*)::int into v_ganadas from upd;
+  return v_ganadas;
+end;
 $$;
 
 revoke all on function public.claim_message_batch(uuid[], uuid) from public;

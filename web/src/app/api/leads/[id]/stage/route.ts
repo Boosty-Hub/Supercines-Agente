@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { trustedActorName } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { moveLeadInKommo } from "@/lib/kommo";
 import { createServiceClient } from "@/lib/supabase/service";
@@ -67,8 +68,9 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   // error al usuario (el webhook de Kommo igual va a actualizar la etapa).
   const embedded = stage.kommo_pipelines as unknown as PipelineRef | PipelineRef[] | null;
   const pipelineName = (Array.isArray(embedded) ? embedded[0]?.name : embedded?.name) ?? null;
-  const meta = user.user_metadata as { full_name?: string; name?: string } | null;
-  const who = meta?.full_name ?? meta?.name ?? user.email ?? "usuario";
+  // Autoría de AUDITORÍA: id de auth + nombre de fuentes que el usuario no controla.
+  // user_metadata lo edita el propio usuario (auth.updateUser) y permitía suplantar a otro.
+  const who = trustedActorName(user);
 
   // La posición se escribe por apply_lead_position (0061), que solo ejecuta
   // service_role: este handler ya validó la sesión y el alcance. Fija etapa +
@@ -82,6 +84,7 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
     p_at: new Date().toISOString(),
     p_moved_by: "kommo",
     p_actor_name: `${who} (desde el panel)`,
+    p_actor_user_id: user.id,
     p_to_stage_name: stage.name,
     p_pipeline_name: pipelineName,
   });

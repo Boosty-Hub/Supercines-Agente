@@ -175,15 +175,31 @@ $$;
 revoke execute on function sync_kommo_pipelines(jsonb) from public, anon, authenticated;
 grant execute on function sync_kommo_pipelines(jsonb) to service_role;
 
+-- Marca de orden de eventos OBSERVADOS (aunque no hayan cambiado la posición). Vive aparte
+-- de `leads` a propósito: `leads` está publicada en realtime y casi todos los
+-- leads.update del webhook no cambian etapa; escribir ahí refrescaría todos los inbox.
+create table if not exists lead_position_seen (
+  lead_id uuid primary key references leads(id) on delete cascade,
+  seen_at timestamptz not null
+);
+alter table lead_position_seen enable row level security;
+revoke all on lead_position_seen from anon, authenticated, public;
+
 -- ── 3) Línea de tiempo de etapas: pipeline y actor ───────────────────────────
 alter table lead_stage_events add column if not exists from_pipeline_id bigint;
 alter table lead_stage_events add column if not exists pipeline_id bigint;
 alter table lead_stage_events add column if not exists actor_name text;
+-- Quién fue, por id de auth (no editable por el usuario). actor_name queda como instantánea
+-- de respaldo; la UI resuelve el nombre por este id. on delete set null: borrar al usuario
+-- no borra el historial del lead.
+alter table lead_stage_events add column if not exists actor_user_id uuid references auth.users(id) on delete set null;
 
 comment on column lead_stage_events.pipeline_id is
   'Pipeline de DESTINO del movimiento (to_stage_id). Necesario porque 142/143 existen en todos los pipelines.';
 comment on column lead_stage_events.from_pipeline_id is
   'Pipeline de ORIGEN del movimiento (from_stage_id).';
+comment on column lead_stage_events.actor_user_id is
+  'auth.users.id de quien movió el lead desde el panel. El nombre a mostrar sale de app_metadata/email del usuario (fuentes que él no controla), nunca de user_metadata.';
 comment on column lead_stage_events.actor_name is
   'Quién movió el lead cuando lo hizo una persona desde el panel (moved_by = ''kommo''). NULL para el agente y para los movimientos hechos dentro de Kommo.';
 
@@ -201,6 +217,7 @@ comment on column lead_stage_events.actor_name is
 -- serializa las dos fuentes para que el orden de llegada no importe.
 -- DROP: se agregó p_merge_only (cambia la firma).
 drop function if exists record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int);
+drop function if exists record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean);
 create or replace function record_lead_stage_event(
   p_lead_id          uuid,
   p_from_stage_id    bigint,
@@ -218,7 +235,8 @@ create or replace function record_lead_stage_event(
   -- ninguno, NO insertar (devuelve NULL). Lo usa apply_lead_position cuando la
   -- posición ya estaba aplicada (el eco llegó primero) pero quien movió el lead
   -- (agente o persona del panel) tiene que quedar en la línea de tiempo.
-  p_merge_only       boolean default false
+  p_merge_only       boolean default false,
+  p_actor_user_id    uuid default null
 )
 returns uuid language plpgsql set search_path = public, pg_temp as $$
 declare
@@ -252,6 +270,7 @@ begin
     elsif p_actor_name is not null then
       update lead_stage_events
          set actor_name = coalesce(actor_name, p_actor_name),
+             actor_user_id = coalesce(actor_user_id, p_actor_user_id),
              from_stage_name = coalesce(from_stage_name, p_from_stage_name),
              to_stage_name = coalesce(to_stage_name, p_to_stage_name),
              pipeline_name = coalesce(pipeline_name, p_pipeline_name),
@@ -273,10 +292,10 @@ begin
 
   insert into lead_stage_events (
     lead_id, from_stage_id, from_pipeline_id, to_stage_id, pipeline_id,
-    from_stage_name, to_stage_name, pipeline_name, moved_by, draft_id, actor_name
+    from_stage_name, to_stage_name, pipeline_name, moved_by, draft_id, actor_name, actor_user_id
   ) values (
     p_lead_id, p_from_stage_id, p_from_pipeline_id, p_to_stage_id, p_to_pipeline_id,
-    p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name
+    p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, p_actor_user_id
   )
   returning id into v_id;
   return v_id;
@@ -285,9 +304,9 @@ $$;
 
 -- Interno: lo llama apply_lead_position(). Sin grant a `authenticated` (un usuario
 -- no puede fabricar eventos con moved_by/actor_name a gusto).
-revoke execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean)
+revoke execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean, uuid)
   from public, anon, authenticated;
-grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean)
+grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean, uuid)
   to service_role;
 
 -- ÚNICO camino que escribe la posición (etapa + pipeline) de un lead: webhook de
@@ -311,6 +330,8 @@ grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, 
 --   · 'missing'   el lead no existe.
 -- p_pipeline_id NULL = el webhook no trajo pipeline: no pisa el que hay.
 -- p_at con resolución de segundos (last_modified de Kommo): un empate se aplica.
+-- DROP: se agregó p_actor_user_id (cambia la firma).
+drop function if exists apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text);
 create or replace function apply_lead_position(
   p_lead_id        uuid,
   p_stage_id       bigint,
@@ -321,7 +342,8 @@ create or replace function apply_lead_position(
   p_actor_name     text default null,
   p_from_stage_name text default null,
   p_to_stage_name  text default null,
-  p_pipeline_name  text default null
+  p_pipeline_name  text default null,
+  p_actor_user_id  uuid default null
 )
 returns table (
   outcome           text,
@@ -336,14 +358,30 @@ declare
   v_pipeline bigint;
   v_moved    boolean := false;
   v_event    uuid;
+  v_mark     timestamptz;
 begin
+  -- El instante del evento NO se acepta a ciegas: el webhook es público y Kommo no firma
+  -- (un instante futuro congelaría al lead, ver 0070). Se recorta a now() + 2 min.
+  if p_at > now() + interval '2 minutes' then
+    raise warning 'apply_lead_position: instante % en el futuro (lead %); se usa now()', p_at, p_lead_id;
+    p_at := now();
+  end if;
+  -- UNA sola resolución de orden: segundos. Kommo informa su hora en segundos y el
+  -- agente/panel usan la del servidor con ms; sin normalizar, un movimiento real hecho
+  -- en Kommo en el mismo segundo que uno del panel se descartaría como «viejo».
+  -- (Un empate se aplica.)
+  p_at := date_trunc('second', p_at);
+
   select * into l from leads where id = p_lead_id for update;
   if not found then
     return query select 'missing'::text, false, null::uuid, null::bigint, null::bigint;
     return;
   end if;
 
-  if l.kommo_position_at is not null and p_at < l.kommo_position_at then
+  select greatest(l.kommo_position_at, s.seen_at) into v_mark from lead_position_seen s where s.lead_id = l.id;
+  v_mark := coalesce(v_mark, l.kommo_position_at);
+
+  if v_mark is not null and p_at < v_mark then
     -- Evento viejo: no cambia la posición, pero sigue siendo señal de vida.
     if l.kommo_missing_at is not null then
       update leads set kommo_missing_at = null where id = l.id;
@@ -352,7 +390,7 @@ begin
     if p_moved_by = 'agente' or p_actor_name is not null then
       v_event := record_lead_stage_event(
         l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, coalesce(p_pipeline_id, l.kommo_pipeline_id),
-        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true
+        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true, p_actor_user_id
       );
     end if;
     return query select 'stale'::text, false, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
@@ -373,9 +411,14 @@ begin
     if p_moved_by = 'agente' or p_actor_name is not null then
       v_event := record_lead_stage_event(
         l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, v_pipeline,
-        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true
+        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true, p_actor_user_id
       );
     end if;
+    -- El evento SÍ ocurrió aunque no cambie nada: avanza la marca de orden (en una tabla
+    -- aparte, sin tocar `leads`: un UPDATE ahí refrescaría en vivo todos los inbox). Sin
+    -- esto, un evento más viejo que éste llegado tarde se aplicaría y desharía la posición.
+    insert into lead_position_seen (lead_id, seen_at) values (l.id, p_at)
+    on conflict (lead_id) do update set seen_at = greatest(lead_position_seen.seen_at, excluded.seen_at);
     return query select 'unchanged'::text, false, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
     return;
   end if;
@@ -396,7 +439,7 @@ begin
   if v_moved then
     v_event := record_lead_stage_event(
       l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, v_pipeline,
-      p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, false
+      p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, false, p_actor_user_id
     );
   end if;
   return query select 'applied'::text, v_moved, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
@@ -406,9 +449,9 @@ $$;
 -- Solo service_role: el panel llama a través de rutas del servidor que ya validaron
 -- sesión y alcance; un usuario con la anon key + su JWT no puede fijar posiciones
 -- ni fabricar eventos.
-revoke execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text)
+revoke execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text, uuid)
   from public, anon, authenticated;
-grant execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text)
+grant execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text, uuid)
   to service_role;
 
 do $$
@@ -720,9 +763,21 @@ begin
       from src s
      where l.kommo_lead_id = s.kommo_lead_id
        and (l.kommo_position_at is null or l.kommo_position_at <= p_read_at)
+       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > p_read_at)
        and (l.kommo_pipeline_id is distinct from s.pipeline_id
             or l.kommo_stage_id is distinct from s.status_id
             or l.kommo_missing_at is not null)
+    returning 1
+  ),
+  -- La lectura también es un evento observado (aunque la posición no cambie): una
+  -- actualización más vieja llegada tarde ya no puede deshacerla.
+  seen as (
+    insert into lead_position_seen (lead_id, seen_at)
+    select l.id, p_read_at
+      from leads l join src s on s.kommo_lead_id = l.kommo_lead_id
+     where (l.kommo_position_at is null or l.kommo_position_at <= p_read_at)
+       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > p_read_at)
+    on conflict (lead_id) do update set seen_at = greatest(lead_position_seen.seen_at, excluded.seen_at)
     returning 1
   )
   select count(*)::int into v_updated from upd;
@@ -754,6 +809,7 @@ begin
        and l.kommo_missing_at is null
        and l.created_at < v_started
        and (l.kommo_position_at is null or l.kommo_position_at < v_started)
+       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at >= v_started)
        and not exists (select 1 from kommo_backfill_seen s where s.kommo_lead_id = l.kommo_lead_id)
      order by l.kommo_lead_id
      limit p_limit;

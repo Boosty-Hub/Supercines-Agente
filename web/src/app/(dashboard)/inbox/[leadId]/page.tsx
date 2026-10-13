@@ -6,6 +6,8 @@ import { Badge, EmptyState, MessageSquare } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import { draftText } from "@/lib/draft-text";
 import { fetchLeadStage } from "@/lib/kommo";
+import { displayActor } from "@/lib/auth/actor";
+import { listUsers } from "@/lib/users/admin";
 import { configValue } from "@/lib/runtime-config";
 import {
   initials,
@@ -69,6 +71,7 @@ type StageEventRow = {
   pipeline_name: string | null;
   moved_by: "agente" | "kommo";
   actor_name: string | null;
+  actor_user_id: string | null;
   created_at: string;
 };
 type LeadRow = {
@@ -167,7 +170,7 @@ export default async function ConversationPage(
       supabase
         .from("lead_stage_events")
         .select(
-          "id, from_stage_id, from_pipeline_id, to_stage_id, pipeline_id, from_stage_name, to_stage_name, pipeline_name, moved_by, actor_name, created_at"
+          "id, from_stage_id, from_pipeline_id, to_stage_id, pipeline_id, from_stage_name, to_stage_name, pipeline_name, moved_by, actor_name, actor_user_id, created_at"
         )
         .eq("lead_id", leadId)
         .order("created_at", { ascending: true }),
@@ -200,7 +203,23 @@ export default async function ConversationPage(
     .reverse();
   const draftsByMessage = new Map<string, DraftRow>();
   for (const d of (draftsRes.data ?? []) as unknown as DraftRow[]) draftsByMessage.set(d.message_id, d);
-  const stageEvents = (evtsRes.data ?? []) as StageEventRow[];
+  const rawStageEvents = (evtsRes.data ?? []) as StageEventRow[];
+  // El nombre de quien movió el lead se resuelve por ID desde una fuente que el usuario no
+  // controla (email / app_metadata), no del texto guardado. Si el usuario ya no existe, o la
+  // Admin API no responde, se muestra la instantánea guardada en el evento.
+  const actorIds = new Set(rawStageEvents.map((e) => e.actor_user_id).filter(Boolean));
+  const actorNames = new Map<string, string>();
+  if (actorIds.size > 0) {
+    try {
+      for (const u of await listUsers()) if (actorIds.has(u.id)) actorNames.set(u.id, `${u.name ?? u.email} (desde el panel)`);
+    } catch {
+      /* instantánea */
+    }
+  }
+  const stageEvents = rawStageEvents.map((e) => ({
+    ...e,
+    actor_name: displayActor(e.actor_user_id, e.actor_name, actorNames),
+  }));
   const hasReviewPending = (reviewRes.count ?? 0) > 0;
 
   const agentCfg = toAgentStatusCfg(pubCfg);

@@ -7,6 +7,7 @@
 // server-only: usa la service-role key; no importar desde el cliente.
 
 import { getScope, type Scope } from "@/lib/auth/roles";
+import { appMetadataName } from "@/lib/auth/actor";
 
 function env() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,6 +23,8 @@ function headers(key: string): Record<string, string> {
 export type ManagedUser = {
   id: string;
   email: string;
+  /** Nombre de app_metadata (solo service_role); nunca de user_metadata. */
+  name: string | null;
   scope: Scope;
   created_at: string;
   last_sign_in_at: string | null;
@@ -43,6 +46,7 @@ function toManaged(u: RawUser): ManagedUser {
   return {
     id: u.id,
     email: u.email ?? "",
+    name: appMetadataName(u.app_metadata),
     scope: getScope(u),
     created_at: u.created_at,
     last_sign_in_at: u.last_sign_in_at ?? null,

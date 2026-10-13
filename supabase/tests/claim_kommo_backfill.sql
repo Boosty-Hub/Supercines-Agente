@@ -201,8 +201,8 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
     select 1
       from unnest(array[
         'claim_kommo_backfill(text,int,boolean,int)',
-        'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text)',
-        'record_lead_stage_event(uuid,bigint,bigint,bigint,bigint,text,text,text,text,uuid,text,int,boolean)',
+        'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text,uuid)',
+        'record_lead_stage_event(uuid,bigint,bigint,bigint,bigint,text,text,text,text,uuid,text,int,boolean,uuid)',
         'apply_kommo_lead_positions(jsonb,timestamptz)',
         'kommo_missing_candidates(text,int)',
         'kommo_gap_lead_ids(int)',
@@ -213,7 +213,7 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
       ]) f
      where has_function_privilege('anon', f, 'execute') or has_function_privilege('authenticated', f, 'execute')
         or has_function_privilege('public', f, 'execute'))
-  and has_function_privilege('service_role', 'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text)', 'execute'));
+  and has_function_privilege('service_role', 'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text,uuid)', 'execute'));
 select pg_temp.expect('inbox_lead_summaries sí es del panel', has_function_privilege('authenticated', 'inbox_lead_summaries()', 'execute')
   and not has_function_privilege('anon', 'inbox_lead_summaries()', 'execute'));
 
@@ -280,5 +280,43 @@ update kommo_webhook_auth set mode = 'permissive', strict_since = null, strict_r
 select pg_temp.expect('nunca hubo unsigned: la primera firmada pasa a strict', (select kommo_webhook_note(true)) = 'strict');
 update kommo_webhook_auth set mode = 'permissive', strict_since = null, strict_reason = null, last_unsigned_at = null,
        last_signed_at = null where singleton;
+
+-- 15) W1 (orden con 'unchanged') y actor_user_id (0065 consolidada).
+delete from lead_stage_events where true;
+delete from leads where true;
+insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values
+  ('00000000-0000-0000-0000-0000000000c1', 401, 1, 10);
+-- agente A->B @T5; webhook B @T8 (unchanged, avanza la marca); A @T6 llegado TARDE -> stale
+select apply_lead_position('00000000-0000-0000-0000-0000000000c1', 11, 1, to_timestamp(1000005), 'agente');
+select pg_temp.expect('webhook B@T8 sobre B: unchanged',
+  (select outcome = 'unchanged' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 11, 1, to_timestamp(1000008))));
+select pg_temp.expect('el unchanged avanzo la marca de orden a T8 (sin tocar leads)',
+  (select seen_at = to_timestamp(1000008) from lead_position_seen where lead_id = '00000000-0000-0000-0000-0000000000c1')
+  and (select kommo_position_at = to_timestamp(1000005) from leads where id = '00000000-0000-0000-0000-0000000000c1'));
+select pg_temp.expect('A@T6 tardio es stale: la posicion NO vuelve a A',
+  (select outcome = 'stale' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 10, 1, to_timestamp(1000006))));
+select pg_temp.expect('el lead sigue en B', (select kommo_stage_id = 11 from leads where id = '00000000-0000-0000-0000-0000000000c1'));
+select pg_temp.expect('un evento posterior (T9) si se aplica',
+  (select outcome = 'applied' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 12, 1, to_timestamp(1000009))));
+-- normalizacion a segundos: mismo segundo con ms = empate, se aplica
+select pg_temp.expect('mismo segundo con ms (panel) y Kommo en segundos: no se descarta',
+  (select outcome = 'applied' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 11, 1, to_timestamp(1000009.9))));
+
+-- backfill: una lectura posterior tambien avanza la marca y bloquea un evento viejo tardio
+select apply_kommo_lead_positions('[{"id":401,"pipeline_id":1,"status_id":11}]'::jsonb, to_timestamp(1000020));
+select pg_temp.expect('la lectura (T20) avanzo la marca aunque la posicion no cambio',
+  (select seen_at = to_timestamp(1000020) from lead_position_seen where lead_id = '00000000-0000-0000-0000-0000000000c1'));
+select pg_temp.expect('un webhook de T12 llegado despues de la lectura T20 es stale',
+  (select outcome = 'stale' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 12, 1, to_timestamp(1000012))));
+
+-- actor_user_id: queda en el evento y borrar al usuario no borra el historial
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000d1') on conflict do nothing;
+select apply_lead_position('00000000-0000-0000-0000-0000000000c1', 13, 1, to_timestamp(1000030), 'kommo', null,
+  'ana@x.com (desde el panel)', null, 'Etapa 13', null, '00000000-0000-0000-0000-0000000000d1');
+select pg_temp.expect('el evento guarda actor_user_id',
+  (select count(*) = 1 from lead_stage_events where actor_user_id = '00000000-0000-0000-0000-0000000000d1'));
+delete from auth.users where id = '00000000-0000-0000-0000-0000000000d1';
+select pg_temp.expect('borrar al usuario deja el evento con actor_user_id NULL y el nombre de respaldo',
+  (select actor_user_id is null and actor_name like 'ana@x.com%' from lead_stage_events where to_stage_id = 13));
 
 rollback;

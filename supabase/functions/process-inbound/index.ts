@@ -16,7 +16,14 @@ import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
-import { expiredClassificationUpdate, recoverWindowHours } from "../_shared/classify-recovery.ts";
+import {
+  EXPIRED_ALERT_DEDUPE_HOURS,
+  EXPIRED_ALERT_SOURCE,
+  expiredAlertPlan,
+  expiredClassificationUpdate,
+  expireSelectionRange,
+  recoverWindowHours,
+} from "../_shared/classify-recovery.ts";
 import { isCreditError, isTransientProviderError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -1526,9 +1533,15 @@ const RECOVER_MAX_ATTEMPTS = 5;
 // de frescura): sin esto, un fallo transitorio sostenido reintentaba para siempre.
 
 // Mensajes con clasificacion fallida cuya ventana de recuperacion vencio: revision humana +
-// error explicito (prefijo "recover:", que los saca del select) + UNA alerta por barrido.
+// error explicito (prefijo "recover:", que los saca del select) + alerta agregada.
+//  - Franja acotada (expireSelectionRange): solo los vencidos hace menos de
+//    RECOVER_EXPIRE_GRACE_DAYS; el historico mas viejo se ignora sin tocarlo.
+//  - UPDATE condicional: sigue sin vertical y su error NO es "recover:" (otro barrido
+//    concurrente pudo vencerlo ya); se cuenta lo que de verdad cambio.
+//  - UNA alerta por ventana de EXPIRED_ALERT_DEDUPE_HOURS (expiredAlertPlan): si hay una
+//    sin reconocer reciente, se le suma el conteo en vez de insertar otra.
 async function expireStaleFailedClassifications(windowHours: number): Promise<void> {
-  const cutoff = new Date(Date.now() - windowHours * 3600_000).toISOString();
+  const { fromIso, toIso } = expireSelectionRange(Date.now(), windowHours);
   const { data: stale, error } = await supabase
     .from("messages")
     .select("id, lead_id, classification")
@@ -1537,30 +1550,39 @@ async function expireStaleFailedClassifications(windowHours: number): Promise<vo
     .is("vertical_id", null)
     .not("classification->error", "is", null)
     .not("classification->>error", "like", "recover:%")
-    .lt("created_at", cutoff)
+    .gte("created_at", fromIso)
+    .lt("created_at", toIso)
     .limit(50);
   if (error || !stale || stale.length === 0) return;
   let expired = 0;
   for (const m of stale) {
-    const { error: upErr } = await supabase
+    const { data: changed, error: upErr } = await supabase
       .from("messages")
       .update(expiredClassificationUpdate(m.classification, windowHours))
       .eq("id", m.id)
-      .is("vertical_id", null);
-    if (!upErr) expired++;
+      .is("vertical_id", null)
+      .not("classification->>error", "like", "recover:%")
+      .select("id");
+    if (!upErr && changed && changed.length > 0) expired++;
   }
   if (expired === 0) return;
   console.warn(`recover classify: ${expired} mensaje(s) con la ventana de ${windowHours} h vencida -> revision humana`);
-  await supabase.from("alerts").insert({
-    kind: "human_review_needed",
-    severity: "warning",
-    title: `${expired} mensaje(s) quedaron sin clasificar y pasaron a revision humana`,
-    description:
-      `El proveedor de IA fallo mas de ${windowHours} h seguidas (answer_max_age_hours), asi que el agente ya no puede ` +
-      "responder esos mensajes por su cuenta. Revisalos en el inbox y responde a mano si corresponde.",
-    ref_table: "messages",
-    metadata: { expired, window_hours: windowHours },
-  });
+  const since = new Date(Date.now() - EXPIRED_ALERT_DEDUPE_HOURS * 3_600_000).toISOString();
+  const { data: prevAlert } = await supabase
+    .from("alerts")
+    .select("id, metadata")
+    .eq("kind", "human_review_needed")
+    .eq("metadata->>source", EXPIRED_ALERT_SOURCE)
+    .is("acknowledged_at", null)
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const plan = expiredAlertPlan(prevAlert ?? null, expired, windowHours);
+  const { error: alertErr } = plan.action === "insert"
+    ? await supabase.from("alerts").insert(plan.row)
+    : await supabase.from("alerts").update(plan.patch).eq("id", plan.id);
+  if (alertErr) console.warn("recover classify: no se pudo registrar la alerta:", alertErr.message);
 }
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {

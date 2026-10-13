@@ -11,6 +11,98 @@
 
 export const RECOVER_FALLBACK_MAX_AGE_HOURS = 24;
 
+/**
+ * Cota INFERIOR del barrido de vencidos: solo se vencen mensajes de hasta
+ * (ventana + RECOVER_EXPIRE_GRACE_DAYS) de antigüedad. Los más viejos se IGNORAN sin
+ * tocarlos (siguen como estaban, sin revisión humana ni alerta).
+ *
+ * Por qué: el barrido corre cada minuto, así que en régimen todo mensaje fallido pasa por
+ * la franja [ventana, ventana + 3 días] y se vence ahí. Sin cota, el primer barrido tras
+ * el despliegue tomaba TODO el histórico con classification.error (meses) y lo mandaba a
+ * revisión humana: conversaciones muertas hace semanas inundando el inbox y las alertas.
+ * Los 3 días cubren un cron caído o un sistema pausado durante un fin de semana largo.
+ */
+export const RECOVER_EXPIRE_GRACE_DAYS = 3;
+
+/**
+ * Franja de created_at que el barrido de vencidos puede tocar: [from, to).
+ * `to` = ahora - ventana (venció); `from` = `to` - RECOVER_EXPIRE_GRACE_DAYS.
+ */
+export function expireSelectionRange(nowMs: number, windowHours: number): { fromIso: string; toIso: string } {
+  const toMs = nowMs - windowHours * 3_600_000;
+  const fromMs = toMs - RECOVER_EXPIRE_GRACE_DAYS * 24 * 3_600_000;
+  return { fromIso: new Date(fromMs).toISOString(), toIso: new Date(toMs).toISOString() };
+}
+
+/** Marca de la alerta agregada del barrido (metadata.source) para deduplicarla. */
+export const EXPIRED_ALERT_SOURCE = "recover_expired";
+/**
+ * Una alerta agregada por ventana de EXPIRED_ALERT_DEDUPE_HOURS: si ya hay una SIN
+ * reconocer de esta fuente creada en ese lapso, el barrido suma a esa (no inserta otra).
+ * El cron pasa cada minuto: sin dedupe, una caída larga del proveedor generaba una alerta
+ * por minuto (y cada una iba a Slack).
+ */
+export const EXPIRED_ALERT_DEDUPE_HOURS = 6;
+
+export type ExpiredAlertRow = {
+  kind: "human_review_needed";
+  severity: "warning";
+  title: string;
+  description: string;
+  ref_table: "messages";
+  metadata: { source: string; expired: number; window_hours: number };
+};
+
+function expiredAlertText(expired: number, windowHours: number) {
+  return {
+    title: `${expired} mensaje(s) quedaron sin clasificar y pasaron a revision humana`,
+    description:
+      `El proveedor de IA fallo mas de ${windowHours} h seguidas (answer_max_age_hours), asi que el agente ya no puede ` +
+      "responder esos mensajes por su cuenta. Revisalos en el inbox y responde a mano si corresponde.",
+  };
+}
+
+/**
+ * Qué hacer con la alerta agregada tras vencer `expired` mensajes. `existing` = la alerta
+ * sin reconocer de esta fuente creada en las últimas EXPIRED_ALERT_DEDUPE_HOURS (o null).
+ * Con una existente se ACTUALIZA sumando el conteo (el panel muestra el total, sin un
+ * aviso nuevo); sin ella se inserta una.
+ */
+export function expiredAlertPlan(
+  existing: { id: string; metadata: unknown } | null,
+  expired: number,
+  windowHours: number,
+):
+  | { action: "insert"; row: ExpiredAlertRow }
+  | { action: "update"; id: string; patch: Pick<ExpiredAlertRow, "title" | "description" | "metadata"> } {
+  if (existing) {
+    const meta = (existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}) as Record<
+      string,
+      unknown
+    >;
+    const prev = Number(meta.expired);
+    const total = (Number.isFinite(prev) && prev > 0 ? prev : 0) + expired;
+    return {
+      action: "update",
+      id: existing.id,
+      patch: {
+        ...expiredAlertText(total, windowHours),
+        metadata: { source: EXPIRED_ALERT_SOURCE, expired: total, window_hours: windowHours },
+      },
+    };
+  }
+  return {
+    action: "insert",
+    row: {
+      kind: "human_review_needed",
+      severity: "warning",
+      ...expiredAlertText(expired, windowHours),
+      ref_table: "messages",
+      metadata: { source: EXPIRED_ALERT_SOURCE, expired, window_hours: windowHours },
+    },
+  };
+}
+
 /** Ventana efectiva de recuperación en horas (0 = sin límite de frescura → tope de respaldo). */
 export function recoverWindowHours(answerMaxAgeHours: number): number {
   return answerMaxAgeHours > 0 ? answerMaxAgeHours : RECOVER_FALLBACK_MAX_AGE_HOURS;

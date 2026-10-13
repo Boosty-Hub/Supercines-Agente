@@ -104,19 +104,9 @@ async function archivosFuente(): Promise<Array<{ name: string; code: string }>> 
   return out;
 }
 
-Deno.test("PARIDAD: ningún camino escribe texto a Kommo sin pasar por outbound.ts (patchLeadField/patchContactField)", async () => {
-  for (const f of await archivosFuente()) {
-    assert(!/\bpatch(Lead|Contact)Field\s*\(/.test(f.code), `${f.name}: llama a patchLeadField/patchContactField directo (usar writeClientText o writeCrmField de _shared/outbound.ts)`);
-  }
-});
-
-Deno.test("PARIDAD: quien dispara un salesbot de texto al cliente verifica antes con writeClientText", async () => {
-  for (const f of await archivosFuente()) {
-    if (/\brunSalesbot\s*\(/.test(f.code)) {
-      assert(/\bwriteClientText\s*\(/.test(f.code), `${f.name}: dispara runSalesbot sin writeClientText`);
-    }
-  }
-});
+// La paridad de los sinks de texto (patchLeadField/patchContactField/runSalesbot, fetch mutantes a
+// Kommo) se prueba por FUNCIÓN y por LLAMADA con el AST en web/src/lib/outbound-parity.test.ts
+// (cubre supabase/functions Y web/src); acá quedan las comprobaciones por canal.
 
 Deno.test("PARIDAD: publish-to-kommo / follow-up-scan / generate-response verifican cada canal que sacan", async () => {
   const por = Object.fromEntries((await archivosFuente()).map((f) => [f.name, f.code]));

@@ -50,7 +50,7 @@ export async function POST() {
     const res = await fetch(`${supabaseUrl}/functions/v1/sync-pipelines`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": secret.valor as string },
-      body: "{}",
+      body: JSON.stringify({ restart: true }), // el botón reconcilia todos los leads
       cache: "no-store",
       signal: AbortSignal.timeout(20_000),
     });

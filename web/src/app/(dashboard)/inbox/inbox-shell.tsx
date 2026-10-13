@@ -475,8 +475,8 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
               </nav>
               {pipelineId === SIN_UBICAR && (
                 <p className="border-b border-neutral-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
-                  Estos leads todavía no tienen pipeline asignado. Se completa solo al sincronizar con Kommo (cada 10
-                  minutos, o ahora con «Sincronizar»).
+                  Estos leads no tienen pipeline asignado todavía o están en un pipeline archivado en Kommo. Lo primero se
+                  completa solo al sincronizar con Kommo (cada 10 minutos, o ahora con «Sincronizar»).
                 </p>
               )}
               {pipelines.length === 0 && (

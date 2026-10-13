@@ -13,7 +13,8 @@
 //   1. Refresca pipelines + etapas (UNA llamada a Kommo) → sync_kommo_pipelines().
 //      Kommo no avisa por webhook cuando se crea/renombra una etapa: esta es la
 //      única forma de enterarse. Mínimo 30 s entre refrescos por instancia.
-//   2. Si el backfill no está 'done', reclama el lease (claim_kommo_backfill) y
+//   2. Si el backfill no está 'done' (o quedaron leads sin pipeline y pasó más
+//      de 1 h desde que terminó, o el panel pidió `restart`), reclama el lease (claim_kommo_backfill) y
 //      recorre /api/v4/leads por páginas, aplicando solo lo que cambió. Es
 //      reanudable (cursor persistido tras cada página) y respeta el rate limit
 //      de Kommo (ver _shared/backfill-positions.ts).
@@ -74,10 +75,36 @@ async function syncPipelines(domain: string, token: string): Promise<PipelinesRe
   }
 }
 
-async function runBackfill(domain: string, token: string): Promise<BackfillProgress | "not_claimed"> {
+/** Un backfill terminado se reabre si quedaron leads sin pipeline, pero no más de 1 vez por hora. */
+const GAP_REOPEN_MS = 60 * 60_000;
+
+/**
+ * ¿Hay que reabrir un backfill 'done'? Leads que nacieron después de que
+ * terminó (el webhook de su alta no traía pipeline) quedarían sin ubicar para
+ * siempre. Los leads borrados en Kommo también cuentan como hueco: por eso el
+ * tope de 1 vez por hora, para no recorrer Kommo cada 10 min por ellos.
+ */
+async function hasPositionGaps(): Promise<boolean> {
+  const { data: state } = await supabase
+    .from("kommo_backfill")
+    .select("status, finished_at")
+    .eq("job", JOB)
+    .maybeSingle();
+  if (!state || state.status !== "done") return false;
+  if (state.finished_at && Date.now() - Date.parse(state.finished_at as string) < GAP_REOPEN_MS) return false;
+  const { data: gap } = await supabase.from("leads").select("id").is("kommo_pipeline_id", null).limit(1);
+  return (gap?.length ?? 0) > 0;
+}
+
+async function runBackfill(
+  domain: string,
+  token: string,
+  forceRestart: boolean
+): Promise<BackfillProgress | "not_claimed"> {
   const { data: claimed, error } = await supabase.rpc("claim_kommo_backfill", {
     p_job: JOB,
     p_lease_seconds: LEASE_SECONDS,
+    p_restart: forceRestart || (await hasPositionGaps()),
   });
   if (error) throw new Error(`claim_kommo_backfill: ${error.message}`);
   const row = (claimed as Array<{ next_page: number; scanned: number; updated: number }> | null)?.[0];
@@ -134,12 +161,16 @@ Deno.serve(async (req: Request) => {
     if (!domain || !token) return json({ ok: true, skipped: "kommo_not_configured" });
 
     const pipelines = await syncPipelines(domain, token);
+    // `restart` lo manda SOLO el servidor del panel («Sincronizar»), ya con el
+    // secreto interno validado: reconcilia todos los leads contra Kommo.
+    const body = await req.json().catch(() => ({}));
+    const restart = (body as { restart?: unknown })?.restart === true;
 
     // El recorrido de leads puede tardar: va en segundo plano y esta respuesta
     // sale ya, con el resultado del refresco de pipelines.
     const backfill = (async () => {
       try {
-        const r = await runBackfill(domain, token);
+        const r = await runBackfill(domain, token, restart);
         console.log("sync-pipelines backfill:", JSON.stringify(r));
       } catch (e) {
         console.error("sync-pipelines backfill:", e);

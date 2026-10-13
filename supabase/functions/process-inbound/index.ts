@@ -498,8 +498,9 @@ async function applyLeadPosition(
 }
 
 // leads.update / leads.status: solo importan los que traen etapa. Un lead que
-// todavía no capturamos (sin mensajes) se ignora: no hay nada que sincronizar y
-// el backfill (sync-pipelines) lo trae si llega a necesitarse.
+// todavía no capturamos (sin mensajes) se ignora: no hay nada que sincronizar.
+// Cuando llegue su primer mensaje se crea con lo que traiga el payload y, si
+// quedó sin pipeline, sync-pipelines lo completa (ver "huecos" en esa función).
 //
 // Costo (SuperCines: los Salesbots escriben custom fields todo el día, así que
 // casi todos los leads.update son de otros campos): UNA sola consulta por
@@ -1002,12 +1003,11 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // status_id del payload. OJO: en un webhook `message.add` Kommo NO manda
       // `leads.add`, así que esto es undefined casi siempre; la etapa real se
       // resuelve más abajo contra la API (ver fetchLeadState).
-      const stageId = payload.leads?.add?.[0]?.status_id
-        ? Number(payload.leads.add[0].status_id)
-        : undefined;
-      const pipelineId = payload.leads?.add?.[0]?.pipeline_id
-        ? Number(payload.leads.add[0].pipeline_id)
-        : undefined;
+      // La etapa/pipeline del payload solo vale para el lead al que pertenece:
+      // el `leads.add[0]` de un payload ajeno no se le aplica a este mensaje.
+      const addedLead = payload.leads?.add?.find((l) => Number(l.id) === leadKommoId);
+      const stageId = addedLead?.status_id ? Number(addedLead.status_id) : undefined;
+      const pipelineId = addedLead?.pipeline_id ? Number(addedLead.pipeline_id) : undefined;
       const leadId = await upsertLead(leadKommoId, {
         name: isInbound ? m.author?.name : undefined,
         channel,

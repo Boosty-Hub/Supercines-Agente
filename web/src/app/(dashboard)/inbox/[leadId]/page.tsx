@@ -341,10 +341,29 @@ async function LiveStageAndStatus({
     if (live) {
       stageId = live.statusId;
       pipelineId = live.pipelineId ?? pipelineId;
-      if (live.statusId !== lead.kommo_stage_id || (live.pipelineId != null && live.pipelineId !== lead.kommo_pipeline_id)) {
+      const changed =
+        live.statusId !== lead.kommo_stage_id ||
+        (live.pipelineId != null && live.pipelineId !== lead.kommo_pipeline_id);
+      if (changed) {
         const patch: Record<string, unknown> = { kommo_stage_id: live.statusId };
         if (live.pipelineId != null) patch.kommo_pipeline_id = live.pipelineId;
         await supabase.from("leads").update(patch).eq("id", lead.id);
+        // Si había etapa previa fue un movimiento hecho en Kommo que el webhook
+        // todavía no trajo: se registra por la misma vía que el resto (la base lo
+        // une al eco cuando llegue, sin duplicarlo).
+        if (lead.kommo_stage_id != null) {
+          await supabase.rpc("record_lead_stage_event", {
+            p_lead_id: lead.id,
+            p_from_stage_id: lead.kommo_stage_id,
+            p_from_pipeline_id: lead.kommo_pipeline_id,
+            p_to_stage_id: live.statusId,
+            p_to_pipeline_id: live.pipelineId ?? lead.kommo_pipeline_id,
+            p_from_stage_name: null,
+            p_to_stage_name: null,
+            p_pipeline_name: null,
+            p_moved_by: "kommo",
+          });
+        }
       }
     }
   }

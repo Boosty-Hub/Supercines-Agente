@@ -11,11 +11,15 @@
 //   · el hash del system vivo no coincide con el último sincronizado → CONFLICTO;
 //   · la versión viva es MAYOR que la registrada (alguien subió una versión por
 //     fuera, aunque el texto coincida) → CONFLICTO;
-//   · primera vez (sin hash registrado): conflicto si lo vivo difiere de lo que se
-//     enviaría. Un agente que ya coincide se adopta sin preguntar.
+//   · primera vez (sin hash registrado: clientes que actualizan): se compara SOLO el
+//     prompt del OPERADOR vivo contra el de la DB (con placeholders sustituidos). El
+//     scaffold/tools son del código: si el operador coincide, se adopta sin preguntar
+//     (el push siguiente actualiza el scaffold y registra el hash).
 // En conflicto NO se sincroniza: se devuelve el diff y el usuario elige explícitamente
 // importar el vivo a la DB o sobrescribir con el de la DB.
 import { createHash } from "node:crypto";
+import type { PlaceholderValues } from "./agent-prompt.ts";
+import { placeholderize, type PlaceholderizeResult } from "./prompt-placeholders.ts";
 
 /** El system se compara sin diferencias de fin de línea ni espacios en los extremos. */
 function normalize(s: string): string {
@@ -38,6 +42,16 @@ export function extractOperatorPrompt(system: string): string | null {
   const s = normalize(system);
   const i = s.indexOf(SCAFFOLD_MARKER);
   return i < 0 ? null : s.slice(0, i).trim();
+}
+
+/**
+ * La parte del scaffold (desde el `---` que lo separa del operador) de un system
+ * compuesto. null si no se encuentra el marcador.
+ */
+export function extractScaffold(system: string): string | null {
+  const s = normalize(system);
+  const i = s.indexOf(SCAFFOLD_MARKER);
+  return i < 0 ? null : s.slice(i).trim();
 }
 
 export type DiffLine = { type: "same" | "add" | "del"; text: string };
@@ -78,16 +92,43 @@ export type PromptConflictKind =
   | "prompt_changed"
   /** Alguien subió una versión del agente por fuera (el texto puede coincidir). */
   | "version_ahead"
-  /** Primera sincronización (sin hash registrado) y lo vivo difiere de lo que se enviaría. */
+  /** Primera sincronización (sin hash registrado) y el prompt de OPERADOR vivo difiere del de la DB. */
   | "first_sync_differs";
+
+/**
+ * QUÉ difiere exactamente (para que la UI no mezcle el prompt del operador con el scaffold):
+ *  · operator: solo el prompt del operador;
+ *  · scaffold: el prompt del operador es IDÉNTICO y lo que cambió es el scaffold/instrucciones
+ *    del sistema (incluye el bloque de acciones CRM, derivado de las tools);
+ *  · both: ambos;
+ *  · none: el texto es idéntico (solo cambió la versión);
+ *  · unknown: el system vivo no conserva el scaffold esperado → no se puede separar; el diff es del system completo.
+ */
+export type ConflictScope = "operator" | "scaffold" | "both" | "none" | "unknown";
 
 export type PromptConflict = {
   kind: PromptConflictKind;
+  scope: ConflictScope;
+  /** Texto para el usuario que dice EXACTAMENTE qué difiere (lo arma conflictMessage). */
+  message: string;
   live: { version: number | null; operatorPrompt: string | null };
   db: { version: number | null; operatorPrompt: string | null };
-  /** Prompt vivo (izquierda, `del`) contra el que se enviaría desde la DB (derecha, `add`). */
+  /**
+   * Diff del prompt del OPERADOR (izquierda `del` = vivo, derecha `add` = el de la DB) o,
+   * si scope = unknown, del system completo.
+   */
   diff: DiffLine[];
+  /** Diff del scaffold (vivo vs el que se enviaría); null si es igual o no se pudo separar. */
+  scaffoldDiff: DiffLine[] | null;
+  /**
+   * Qué quedaría en SYSTEM_PROMPT al «importar el vivo» (con los placeholders conocidos
+   * restituidos) y qué valores quedaron ambiguos y NO se tocaron. null si no se puede importar.
+   */
+  importPreview: (PlaceholderizeResult & { changed: boolean }) | null;
 };
+
+const sameText = (a: string, b: string) => normalize(a) === normalize(b);
+const hasChange = (d: DiffLine[]) => d.some((l) => l.type !== "same");
 
 export function detectPromptConflict(input: {
   /** system del agente vivo (retrieveAgent). */
@@ -99,41 +140,83 @@ export function detectPromptConflict(input: {
   registeredVersion: number | null;
   /** El system que se enviaría ahora (composeSystem con el prompt de la DB). */
   composedSystem: string;
+  /** Valores de los placeholders (para re-placeholderizar al importar). Sin ellos no se restituye nada. */
+  placeholderValues?: PlaceholderValues;
 }): PromptConflict | null {
-  const { liveSystem, liveVersion, syncedHash, registeredVersion, composedSystem } = input;
+  const { liveSystem, liveVersion, syncedHash, registeredVersion, composedSystem, placeholderValues } = input;
   // Sin system vivo no hay nada que sobrescribir.
   if (!liveSystem || !normalize(liveSystem)) return null;
 
-  const liveHash = hashPrompt(liveSystem);
+  const liveOp = extractOperatorPrompt(liveSystem);
+  const dbOp = extractOperatorPrompt(composedSystem);
+  const liveScaffold = extractScaffold(liveSystem);
+  const dbScaffold = extractScaffold(composedSystem);
+  const separable = liveOp !== null && dbOp !== null && liveScaffold !== null && dbScaffold !== null;
+  const operatorDiffers = separable && !sameText(liveOp, dbOp);
+  const scaffoldDiffers = separable && !sameText(liveScaffold, dbScaffold);
+
   let kind: PromptConflictKind | null = null;
   if (syncedHash) {
-    if (liveHash !== syncedHash) kind = "prompt_changed";
-    else if (liveVersion != null && registeredVersion != null && liveVersion > registeredVersion) kind = "version_ahead";
-  } else if (liveHash !== hashPrompt(composedSystem)) {
+    const liveHash = hashPrompt(liveSystem);
+    // Si lo vivo ya ES lo que se enviaría (p. ej. un push anterior cuyo registro de hash no
+    // llegó a guardarse) sobrescribir no pierde nada: no hay nada que decidir.
+    if (liveHash !== syncedHash) {
+      if (liveHash === hashPrompt(composedSystem)) return null;
+      kind = "prompt_changed";
+    } else if (liveVersion != null && registeredVersion != null && liveVersion > registeredVersion) kind = "version_ahead";
+  } else if (separable) {
+    // Primera vez: solo el prompt del operador decide. El scaffold lo gobierna el código.
+    if (operatorDiffers) kind = "first_sync_differs";
+  } else if (hashPrompt(liveSystem) !== hashPrompt(composedSystem)) {
     kind = "first_sync_differs";
   }
   if (!kind) return null;
 
-  const liveOp = extractOperatorPrompt(liveSystem);
-  const dbOp = extractOperatorPrompt(composedSystem);
-  return {
+  const scope: ConflictScope = !separable
+    ? "unknown"
+    : operatorDiffers && scaffoldDiffers
+      ? "both"
+      : operatorDiffers
+        ? "operator"
+        : scaffoldDiffers
+          ? "scaffold"
+          : "none";
+
+  const scaffoldDiff = separable && scaffoldDiffers ? lineDiff(liveScaffold, dbScaffold) : null;
+  let importPreview: PromptConflict["importPreview"] = null;
+  if (liveOp !== null) {
+    const p = placeholderValues ? placeholderize(liveOp, placeholderValues) : { text: liveOp, replaced: [], ambiguous: [] };
+    importPreview = { ...p, changed: p.replaced.length > 0 };
+  }
+  const conflict: PromptConflict = {
     kind,
+    scope,
+    message: "",
     live: { version: liveVersion, operatorPrompt: liveOp },
     db: { version: registeredVersion, operatorPrompt: dbOp },
-    // Si se pudo separar el prompt del operador se compara solo eso (lo que el
-    // operador edita); si no, el system completo.
-    diff: lineDiff(liveOp ?? liveSystem, dbOp ?? composedSystem),
+    diff: separable ? lineDiff(liveOp, dbOp) : lineDiff(liveSystem, composedSystem),
+    scaffoldDiff,
+    importPreview,
   };
+  conflict.message = conflictMessage(conflict);
+  return conflict;
 }
 
-/** Texto para el usuario (español) según el tipo de conflicto. */
+/** Texto para el usuario (español): dice EXACTAMENTE qué difiere. */
 export function conflictMessage(c: PromptConflict): string {
+  const que: Record<ConflictScope, string> = {
+    operator: "Difiere el prompt del operador.",
+    scaffold: "El prompt del operador es idéntico; lo que difiere son las instrucciones del sistema (scaffold / acciones de herramientas) del agente vivo.",
+    both: "Difieren el prompt del operador y las instrucciones del sistema (scaffold / acciones de herramientas).",
+    none: "El texto del prompt es el mismo.",
+    unknown: "El system del agente vivo no conserva la estructura esperada (prompt del operador + instrucciones del sistema): se muestra el system completo.",
+  };
   switch (c.kind) {
     case "version_ahead":
-      return "El agente en Anthropic tiene una versión más nueva que la última sincronizada desde el dashboard: alguien lo modificó por fuera.";
+      return `El agente en Anthropic tiene una versión más nueva que la última sincronizada desde el dashboard: alguien lo modificó por fuera. ${que[c.scope]}`;
     case "first_sync_differs":
-      return "El prompt del agente en Anthropic es distinto del que enviaría el dashboard y no hay una sincronización previa registrada para saber cuál es el correcto.";
+      return `No hay una sincronización previa registrada y el prompt del OPERADOR en Anthropic es distinto del de la plataforma. ${que[c.scope]}`;
     default:
-      return "El prompt del agente fue modificado fuera del dashboard (consola de Anthropic u otra herramienta).";
+      return `El agente fue modificado fuera del dashboard (consola de Anthropic u otra herramienta). ${que[c.scope]}`;
   }
 }

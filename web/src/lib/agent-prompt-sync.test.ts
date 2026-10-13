@@ -98,6 +98,120 @@ test("extractOperatorPrompt separa el prompt del operador del scaffold, y devuel
   assert.equal(extractOperatorPrompt("un system sin el scaffold del sistema"), null);
 });
 
+// ─── W3(b): primera sincronización (clientes existentes sin AGENT_PROMPT_SYNCED_HASH) ───
+
+const OLD_SCAFFOLD = "---\n\n## Flujo obligatorio antes de redactar\n\nPasos VIEJOS del sistema.\n";
+const NEW_SCAFFOLD = "---\n\n## Flujo obligatorio antes de redactar\n\nPasos NUEVOS del sistema.\nAcciones CRM.\n";
+
+test("PRIMERA vez, mismo prompt de operador con scaffold distinto: se adopta, NO hay conflicto", () => {
+  const c = detectPromptConflict({
+    liveSystem: compose("Sos Acme.\nTono cálido.", OLD_SCAFFOLD),
+    liveVersion: 4,
+    syncedHash: undefined,
+    registeredVersion: 4,
+    composedSystem: compose("Sos Acme.\nTono cálido.", NEW_SCAFFOLD),
+  });
+  assert.equal(c, null);
+});
+
+test("PRIMERA vez, operador distinto: el diff es SOLO del operador y el scaffold va aparte", () => {
+  const c = detectPromptConflict({
+    liveSystem: compose("Sos Acme.\nTono formal.", OLD_SCAFFOLD),
+    liveVersion: 4,
+    syncedHash: undefined,
+    registeredVersion: null,
+    composedSystem: compose("Sos Acme.\nTono cálido.", NEW_SCAFFOLD),
+  });
+  assert.ok(c);
+  assert.equal(c.kind, "first_sync_differs");
+  assert.equal(c.scope, "both");
+  assert.deepEqual(c.diff.filter((l) => l.type === "del").map((l) => l.text), ["Tono formal."]);
+  assert.deepEqual(c.diff.filter((l) => l.type === "add").map((l) => l.text), ["Tono cálido."]);
+  assert.ok(c.diff.every((l) => !l.text.includes("Pasos")));
+  assert.ok(c.scaffoldDiff && c.scaffoldDiff.some((l) => l.text.includes("Pasos VIEJOS")));
+  assert.match(c.message, /prompt del OPERADOR/);
+  assert.match(c.message, /Difieren el prompt del operador y las instrucciones del sistema/);
+});
+
+test("PRIMERA vez, solo operador distinto (scaffold igual): scope=operator, sin scaffoldDiff", () => {
+  const c = detectPromptConflict({
+    liveSystem: compose("A"),
+    liveVersion: 1,
+    syncedHash: null,
+    registeredVersion: null,
+    composedSystem: compose("B"),
+  });
+  assert.ok(c);
+  assert.equal(c.scope, "operator");
+  assert.equal(c.scaffoldDiff, null);
+  assert.match(c.message, /Difiere el prompt del operador\./);
+});
+
+test("PRIMERA vez con system vivo sin el scaffold esperado: scope=unknown con el system completo", () => {
+  const c = detectPromptConflict({
+    liveSystem: "Un system escrito a mano, sin estructura del sistema",
+    liveVersion: 2,
+    syncedHash: undefined,
+    registeredVersion: null,
+    composedSystem: compose("Sos Acme."),
+  });
+  assert.ok(c);
+  assert.equal(c.scope, "unknown");
+  assert.equal(c.importPreview, null);
+  assert.match(c.message, /no conserva la estructura esperada/);
+});
+
+test("CON hash, operador idéntico pero scaffold editado por fuera: scope=scaffold y lo dice", () => {
+  const sent = compose("Sos Acme.", OLD_SCAFFOLD);
+  const edited = compose("Sos Acme.", OLD_SCAFFOLD.replace("VIEJOS", "TOCADOS"));
+  const c = detectPromptConflict({
+    liveSystem: edited,
+    liveVersion: 6,
+    syncedHash: hashPrompt(sent),
+    registeredVersion: 5,
+    composedSystem: compose("Sos Acme.", NEW_SCAFFOLD),
+  });
+  assert.ok(c);
+  assert.equal(c.kind, "prompt_changed");
+  assert.equal(c.scope, "scaffold");
+  assert.equal(c.diff.every((l) => l.type === "same"), true);
+  assert.ok(c.scaffoldDiff && c.scaffoldDiff.some((l) => l.type === "del" && l.text.includes("TOCADOS")));
+  assert.match(c.message, /operador es idéntico/);
+});
+
+test("CON hash viejo pero lo vivo ya es exactamente lo que se enviaría: sin conflicto (no se pierde nada)", () => {
+  const same = compose("Sos Acme.", NEW_SCAFFOLD);
+  assert.equal(
+    detectPromptConflict({
+      liveSystem: same,
+      liveVersion: 9,
+      syncedHash: hashPrompt(compose("otro")),
+      registeredVersion: 8,
+      composedSystem: same,
+    }),
+    null,
+  );
+});
+
+// ─── W6: la vista previa de import_live re-placeholderiza ───
+
+test("el conflicto trae importPreview con los placeholders restituidos", () => {
+  const values = { operatorName: "Acme Store", masterStoreName: "acme-master", leadsStoreName: "acme-leads" };
+  const live = compose("Sos de Acme Store. Leé /mnt/memory/acme-master/voice/ y /mnt/memory/acme-leads/x.md", OLD_SCAFFOLD);
+  const c = detectPromptConflict({
+    liveSystem: live,
+    liveVersion: 2,
+    syncedHash: undefined,
+    registeredVersion: null,
+    composedSystem: compose("distinto"),
+    placeholderValues: values,
+  });
+  assert.ok(c?.importPreview);
+  assert.equal(c.importPreview.text, "Sos de {{OPERATOR_NAME}}. Leé {{MASTER_PATH}}/voice/ y {{LEADS_PATH}}/x.md");
+  assert.equal(c.importPreview.changed, true);
+  assert.deepEqual(c.importPreview.ambiguous, []);
+});
+
 test("lineDiff: agregados, borrados y líneas iguales en orden", () => {
   assert.deepEqual(lineDiff("a\nb\nc", "a\nx\nc"), [
     { type: "same", text: "a" },

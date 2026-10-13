@@ -10,6 +10,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
+import { authorizeInternal, callInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
@@ -1804,6 +1805,11 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
+  }
   try {
     // Apagado total: se chequea con una query aparte (isSystemHalted, cacheada
     // 60s) en vez de sumarse a un select existente — así un deploy de esta
@@ -1840,11 +1846,9 @@ Deno.serve(async (req: Request) => {
         if (result.messageIds.length > 0) {
           // generate-response también responde 202 de inmediato: esperarlo
           // cuesta milisegundos, no el tiempo de la sesión del agente.
-          await fetch(`${SUPABASE_URL}/functions/v1/generate-response`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          }).catch((e) => console.warn("trigger generate-response failed:", e));
+          await callInternal(supabase, "generate-response", {}).catch((e) =>
+            console.warn("trigger generate-response failed:", e)
+          );
         }
         console.log(
           `drain: ${result.processed} ok, ${result.failed} fail, ${result.batches} batches, ${recovered} recuperados, ${result.staleBacklogSkipped} backlog viejo sin clasificar`

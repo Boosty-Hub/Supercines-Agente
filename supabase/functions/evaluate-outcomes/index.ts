@@ -13,6 +13,7 @@
 //   - source='automatic':  dispatch por slug (length_appropriate, lead_replied, etc.)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
@@ -344,6 +345,11 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
   }
 
   let body: { draft_id?: string } = {};

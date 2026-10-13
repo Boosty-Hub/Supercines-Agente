@@ -13,33 +13,33 @@ import { createServiceClient } from "@/lib/supabase/service";
 export const INTERNAL_SECRET_KEY = "INTERNAL_FUNCTION_SECRET";
 const INTERNAL_SECRET_HEADER = "x-internal-secret";
 
-/** Falta el secreto: la migración que lo crea (0061) no se aplicó todavía. */
-export class InternalSecretMissingError extends Error {
-  constructor() {
-    super("Falta el secreto interno de las funciones: aplicá las migraciones pendientes.");
-    this.name = "InternalSecretMissingError";
-  }
-}
-
 let cache: { value: string; loadedAt: number } | null = null;
 const TTL_MS = 60_000;
 
-async function internalSecret(): Promise<string> {
+async function internalSecret(): Promise<string | null> {
   if (cache && Date.now() - cache.loadedAt < TTL_MS) return cache.value;
   const { data } = await createServiceClient()
     .from("_app_secrets")
     .select("valor")
     .eq("clave", INTERNAL_SECRET_KEY)
     .maybeSingle();
-  if (!data?.valor) throw new InternalSecretMissingError();
+  // Sin secreto (la migración 0065 todavía no se aplicó) no se cachea el vacío.
+  if (!data?.valor) return null;
   cache = { value: data.valor as string, loadedAt: Date.now() };
   return cache.value;
 }
 
+/** Mensaje para el usuario cuando una función interna contesta 401. */
+export const INTERNAL_401_HINT =
+  "La función rechazó la llamada interna (401). Aplicá las migraciones pendientes y redeployá las funciones desde el centro de actualizaciones.";
+
 /**
  * POST a `/functions/v1/<slug>` con el secreto interno. Devuelve la Response tal
  * cual (el caller decide qué mostrar; nunca reenviar el cuerpo crudo al navegador).
- * Lanza InternalSecretMissingError si falta el secreto.
+ * Si el secreto todavía no existe (migración sin aplicar) se llama SIN header: una
+ * función vieja (sin gate) igual responde y una nueva contesta 401 — el que decide
+ * es la función. Así el orden de despliegue (web → migración → funciones) no corta
+ * las acciones manuales del panel en ningún punto.
  */
 export async function callInternalFunction(
   slug: string,
@@ -51,9 +51,23 @@ export async function callInternalFunction(
   if (!base) throw new Error("NEXT_PUBLIC_SUPABASE_URL is not set");
   return fetch(`${base}/functions/v1/${slug}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", [INTERNAL_SECRET_HEADER]: secret },
+    headers: { "Content-Type": "application/json", ...(secret ? { [INTERNAL_SECRET_HEADER]: secret } : {}) },
     body: JSON.stringify(body),
     cache: "no-store",
     signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
   });
+}
+
+/**
+ * Headers con el secreto interno para una URL arbitraria SOLO si apunta a una
+ * Edge Function propia (`<SUPABASE_URL>/functions/v1/…`); `{}` en cualquier otro
+ * caso. Lo usa el probador de tools del panel: una tool HTTP que apunta a una
+ * función propia (p. ej. la cartelera) exige el secreto, y el probador debe
+ * comportarse como el agente sin que el secreto viaje nunca al navegador.
+ */
+export async function internalHeadersForUrl(url: string): Promise<Record<string, string>> {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base || !url.startsWith(`${base}/functions/v1/`)) return {};
+  const secret = await internalSecret();
+  return secret ? { [INTERNAL_SECRET_HEADER]: secret } : {};
 }

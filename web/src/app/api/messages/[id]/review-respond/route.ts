@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { callInternalFunction } from "@/lib/internal-call";
 
 // Resuelve un mensaje marcado para revisión humana: limpia el flag y dispara
 // al agente en modo force_review (el draft queda 'pending' para que el humano
@@ -20,12 +21,8 @@ export async function POST(
     .eq("id", params.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  fetch(`${supabaseUrl}/functions/v1/generate-response`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message_id: params.id, force_review: true }),
-  }).catch(() => {});
+  // generate-response exige el secreto interno: lo manda callInternalFunction (servidor).
+  callInternalFunction("generate-response", { message_id: params.id, force_review: true }).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

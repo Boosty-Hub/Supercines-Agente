@@ -8,8 +8,26 @@
 //   https://<project-ref>.supabase.co/functions/v1/kommo-webhook
 //   (Kommo permite agregar ?secret=XXX como query param — si la env
 //    KOMMO_WEBHOOK_SECRET está configurada, exigimos que coincida.)
+//
+// POR QUÉ ESTA FUNCIÓN ES PÚBLICA (única excepción al gate interno): Kommo NO firma
+// sus webhooks (no hay HMAC ni header de autenticación que verificar) y no manda un
+// JWT de Supabase, así que no puede presentar el secreto interno que exigen las
+// demás funciones (_shared/auth.ts). Mitigaciones:
+//   - Secreto opcional en la URL (?secret=, env KOMMO_WEBHOOK_SECRET), comparado
+//     antes de leer el cuerpo. Es el único control que Kommo permite.
+//   - Lo único que hace es ENCOLAR el payload (inbound_queue) y responder 200: no
+//     ejecuta nada del payload, no llama a modelos ni a Kommo. El procesamiento
+//     (process-inbound) es una función con gate interno y trata el payload como
+//     dato no confiable (cada campo se valida; el texto del lead entra a los
+//     prompts saneado, ver _shared/untrusted.ts).
+//   - El trigger a process-inbound está coalescido (≤ 1 cada 2 s por instancia) y
+//     el payload se persiste después de responder: un flood no multiplica el
+//     trabajo, solo llena la cola, que el reaper y el barrido de pg_cron acotan.
+//   - Alertas: inbound_dropped (insert fallido) e inbound_silence/kommo_webhook_*
+//     (apagón) en alerts-scan / health-scan.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { callInternal } from "../_shared/auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -107,11 +125,11 @@ function triggerProcessInbound(): void {
   lastTriggerAt = now;
   // process-inbound responde 202 de inmediato y drena en su propio waitUntil,
   // así que este fetch resuelve en milisegundos y libera el worker enseguida.
-  const p = fetch(`${SUPABASE_URL}/functions/v1/process-inbound`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  }).catch((e) => console.warn("trigger process-inbound failed:", e));
+  // process-inbound exige el secreto interno (callInternal lo lee de _app_secrets,
+  // con caché de 60 s): el webhook sigue siendo público, lo que dispara no.
+  const p = callInternal(supabase, "process-inbound", {}).catch((e) =>
+    console.warn("trigger process-inbound failed:", e)
+  );
   // @ts-ignore: EdgeRuntime existe en Supabase
   if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
     // @ts-ignore

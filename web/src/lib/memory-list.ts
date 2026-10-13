@@ -2,6 +2,7 @@
 // Usa raw fetch (lib/anthropic-managed) en vez del SDK oficial, que devuelve
 // "401 (no body)" en el runtime de Netlify.
 import { configValue } from "@/lib/runtime-config";
+import { callInternalFunction } from "@/lib/internal-call";
 import {
   listMemories,
   retrieveMemory,
@@ -102,11 +103,5 @@ export function parseFrontmatter(content: string): { meta: Record<string, string
  * Sin esto, un dream borrado seguiría vigente en el digest hasta 24h.
  */
 export function triggerDigestRebuild(): void {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!url) return;
-  fetch(`${url}/functions/v1/dreams-run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ digest_only: true }),
-  }).catch(() => {});
+  callInternalFunction("dreams-run", { digest_only: true }).catch(() => {});
 }

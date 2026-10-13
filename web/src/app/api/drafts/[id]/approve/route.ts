@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { callInternalFunction } from "@/lib/internal-call";
 
 export async function POST(
   request: Request,
@@ -32,12 +33,7 @@ export async function POST(
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // Disparar publish (no esperar)
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  fetch(`${supabaseUrl}/functions/v1/publish-to-kommo`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  }).catch(() => {});
+  callInternalFunction("publish-to-kommo", {}).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

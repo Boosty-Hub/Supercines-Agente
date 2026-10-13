@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { callInternalFunction, InternalSecretMissingError } from "@/lib/internal-call";
+import { callInternalFunction, INTERNAL_401_HINT } from "@/lib/internal-call";
 import { configValues } from "@/lib/runtime-config";
 
 export const dynamic = "force-dynamic";
@@ -85,6 +85,7 @@ export async function POST() {
     // pide reconciliar todos los leads; la base decide si corresponde (enfriamiento)
     const res = await callInternalFunction("sync-pipelines", { restart: true });
     const body = await res.json().catch(() => ({}));
+    if (res.status === 401) return NextResponse.json({ error: INTERNAL_401_HINT }, { status: 503 });
     if (!res.ok) {
       return NextResponse.json(
         { error: `sync-pipelines respondió ${res.status}. ¿Está deployada la función?` },
@@ -101,9 +102,6 @@ export async function POST() {
       backfill: { state, retry_after_seconds: Number.isFinite(retry) && retry > 0 ? retry : null },
     });
   } catch (e) {
-    if (e instanceof InternalSecretMissingError) {
-      return NextResponse.json({ error: e.message }, { status: 503 });
-    }
     return NextResponse.json(
       { error: `No se pudo sincronizar: ${e instanceof Error ? e.message : String(e)}` },
       { status: 502 }

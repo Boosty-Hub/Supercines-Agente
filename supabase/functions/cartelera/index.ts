@@ -6,7 +6,18 @@
 //
 // Uso: POST /functions/v1/cartelera  body {"sede_name":"La Granja"}
 //      (también acepta ?nombre= o ?sede_name= en la query)
-// verify_jwt=false — la cartelera es información pública.
+// verify_jwt=false (la llama el agente por URL directa, sin JWT de usuario) pero con
+// GATE: exige x-internal-secret (_shared/auth.ts). Aunque la cartelera es información
+// pública, sin gate cualquiera con la URL usaba esta función como proxy abierto contra
+// el API de Supercines. El executor de tools http de generate-response adjunta el
+// secreto automáticamente cuando la tool apunta a /functions/v1/ propio.
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
+
+const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+  auth: { persistSession: false },
+});
 
 const API = "https://supercines.com.ve/api/bot/cartelera";
 const MAX_DIAS = 6;
@@ -29,6 +40,9 @@ function resolverSede(input: string): string | null {
 }
 
 Deno.serve(async (req) => {
+  const denied = await authorizeInternal(req, supabase);
+  if (denied) return denied;
+
   let sedeInput = "";
   try {
     const url = new URL(req.url);

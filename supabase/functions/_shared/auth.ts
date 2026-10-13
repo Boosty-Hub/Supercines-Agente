@@ -72,3 +72,33 @@ export async function authorizeInternal(req: Request, supabase: SupabaseClient):
     headers: { "content-type": "application/json" },
   });
 }
+
+/**
+ * Headers para llamar a OTRA Edge Function interna (las que exigen
+ * authorizeInternal). Si el secreto todavía no existe (la migración 0065 no se
+ * aplicó) se manda sin él: el que decide es la función destino (una vieja, sin
+ * gate, lo ignora; una nueva lo rechaza con 401 y el barrido de pg_cron reintenta).
+ */
+export async function internalHeaders(supabase: SupabaseClient): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const secret = await loadSecret(supabase);
+  if (secret) headers[INTERNAL_SECRET_HEADER] = secret;
+  else console.warn("internalHeaders: falta INTERNAL_FUNCTION_SECRET en _app_secrets (¿migración 0065 sin aplicar?)");
+  return headers;
+}
+
+/** fetch a `<SUPABASE_URL>/functions/v1/<slug>` (POST) con el secreto interno. */
+export async function callInternal(
+  supabase: SupabaseClient,
+  slug: string,
+  body: unknown = {},
+  init: { signal?: AbortSignal } = {},
+): Promise<Response> {
+  const base = Deno.env.get("SUPABASE_URL")!;
+  return await fetch(`${base}/functions/v1/${slug}`, {
+    method: "POST",
+    headers: await internalHeaders(supabase),
+    body: JSON.stringify(body),
+    signal: init.signal,
+  });
+}

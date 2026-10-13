@@ -23,7 +23,7 @@
 -- 2) trigger_kommo_funnel_sync(): kommo-funnel-sync tiene verify_jwt = false y
 --    estaba SIN gate: cualquiera con la URL podía dispararla (lecturas masivas a
 --    Kommo + upserts). Ahora exige x-internal-secret (_shared/auth.ts) y el cron
---    lo manda desde _app_secrets (0061), igual que trigger_sync_pipelines().
+--    lo manda con internal_function_headers() (0061), igual que el resto.
 --    ORDEN DE DESPLIEGUE: aplicar esta migración ANTES de desplegar la función
 --    (la versión vieja de la función ignora el header; la nueva lo exige).
 --
@@ -40,17 +40,10 @@ grant execute on function reconcile_funnel_lead_positions(jsonb, timestamptz) to
 
 create or replace function trigger_kommo_funnel_sync()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
-declare
-  v_secret text;
 begin
-  select valor into v_secret from _app_secrets where clave = 'INTERNAL_FUNCTION_SECRET';
-  if v_secret is null then
-    raise warning 'trigger_kommo_funnel_sync: falta INTERNAL_FUNCTION_SECRET en _app_secrets';
-    return;
-  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/kommo-funnel-sync',
-    headers := jsonb_build_object('Content-Type', 'application/json', 'x-internal-secret', v_secret),
+    headers := internal_function_headers(),
     body := '{}'::jsonb,
     timeout_milliseconds := 60000
   );

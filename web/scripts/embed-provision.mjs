@@ -113,10 +113,44 @@ const sharedFiles = existsSync(sharedDir)
   : [];
 
 // Read each function slug (exclude _shared)
-const functionSlugs = readdirSync(functionsDir, { withFileTypes: true })
+// ORDEN DE DESPLIEGUE: INVOCADORES antes que INVOCADOS. Las funciones internas
+// exigen el secreto x-internal-secret (_shared/auth.ts) y las que se llaman entre
+// sí lo mandan. Durante un despliegue función por función, si el invocado (ya con
+// gate) se desplegara antes que su invocador (viejo, sin secreto), esa llamada
+// recibiría 401 hasta que el invocador se actualice. Desplegando de la cabeza de la
+// cadena hacia las hojas, cuando una función empieza a exigir el secreto, quienes
+// la llaman ya lo mandan. Cadena: kommo-webhook → process-inbound → generate-response
+// → (embed | publish-to-kommo → evaluate-outcomes); el resto solo las llama pg_cron.
+// Una función NUEVA tiene que figurar acá (el build falla si no): decidir su lugar es
+// una decisión de diseño, no un accidente del orden alfabético.
+const DEPLOY_ORDER = [
+  "kommo-webhook",
+  "process-inbound",
+  "generate-response",
+  "publish-to-kommo",
+  "follow-up-scan",
+  "dreams-run",
+  "alerts-scan",
+  "health-scan",
+  "sync-pipelines",
+  "kommo-funnel-sync", // solo pg_cron (SuperCines)
+  "evaluate-outcomes",
+  "embed",
+  "cartelera", // la llama el agente (tool http de generate-response): invocado, va al final
+];
+
+const discovered = readdirSync(functionsDir, { withFileTypes: true })
   .filter((d) => d.isDirectory() && d.name !== "_shared")
-  .map((d) => d.name)
-  .sort();
+  .map((d) => d.name);
+const missingFromOrder = discovered.filter((s) => !DEPLOY_ORDER.includes(s));
+if (missingFromOrder.length > 0) {
+  console.error(
+    `ERROR: función(es) sin lugar en DEPLOY_ORDER (scripts/embed-provision.mjs): ${missingFromOrder.join(", ")}.\n` +
+      `Agregalas respetando invocadores antes que invocados.`
+  );
+  process.exit(1);
+}
+const functionSlugs = DEPLOY_ORDER.filter((s) => discovered.includes(s));
 
 if (functionSlugs.length === 0) {
   console.error(`ERROR: No function directories found in ${functionsDir}`);

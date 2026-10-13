@@ -12,6 +12,7 @@
 // Implementación: usamos el Messages API directo (no CMA) porque es un job batch.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
@@ -635,6 +636,11 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
   }
   let body: { period?: string; force?: boolean; digest_only?: boolean } = {};
   try {

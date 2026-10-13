@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { internalHeadersForUrl } from "@/lib/internal-call";
 import { createServiceClient } from "@/lib/supabase/service";
 
 // nodejs runtime — runs the HTTP tool executor server-side (resolves secrets
@@ -124,6 +125,10 @@ export async function POST(request: Request) {
       resolveConfigKey(k)
     );
   }
+
+  // Tool que apunta a una Edge Function propia: se llama con el secreto interno
+  // (nunca se devuelve al cliente), igual que hace el agente.
+  Object.assign(headers, await internalHeadersForUrl(url));
 
   // Build body (non-GET only).
   let bodyStr: string | undefined;

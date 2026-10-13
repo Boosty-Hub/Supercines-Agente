@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { callInternalFunction, INTERNAL_401_HINT } from "@/lib/internal-call";
 
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
@@ -14,12 +15,8 @@ export async function POST(request: Request) {
   // El botón manual siempre corre YA (force), aunque la frecuencia configurada
   // todavía no toque. El cron (trigger_dreams) manda solo {period} → sujeto al
   // due-check por frecuencia.
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const res = await fetch(`${supabaseUrl}/functions/v1/dreams-run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ period, force: true }),
-  });
-  const data = await res.json();
+  const res = await callInternalFunction("dreams-run", { period, force: true }, { timeoutMs: 120_000 });
+  if (res.status === 401) return NextResponse.json({ error: INTERNAL_401_HINT }, { status: 503 });
+  const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.ok ? 200 : 500 });
 }

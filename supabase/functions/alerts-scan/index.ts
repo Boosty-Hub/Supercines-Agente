@@ -15,6 +15,7 @@
 // Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
@@ -544,6 +545,11 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
   }
 
   try {

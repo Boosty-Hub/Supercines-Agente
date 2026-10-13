@@ -1,8 +1,8 @@
 // Cliente del Edge Function /functions/v1/embed.
-// Usa el modelo Supabase.ai gte-small (384 dims).
+// Usa el modelo Supabase.ai gte-small (384 dims). La función exige el secreto
+// interno (lib/internal-call.ts); nunca la service key como Bearer.
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+import { callInternalFunction } from "@/lib/internal-call";
 
 const BATCH_SIZE = 1;
 const MAX_RETRIES = 5;
@@ -14,14 +14,7 @@ async function sleep(ms: number) {
 
 async function embedBatch(batch: string[], attempt = 1): Promise<number[][]> {
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/embed`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ inputs: batch }),
-    });
+    const res = await callInternalFunction("embed", { inputs: batch }, { timeoutMs: 60_000 });
     if (res.ok) {
       const { embeddings } = (await res.json()) as { embeddings: number[][] };
       return embeddings;

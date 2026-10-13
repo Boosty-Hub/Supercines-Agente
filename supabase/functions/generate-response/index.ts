@@ -10,6 +10,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
+import { authorizeInternal, callInternal, internalHeaders } from "../_shared/auth.ts";
 import { recordUsage, captureSessionUsage, recordFailedLlmUsage } from "../_shared/usage.ts";
 import {
   moveLeadStage,
@@ -57,14 +58,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
 // ---------------- search_kb tool implementation ----------------
 async function runSearchKb(input: { query: string; limit?: number }) {
   // 1) Embeber el query
-  const embedRes = await fetch(`${SUPABASE_URL}/functions/v1/embed`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${SERVICE_ROLE}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ inputs: [input.query] }),
-  });
+  const embedRes = await callInternal(supabase, "embed", { inputs: [input.query] });
   if (!embedRes.ok) {
     throw new Error(`embed: ${embedRes.status} ${await embedRes.text()}`);
   }
@@ -218,6 +212,15 @@ async function runHttpTool(
     // (e) HTTPS-only assert.
     if (!url.startsWith("https://")) {
       return "ERROR: url_template debe ser https://";
+    }
+
+    // (e2) Una tool HTTP que apunta a una Edge Function PROPIA (p. ej. la cartelera)
+    // se llama con el secreto interno, que se agrega ACÁ y no vive en agent_tools.headers:
+    // esa tabla la lee cualquier usuario autenticado del panel (RLS) y el secreto
+    // de las funciones internas no puede quedar a su alcance. Solo se adjunta a
+    // nuestro propio origen /functions/v1/ — nunca a un host de terceros.
+    if (url.startsWith(`${SUPABASE_URL}/functions/v1/`)) {
+      Object.assign(headers, await internalHeaders(supabase));
     }
 
     // (f) AbortController with tool timeout.
@@ -590,12 +593,8 @@ async function maybeFanOut(): Promise<void> {
       .limit(1);
     if (!more || more.length === 0) return; // nada más que procesar
 
-    // verify_jwt=false en todas las functions → sin auth header.
-    const sib = fetch(`${SUPABASE_URL}/functions/v1/generate-response`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }).catch(() => {});
+    // verify_jwt=false, pero la función exige el secreto interno (callInternal).
+    const sib = callInternal(supabase, "generate-response", {}).catch(() => {});
     // @ts-ignore: EdgeRuntime existe en Supabase
     if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
       // @ts-ignore
@@ -1318,6 +1317,11 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
+  }
 
   // Apagado total: query aparte (isSystemHalted, cacheada 60s) en vez de
   // sumarse al select de `cfg` de abajo — así un deploy de esta función antes
@@ -1795,11 +1799,7 @@ Deno.serve(async (req: Request) => {
 
       if (status === "approved") {
         try {
-          const pubRes = await fetch(`${SUPABASE_URL}/functions/v1/publish-to-kommo`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          });
+          const pubRes = await callInternal(supabase, "publish-to-kommo", {});
           if (!pubRes.ok) console.warn("publish-to-kommo:", pubRes.status);
         } catch (e) {
           console.warn("publish-to-kommo failed:", e);

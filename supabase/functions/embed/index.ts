@@ -1,9 +1,13 @@
 // Edge Function: embed
 // Devuelve embeddings de 384 dims usando el modelo gte-small de Supabase AI.
-// Llamada desde Next.js durante ingesta de KB y al servir consultas.
+// Llamada desde el servidor de Next.js (ingesta de KB) y desde generate-response
+// (search_kb), siempre con el secreto interno (x-internal-secret).
 //
 // POST { "inputs": ["texto 1", "texto 2", ...] }
 // → 200 { "embeddings": [[...], [...]] }
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 
 // `Supabase.ai` es un global que inyecta el Edge Runtime de Supabase; no está
 // en los tipos de Deno, así que sin esta declaración `deno check` falla. Es
@@ -18,9 +22,19 @@ declare const Supabase: {
 
 const session = new Supabase.ai.Session("gte-small");
 
+// Solo para leer el secreto interno del gate (_app_secrets); embed no toca datos.
+const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+  auth: { persistSession: false },
+});
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+  // Gate interno: la llaman generate-response y el servidor del panel (KB), nunca un navegador.
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
   }
   let body: { inputs?: string[] };
   try {

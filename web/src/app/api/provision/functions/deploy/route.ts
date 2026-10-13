@@ -62,8 +62,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       const deployed = await listFunctions(ref, token);
       const deployedSlugs = new Set(deployed.map((f) => f.slug));
 
-      // Sort alphabetically for deterministic order
-      const allSlugs = FUNCTIONS.map((f) => f.slug).sort();
+      // Orden de FUNCTIONS = DEPLOY_ORDER (scripts/embed-provision.mjs): invocadores
+      // antes que invocados, para que ninguna función empiece a exigir el secreto
+      // interno antes de que quienes la llaman lo manden. NO ordenar alfabéticamente.
+      const allSlugs = FUNCTIONS.map((f) => f.slug);
       const missingSlugs = allSlugs.filter((s) => !deployedSlugs.has(s));
 
       if (missingSlugs.length === 0) {

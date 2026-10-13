@@ -830,22 +830,36 @@ insert into _app_secrets (clave, valor)
 values ('INTERNAL_FUNCTION_SECRET', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''))
 on conflict (clave) do nothing;
 
--- Cron: refresca pipelines y avanza el backfill. La Edge Function tiene
--- verify_jwt = false pero exige x-internal-secret (gate en _shared/auth.ts).
--- Sin Kommo configurado responde 200 "skipped" y vuelve a intentar en 10 min.
-create or replace function trigger_sync_pipelines()
-returns void language plpgsql security definer set search_path = public, pg_temp as $$
+-- Headers para que pg_cron (vía pg_net) llame a una Edge Function interna: el
+-- secreto sale de _app_secrets, nunca del SQL ni del repo. SECURITY DEFINER porque
+-- el cron corre con un rol que no lee la tabla; sin ningún EXECUTE para nadie más
+-- (anon/authenticated/public no pueden pedir el secreto por RPC). Si el secreto no
+-- existe devuelve los headers sin él (la función destino responderá 401).
+create or replace function internal_function_headers()
+returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
   v_secret text;
 begin
   select valor into v_secret from _app_secrets where clave = 'INTERNAL_FUNCTION_SECRET';
   if v_secret is null then
-    raise warning 'trigger_sync_pipelines: falta INTERNAL_FUNCTION_SECRET en _app_secrets';
-    return;
+    raise warning 'internal_function_headers: falta INTERNAL_FUNCTION_SECRET en _app_secrets';
+    return jsonb_build_object('Content-Type', 'application/json');
   end if;
+  return jsonb_build_object('Content-Type', 'application/json', 'x-internal-secret', v_secret);
+end;
+$$;
+
+revoke execute on function internal_function_headers() from public, anon, authenticated;
+
+-- Cron: refresca pipelines y avanza el backfill. La Edge Function tiene
+-- verify_jwt = false pero exige x-internal-secret (gate en _shared/auth.ts).
+-- Sin Kommo configurado responde 200 "skipped" y vuelve a intentar en 10 min.
+create or replace function trigger_sync_pipelines()
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/sync-pipelines',
-    headers := jsonb_build_object('Content-Type', 'application/json', 'x-internal-secret', v_secret),
+    headers := internal_function_headers(),
     body := '{}'::jsonb,
     timeout_milliseconds := 30000
   );

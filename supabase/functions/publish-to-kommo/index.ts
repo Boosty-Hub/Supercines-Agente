@@ -14,6 +14,7 @@
 //   - El flujo normal (campo normal + salesbot normal) SIEMPRE corre.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal, callInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import {
@@ -245,6 +246,11 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  // Gate interno: esta función NO es un webhook público (ver _shared/auth.ts).
+  {
+    const denied = await authorizeInternal(req, supabase);
+    if (denied) return denied;
+  }
 
   try {
     // Apagado total: query aparte (isSystemHalted, cacheada 60s) — no se
@@ -408,11 +414,9 @@ Deno.serve(async (req: Request) => {
 
     // Después de publicar, disparar evaluación de outcomes (fire-and-forget)
     if (published > 0) {
-      const promise = fetch(`${SUPABASE_URL}/functions/v1/evaluate-outcomes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch((e) => console.warn("trigger evaluate-outcomes:", e));
+      const promise = callInternal(supabase, "evaluate-outcomes", {}).catch((e) =>
+        console.warn("trigger evaluate-outcomes:", e)
+      );
       // @ts-ignore EdgeRuntime de Supabase
       if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
         // @ts-ignore

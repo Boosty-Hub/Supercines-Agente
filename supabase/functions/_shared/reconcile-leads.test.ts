@@ -125,3 +125,13 @@ Deno.test("un error de Kommo a mitad NO marca nada (ni siquiera lo ya revisado c
   await assertRejects(() => reconcileLeadIds(ids, f.deps, OPTS), Error, "429");
   assertEquals(f.marked.length, 0);
 });
+
+Deno.test("heartbeat: se llama tras CADA lote (lectura y confirmación) para renovar el lease", async () => {
+  const ids = Array.from({ length: 250 }, (_, i) => i + 1);
+  const f = fake(ids.filter((i) => i % 25 !== 0)); // 10 ausentes repartidos → segunda lectura
+  let beats = 0;
+  const r = await reconcileLeadIds(ids, { ...f.deps, heartbeat: () => { beats++; return Promise.resolve(); } }, OPTS);
+  // 3 lotes de la primera lectura + 1 de la confirmación
+  assertEquals(beats, 4);
+  assertEquals(r.marked, 10);
+});

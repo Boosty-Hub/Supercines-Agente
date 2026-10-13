@@ -24,6 +24,12 @@ export type ReconcileDeps = {
   /** Marca los ids confirmados ausentes; devuelve cuántos marcó. */
   markMissing(ids: number[]): Promise<number>;
   sleep(ms: number): Promise<void>;
+  /**
+   * Latido tras cada lote: renueva el lease del recorrido que está finalizando. Con 5000
+   * candidatos (50 lotes + segunda lectura) la reconciliación puede durar más que el lease
+   * de 150 s; sin renovarlo, otro worker reclamaría el trabajo y correrían dos a la vez.
+   */
+  heartbeat?(): Promise<void>;
 };
 
 export type ReconcileResult = {
@@ -76,6 +82,7 @@ export async function reconcileLeadIds(
       } else {
         notReturned.push(...gone);
       }
+      await deps.heartbeat?.();
       if (i + opts.batchSize < list.length) await deps.sleep(opts.pauseMs);
     }
     return notReturned;

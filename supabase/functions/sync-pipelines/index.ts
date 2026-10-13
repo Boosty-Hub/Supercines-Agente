@@ -118,8 +118,9 @@ async function claimBackfill(restart: boolean): Promise<ClaimDecision> {
 }
 
 /** Reconciliación por id contra Kommo (candidatos a inexistentes y huecos). */
-function reconcileDeps(domain: string, token: string): ReconcileDeps {
+function reconcileDeps(domain: string, token: string, heartbeat?: () => Promise<void>): ReconcileDeps {
   return {
+    heartbeat,
     fetchByIds: (ids) => fetchLeadsByIds(domain, token, ids),
     apply: async (leads, readAtMs) => {
       const { data, error } = await supabase.rpc("apply_kommo_lead_positions", {
@@ -172,7 +173,15 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
         });
         if (candErr) throw new Error(`kommo_missing_candidates: ${candErr.message}`);
         const ids = ((data ?? []) as Array<number | string>).map(Number);
-        const r = await reconcileLeadIds(ids, reconcileDeps(domain, token), {
+        // La verificación por id puede durar más que el lease: se renueva tras cada lote.
+        const renewLease = async () => {
+          const { error: leaseErr } = await supabase
+            .from("kommo_backfill")
+            .update({ lease_until: new Date(Date.now() + LEASE_SECONDS * 1000).toISOString() })
+            .eq("job", JOB);
+          if (leaseErr) console.warn("sync-pipelines: no se pudo renovar el lease:", leaseErr.message);
+        };
+        const r = await reconcileLeadIds(ids, reconcileDeps(domain, token, renewLease), {
           batchSize: KOMMO_IDS_PER_REQUEST,
           pauseMs: PAUSE_MS,
         });

@@ -17,8 +17,8 @@
 //    (text-safe.ts): ni un emoji partido ni un 400 del proveedor.
 //  - NFKC primero: los "<" fullwidth, small, angle brackets, etc. colapsan al
 //    "<" ASCII y recién ahí se escapan; no hay variante que evada el escape.
-//  - & < > " escapados como entidades: dentro de un turno es imposible cerrar el
-//    elemento o abrir otro.
+//  - < y > escapados como entidades: dentro de un turno es imposible cerrar el
+//    elemento o abrir otro. (& y " NO se escapan: no hacen falta y rompen las URLs.)
 // No es un filtro de contenido: el texto sigue siendo DATO. Por eso, además, el
 // prompt que lo consume debe incluir UNTRUSTED_NOTICE.
 
@@ -41,7 +41,11 @@ export function sanitizeUntrusted(input: string, opts: { maxChars?: number } = {
   const max = opts.maxChars;
   // Corte por GRAFEMA (no parte emojis, banderas ni secuencias ZWJ) y sin surrogates sueltos.
   if (max !== undefined && s.length > max) s = truncateGraphemes(s, max, { ellipsis: "…" });
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // Escape MÍNIMO suficiente: solo < y >. Un turno solo se puede cerrar o falsificar con un
+  // "<" real; & y " no tienen ese poder (el contenido va como texto de elemento, no como
+  // atributo) y escaparlos deformaba los links del historial que llegan al modelo
+  // (?a=1&b=2 → &amp;) y degradaba las respuestas que citan URLs.
+  return s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**

@@ -332,7 +332,7 @@ select pg_temp.expect('nunca hubo unsigned: la primera firmada pasa a strict', (
 update kommo_webhook_auth set mode = 'permissive', strict_since = null, strict_reason = null, last_unsigned_at = null,
        last_signed_at = null where singleton;
 
--- 15) W1 (orden con 'unchanged') y actor_user_id (0065 consolidada).
+-- 15) W1 (orden con 'unchanged') y actor_user_id (0061 consolidada).
 delete from lead_stage_events where true;
 delete from leads where true;
 insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values

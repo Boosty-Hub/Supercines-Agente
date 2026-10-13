@@ -362,7 +362,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // Apagado total (0061): corta ANTES de tocar Anthropic (los graders son
+    // Apagado total (0057): corta ANTES de tocar Anthropic (los graders son
     // LLM). evaluate-outcomes no lee kommo_publish_config para nada más, así
     // que usa el fetch cacheado.
     if (await isSystemHalted(supabase)) {

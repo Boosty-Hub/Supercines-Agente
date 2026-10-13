@@ -7,7 +7,7 @@
 //                         escribió "cuando confirme la compra, muévelo a
 //                         Ganado" en su voz/dreams).
 //   `transferir_asesor` → el nombre sale de `runtime_config.HANDOFF_STAGE_NAME`
-//                         (nunca del modelo — ver 0058_crm_tools_extra.sql).
+//                         (nunca del modelo — ver 0067_crm_tools_extra.sql).
 //
 // Lo que NO puede cambiar entre las dos es CÓMO se matchea un nombre contra
 // las etapas reales de Kommo (normalización, ambigüedad entre pipelines): una

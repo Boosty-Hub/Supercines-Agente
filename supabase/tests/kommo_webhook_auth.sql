@@ -1,4 +1,4 @@
--- Prueba de la migración 0070 (autenticidad del webhook de Kommo) contra un Postgres con
+-- Prueba de la migración 0073 (autenticidad del webhook de Kommo) contra un Postgres con
 -- TODAS las migraciones aplicadas:
 --   · kommo_webhook_rotate: atómica, NO pisa el anterior mientras Kommo no confirmó el vigente;
 --   · kommo_webhook_mark_applied: confirma solo si el secreto sigue siendo el vigente;
@@ -89,8 +89,8 @@ insert into system_incidents (kind, severity, title, description, remedy, resolv
 values ('kommo_webhook_caido', 'critical', 't', 'd', 'r', now(),
         jsonb_build_object('destination', 'https://x.supabase.co/functions/v1/kommo-webhook?token=' || repeat('f', 48)));
 -- Se re-aplica la migración (es idempotente): su barrido tiene que enmascarar lo guardado.
-\ir ../migrations/0070_kommo_webhook_auth.sql
-select pg_temp.expect('el barrido de 0070 enmascara el token guardado',
+\ir ../migrations/0073_kommo_webhook_auth.sql
+select pg_temp.expect('el barrido de 0073 enmascara el token guardado',
   not exists (select 1 from system_incidents where metadata::text like '%' || repeat('f', 48) || '%')
   and exists (select 1 from system_incidents where metadata->>'destination' like '%?token=***'));
 

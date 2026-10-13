@@ -7,7 +7,7 @@ import { SystemBannerClient, type Incidente } from "./system-banner-client";
  * scrolleado la página. Se monta en modo normal y en modo embed.
  *
  * Muestra solo lo que deja al agente MUDO — webhook caído, token inválido,
- * ingesta detenida, cola atascada (ver migración 0062_system_incidents.sql).
+ * ingesta detenida, cola atascada (ver migración 0071_system_incidents.sql).
  * No compite con `alerts` (drafts fallidos, mensajes que piden revisión), que
  * es una bandeja de trabajo y vive en la Torre de Control (panel lateral,
  * `torre-de-control.tsx`) — no tiene página propia.

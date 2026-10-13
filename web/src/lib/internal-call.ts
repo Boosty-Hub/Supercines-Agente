@@ -25,7 +25,7 @@ async function internalSecret(): Promise<string | null> {
     .select("valor")
     .eq("clave", INTERNAL_SECRET_KEY)
     .maybeSingle();
-  // Sin secreto (la migración 0065 todavía no se aplicó) no se cachea el vacío.
+  // Sin secreto (la migración 0061 todavía no se aplicó) no se cachea el vacío.
   if (!data?.valor) return null;
   cache = { value: data.valor as string, loadedAt: Date.now() };
   return cache.value;

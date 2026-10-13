@@ -25,9 +25,9 @@ test("moveLeadInKommo usa las constantes compartidas (no números sueltos)", () 
 });
 
 test("el default de claim_lead_move en la base coincide con MOVE_CLAIM_TTL_SECONDS", () => {
-  const sql = readFileSync(here("../../../supabase/migrations/0065_kommo_pipelines_board.sql"), "utf8");
+  const sql = readFileSync(here("../../../supabase/migrations/0061_kommo_pipelines_board.sql"), "utf8");
   const m = sql.match(/create function claim_lead_move\([\s\S]*?p_ttl_seconds\s+int\s+default\s+(\d+)/);
-  assert.ok(m, "no se encontró claim_lead_move en 0065");
+  assert.ok(m, "no se encontró claim_lead_move en 0061");
   assert.equal(Number(m[1]), MOVE_CLAIM_TTL_SECONDS);
 });
 

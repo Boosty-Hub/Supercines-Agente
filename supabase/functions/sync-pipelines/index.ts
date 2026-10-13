@@ -195,7 +195,7 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
         if (r.suspicious) console.warn(`sync-pipelines: un lote completo de candidatos volvió vacío de Kommo (de ${r.checked}): sus ids no se marcan`);
         return r.marked;
       },
-      // Guarda como dueño del lease (save_kommo_backfill_progress, 0065): 'running' lo
+      // Guarda como dueño del lease (save_kommo_backfill_progress, 0061): 'running' lo
       // renueva; pending/failed/done lo sueltan. false = otro worker es el dueño → para.
       save: async (p) => {
         const { data: own, error: saveErr } = await supabase.rpc("save_kommo_backfill_progress", {

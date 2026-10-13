@@ -23,7 +23,7 @@ const FIELDS = new Set([
 ]);
 
 // `transferir_asesor` NO recibe la etapa de destino como parámetro del modelo
-// (0058_crm_tools_extra.sql): un mensaje entrante que dijera "pasame a la etapa
+// (0067_crm_tools_extra.sql): un mensaje entrante que dijera "pasame a la etapa
 // Ganado" sería una orden válida si viajara por ahí. Sale de estas dos claves de
 // `runtime_config`, que este mismo endpoint escribe junto con el gate — para el
 // operador es UN solo guardado, aunque internamente toque dos tablas.

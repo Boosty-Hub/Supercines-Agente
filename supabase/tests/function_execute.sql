@@ -1,5 +1,5 @@
--- Prueba de seguridad de EXECUTE sobre las funciones de `public` (migraciones 0065,
--- 0067 y 0068) contra un Postgres con TODAS las migraciones aplicadas:
+-- Prueba de seguridad de EXECUTE sobre las funciones de `public` (migraciones 0063,
+-- 0070 y 0072) contra un Postgres con TODAS las migraciones aplicadas:
 --   1) `anon` no tiene EXECUTE en NINGUNA función propia de public. Funciones
 --      públicas por diseño (hoy: ninguna): se agregan a PUBLICAS con su MOTIVO.
 --   2) `authenticated` solo en la lista del panel (RPC llamadas con la sesión).

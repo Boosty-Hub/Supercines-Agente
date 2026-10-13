@@ -75,7 +75,7 @@ export async function authorizeInternal(req: Request, supabase: SupabaseClient):
 
 /**
  * Headers para llamar a OTRA Edge Function interna (las que exigen
- * authorizeInternal). Si el secreto todavía no existe (la migración 0065 no se
+ * authorizeInternal). Si el secreto todavía no existe (la migración 0061 no se
  * aplicó) se manda sin él: el que decide es la función destino (una vieja, sin
  * gate, lo ignora; una nueva lo rechaza con 401 y el barrido de pg_cron reintenta).
  */
@@ -83,7 +83,7 @@ export async function internalHeaders(supabase: SupabaseClient): Promise<Record<
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const secret = await loadSecret(supabase);
   if (secret) headers[INTERNAL_SECRET_HEADER] = secret;
-  else console.warn("internalHeaders: falta INTERNAL_FUNCTION_SECRET en _app_secrets (¿migración 0065 sin aplicar?)");
+  else console.warn("internalHeaders: falta INTERNAL_FUNCTION_SECRET en _app_secrets (¿migración 0061 sin aplicar?)");
   return headers;
 }
 

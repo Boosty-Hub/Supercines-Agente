@@ -3,7 +3,7 @@
 // El cliente manda con cada movimiento la posición que cree vigente
 // (`expected: { pipeline_id, stage_id }`, cada una number|null). El servidor la compara
 // con la de la base ANTES de tocar Kommo, de forma atómica con la reserva del lead
-// (claim_lead_move, migración 0065): si no coincide, otro movimiento (de este panel o hecho
+// (claim_lead_move, migración 0061): si no coincide, otro movimiento (de este panel o hecho
 // en Kommo) llegó en el medio y este ya está desactualizado → 409. `expected` ausente =
 // sin chequeo (clientes viejos).
 

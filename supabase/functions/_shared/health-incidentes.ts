@@ -2,7 +2,7 @@
 //
 // Reporte y cierre de INCIDENTES DE SISTEMA — las fallas de plataforma que
 // dejan al agente mudo sin que nada en el dashboard lo delate (ver
-// migración 0062_system_incidents.sql para el porqué de la tabla).
+// migración 0071_system_incidents.sql para el porqué de la tabla).
 //
 // Solo el barrido periódico de `health-scan` abre y cierra estos incidentes.
 // Es DB I/O puro (necesita un SupabaseClient real), así que —igual que

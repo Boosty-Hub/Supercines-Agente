@@ -20,7 +20,7 @@
 //    la lectura) y se verifican por id en Kommo antes de marcar a ninguno. Si
 //    finalize falla queda 'failed' y se reintenta sin perder lo visto.
 //  - Dueño del lease: `save` (y el latido de finalize) solo escriben si este worker sigue
-//    siendo el dueño (lease_token, 0065). Si otro reclamó el recorrido tras vencer el
+//    siendo el dueño (lease_token, 0061). Si otro reclamó el recorrido tras vencer el
 //    lease, lanzan LeaseLostError y el bucle PARA sin escribir nada más: ni el progreso ni
 //    un 'failed' que pisaría el recorrido del nuevo dueño.
 

@@ -39,7 +39,7 @@
 //     foto del DM → failed + alerta (reenviar duplicaría el comentario público).
 //   · Toda escritura final lleva la guarda `status='publishing' AND publish_owner=yo`.
 //
-// Apagado total (system_halted, 0061): si está en true, NO se publica NADA,
+// Apagado total (system_halted, 0057): si está en true, NO se publica NADA,
 // ni siquiera drafts que ya estaban 'approved' antes de que el operador
 // activara el switch. Decisión deliberada: esta es la ÚNICA función de las
 // seis que efectivamente le manda un mensaje a un cliente real — un "apagado
@@ -102,7 +102,7 @@ type KommoConfig = {
   comment_reply_enabled: boolean;
   comment_salesbot_id: number | null;
   comment_field_id: number | null;
-  // Apagado total (0061) — se agrega a este select existente, cero
+  // Apagado total (0057) — se agrega a este select existente, cero
   // round-trips extra (ver _shared/halt.ts).
   system_halted: boolean;
   // Ventana de frescura (0040/0064) — mismo default (1h) que generate-response
@@ -545,7 +545,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // Apagado total (0061): se lee kommo_publish_config PRIMERO —antes de
+    // Apagado total (0057): se lee kommo_publish_config PRIMERO —antes de
     // exigir credenciales de Kommo con runtimeCfg.require()— para no gastar
     // ni esa resolución cuando el operador cortó todo. Ningún draft
     // 'approved' se publica mientras esto esté en true, ni el que ya estaba

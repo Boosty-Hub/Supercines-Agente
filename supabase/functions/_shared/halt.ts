@@ -1,6 +1,6 @@
 // _shared/halt.ts
 //
-// Kill switch TOTAL: kommo_publish_config.system_halted (migración 0061).
+// Kill switch TOTAL: kommo_publish_config.system_halted (migración 0057).
 //
 // GAP que cierra: `agent_enabled` (0015) es un kill switch que SOLO gatea
 // generate-response. Con el agente "apagado" por ese switch, process-inbound

@@ -1,6 +1,6 @@
 // Tiempos del movimiento de etapa desde el panel (puro, sin imports).
 //
-// La ruta POST /api/leads/[id]/stage reserva el lead con claim_lead_move (0065) ANTES de
+// La ruta POST /api/leads/[id]/stage reserva el lead con claim_lead_move (0061) ANTES de
 // llamar a Kommo y la suelta al terminar. La reserva vence sola (TTL) para que un servidor
 // caído no bloquee el lead; si venciera MIENTRAS el movimiento sigue vivo, un segundo
 // movimiento podría salir en paralelo y llegar a Kommo en orden inverso. Por eso el TTL se

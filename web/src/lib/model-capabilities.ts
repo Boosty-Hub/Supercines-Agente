@@ -68,6 +68,15 @@ export function shapedFetch(effort: RequestEffort, baseFetch: typeof fetch = fet
   };
 }
 
+/** Modelo REAL de una sesión CMA (copia de _shared/usage.ts; paridad testeada). */
+export function sessionModelId(session: unknown): string | null {
+  const agent = (session as { agent?: unknown } | null)?.agent;
+  const m = (agent as { model?: unknown } | null)?.model;
+  if (typeof m === "string" && m) return m;
+  const id = (m as { id?: unknown } | null)?.id;
+  return typeof id === "string" && id ? id : null;
+}
+
 // ───────────────────────── Managed Agent ─────────────────────────
 // Valor del campo `model` del Managed Agent. ÚNICO punto que lo arma: lo usan
 // el alta (/api/setup/agent) y el cambio de modelo (/api/usage/models), para que

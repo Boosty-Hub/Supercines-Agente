@@ -7,6 +7,8 @@
 
 import { headers } from "next/headers";
 import { configValues } from "@/lib/runtime-config";
+import { getAgentSyncStatus } from "@/lib/agent-sync-status";
+import { AgentSyncBanner } from "@/components/agent-sync-banner";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
@@ -49,7 +51,7 @@ export default async function SettingsPage({
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, syncStatus] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -104,6 +106,11 @@ export default async function SettingsPage({
       // normal. Sumarla al select grande de `pubRes` haría que UN campo
       // faltante rompiera las otras ~30 columnas que sí existen.
       supabase.from("kommo_publish_config").select("system_halted").eq("is_active", true).maybeSingle(),
+      // ¿El agente vivo en Anthropic coincide con el scaffold del código y con
+      // AGENT_MODEL? /settings exige `configuracion` (middleware), o sea que
+      // quien llega acá puede sincronizar. Nunca se sincroniza solo: ver
+      // lib/agent-sync-status.ts.
+      getAgentSyncStatus(),
     ]);
 
   const p = pubRes.data;
@@ -216,6 +223,15 @@ export default async function SettingsPage({
           esté abierta — los interruptores críticos ya no viven dispersos
           dentro de las pestañas. */}
       <ControlPanel initial={controlPanelConfig} />
+
+      {syncStatus.provisioned && (
+        <AgentSyncBanner
+          scaffoldStale={syncStatus.scaffoldStale}
+          modelDrift={syncStatus.modelDrift}
+          configModel={syncStatus.configModel}
+          liveModel={syncStatus.liveModel}
+        />
+      )}
 
       {/* Un solo banner de guardado para toda la página (antes había tres, uno
           por módulo, con tres flags distintos de querystring). */}

@@ -7,24 +7,34 @@
 // Config (runtime_config, DB-first/env-fallback; se edita desde /consumo):
 //   MONTHLY_BUDGET_USD    techo en USD del mes en curso (UTC). Ausente, vacío o
 //                         "0" = SIN freno — nunca cambia el comportamiento por defecto.
+//   BUDGET_SAFETY_MARGIN_PCT  margen de seguridad en % (0..50, default 0).
 //   BUDGET_EXCLUDE_BEFORE ISO opcional: no cuenta el gasto anterior a esa fecha
 //                         (para activar el techo a mitad de mes sin que el gasto
 //                         previo lo dispare de entrada).
 // El gasto sale de gasto_mes_actual() (migración 0066): suma
 // usage_events.estimated_cost_usd, que ya valúa cada llamada (ai-pricing.ts).
 //
-// Dos niveles, como el resto de los gates (system_halted):
-//   >= 100% → generate-response y follow-up-scan dejan de GENERAR respuestas
-//             (process-inbound sigue clasificando: no se pierde la señal de
-//             vertical). Un borrador pedido a mano desde el inbox (force_review)
-//             no se bloquea: es una decisión humana puntual.
-//   >= 110% → process-inbound también deja de CLASIFICAR. Los mensajes quedan
-//             'pending' en inbound_queue (mismo mecanismo que system_halted): nada
-//             se pierde, el sweep los retoma al subir el techo o cambiar de mes —
-//             y el filtro de antigüedad (answer_max_age_hours) evita contestar
-//             mensajes viejos al reanudar.
+// El freno corta SOLO las llamadas al modelo; la INGESTA nunca se detiene
+// (leads, mensajes, etapas y pipelines se siguen guardando, el inbox sigue vivo y
+// los detectores de salud no ven un falso "ingesta detenida"). Dos niveles:
+//   >= 100% → dejan de GENERAR: generate-response y follow-up-scan (no se
+//             reclama ningún mensaje: quedan para responderse al reanudar), y
+//             también evaluate-outcomes (graders LLM) y dreams-run. Un borrador
+//             pedido a mano desde el inbox (force_review) no se bloquea: es una
+//             decisión humana puntual.
+//   >= 110% → además deja de CLASIFICAR: process-inbound guarda el mensaje igual
+//             pero lo marca con classification.error "budget: …" (sin el prefijo
+//             "recover:") y sin vertical; recoverFailedClassifications lo
+//             reclasifica solo al subir el techo o cambiar de mes, y
+//             answer_max_age_hours evita contestar mensajes viejos al reanudar.
 // El aviso (alerta budget_exceeded + webhook) lo emite alerts-scan, no esta
-// ruta caliente: así pasa por el mismo camino de dedupe/webhook que el resto.
+// ruta caliente, y se resuelve solo cuando el nivel deja de aplicar.
+//
+// ES UNA ESTIMACIÓN: el gasto sale de usage_events.estimated_cost_usd. Las
+// sesiones CMA se valúan a tarifa base (cota inferior: una request interna de
+// >100K tokens de Haiku 5.5 paga la tarifa larga y no se distingue en el total
+// de la sesión). BUDGET_SAFETY_MARGIN_PCT (0..50, default 0) adelanta ambos
+// cortes para compensarlo.
 //
 // Cache en module scope (TTL 60s): esto corre en el hot path de CADA
 // inbound/respuesta; no tiene sentido pegarle a la DB cada vez.
@@ -32,9 +42,6 @@
 // Fail-open ABSOLUTO: un error leyendo el gasto NUNCA frena el sistema — un
 // freno que por un bug propio se convierte en apagón sería peor que no tenerlo.
 //
-// Alcance: frena el agente (respuestas, seguimientos) y la clasificación. No
-// frena graders ni Dreams (jobs chicos y acotados), que igual suman al gasto.
-
 export type BudgetGate = {
   blockGenerate: boolean;
   blockClassify: boolean;
@@ -54,18 +61,54 @@ export function parseBudget(raw: string | undefined | null): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-export function evaluateBudget(spendUsd: number, budgetUsd: number): BudgetGate {
+/**
+ * `marginPct` adelanta los dos cortes: con margen 10, el gasto estimado al 90%
+ * ya cuenta como 100%. Compensa que la valuación de sesiones CMA es una COTA
+ * INFERIOR (ver ai-pricing.ts, `aggregated`). `pct` queda como el gasto
+ * estimado REAL, sin inflar.
+ */
+export function evaluateBudget(spendUsd: number, budgetUsd: number, marginPct = 0): BudgetGate {
   const pct = (spendUsd / budgetUsd) * 100;
+  const eff = pct + marginPct;
   return {
-    blockGenerate: pct >= GENERATE_THRESHOLD_PCT,
-    blockClassify: pct >= CLASSIFY_THRESHOLD_PCT,
+    blockGenerate: eff >= GENERATE_THRESHOLD_PCT,
+    blockClassify: eff >= CLASSIFY_THRESHOLD_PCT,
     pct,
   };
+}
+
+/** Margen de seguridad en % (0..50). Ausente o inválido = 0. */
+export function parseMarginPct(raw: string | undefined | null): number {
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 50 ? n : 0;
+}
+
+// Marca de un mensaje que se ingestó pero NO se clasificó por el techo. Es
+// "budget:" y NO "recover:" a propósito: recoverFailedClassifications lo
+// reclasifica solo cuando el gate se abre (el prefijo "recover:" lo sacaría de
+// la cola de reintentos para siempre).
+export const BUDGET_ERROR_PREFIX = "budget:";
+export function budgetSkipError(pct: number): string {
+  return `${BUDGET_ERROR_PREFIX} techo mensual alcanzado (${pct.toFixed(0)}% del presupuesto estimado): se clasifica al reanudar`;
 }
 
 /** Nivel de alerta que corresponde (el más alto alcanzado), o null. */
 export function budgetAlertLevel(g: BudgetGate): 100 | 110 | null {
   return g.blockClassify ? 110 : g.blockGenerate ? 100 : null;
+}
+
+/**
+ * ¿La alerta abierta sigue vigente? No si cambió el mes (el gasto se reinició) ni
+ * si el nivel actual ya no la alcanza (se subió el techo, se quitó, o el gasto
+ * bajó). Una alerta de nivel 100 sigue vigente estando en 110.
+ */
+export function budgetAlertStillApplies(
+  alert: { month: string; nivel: number },
+  currentLevel: 100 | 110 | null,
+  currentMonth: string,
+): boolean {
+  return alert.month === currentMonth && currentLevel !== null && currentLevel >= alert.nivel;
 }
 
 // Estructural: acepta el SupabaseClient real sin importarlo (módulo testeable).
@@ -74,7 +117,7 @@ type RpcClient = {
 };
 type CfgGet = { get(key: string): string | undefined };
 
-let cache: { value: BudgetGate; budget: string | undefined; loadedAt: number } | null = null;
+let cache: { value: BudgetGate; key: string; loadedAt: number } | null = null;
 
 export function resetBudgetCacheForTests(): void {
   cache = null;
@@ -82,24 +125,28 @@ export function resetBudgetCacheForTests(): void {
 
 export async function getBudgetGate(supabase: RpcClient, cfg: CfgGet): Promise<BudgetGate> {
   const raw = cfg.get("MONTHLY_BUDGET_USD");
-  // Cambiar el techo invalida el cache: subirlo tiene que destrabar enseguida.
-  if (cache && cache.budget === raw && Date.now() - cache.loadedAt < TTL_MS) return cache.value;
+  const marginRaw = cfg.get("BUDGET_SAFETY_MARGIN_PCT");
+  // TODO lo que cambia el resultado invalida el cache (techo, margen y el corte
+  // BUDGET_EXCLUDE_BEFORE): subir el techo o excluir gasto tiene que destrabar
+  // enseguida, no esperar el TTL.
+  const key = `${raw ?? ""}|${marginRaw ?? ""}|${cfg.get("BUDGET_EXCLUDE_BEFORE") ?? ""}`;
+  if (cache && cache.key === key && Date.now() - cache.loadedAt < TTL_MS) return cache.value;
 
   const budgetUsd = parseBudget(raw);
   if (budgetUsd === null) {
-    cache = { value: NO_GATE, budget: raw, loadedAt: Date.now() };
+    cache = { value: NO_GATE, key, loadedAt: Date.now() };
     return NO_GATE;
   }
 
   try {
     const { data, error } = await supabase.rpc("gasto_mes_actual");
     if (error) throw new Error(error.message);
-    const value = evaluateBudget(Number(data) || 0, budgetUsd);
-    cache = { value, budget: raw, loadedAt: Date.now() };
+    const value = evaluateBudget(Number(data) || 0, budgetUsd, parseMarginPct(marginRaw));
+    cache = { value, key, loadedAt: Date.now() };
     return value;
   } catch (e) {
     console.warn("getBudgetGate error — fail-open:", e instanceof Error ? e.message : String(e));
-    cache = { value: NO_GATE, budget: raw, loadedAt: Date.now() };
+    cache = { value: NO_GATE, key, loadedAt: Date.now() };
     return NO_GATE;
   }
 }

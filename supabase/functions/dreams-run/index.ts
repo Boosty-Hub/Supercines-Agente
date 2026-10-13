@@ -22,6 +22,7 @@ import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { jsonOf, LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
+import { getBudgetGate } from "../_shared/budget.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -100,8 +101,9 @@ async function gatherDaily(sinceIso?: string): Promise<Gathered> {
 
 // ---------------- Weekly: learnings de leads, anonimizados ----------------
 async function gatherWeekly(): Promise<Gathered> {
-  // Listamos los archivos /<lead_id>/learnings.md en el leads store
-  // y los traemos. Para simplicidad acá usamos lo mismo que daily pero 7 días.
+  // El insumo semanal sale de messages + drafts (la historia determinística de la
+  // DB), no de los learnings.md del store de leads: dejar de leer/escribir
+  // conversation.md y de volcar todo a learnings.md NO le quita materia prima.
   const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
   const { data: messages, error } = await supabase
     .from("messages")
@@ -377,7 +379,9 @@ async function rebuildDigest(
   // el modelo y el prompt son los mismos que produjeron el digest vigente
   // (ver _shared/dreams-digest-fingerprint.ts). Mutaciones del dashboard
   // (aprobar/borrar/importar) cambian el set → el digest_only sigue reconstruyendo.
-  const fpCtx = { model: dreamsModel, promptVersion: DIGEST_PROMPT_VERSION, maxWords: DIGEST_MAX_WORDS };
+  // Todo input interpolado en el prompt del digest entra al fingerprint.
+  const operator = cfg.getOr("OPERATOR_NAME", "el operador");
+  const fpCtx = { model: dreamsModel, promptVersion: DIGEST_PROMPT_VERSION, maxWords: DIGEST_MAX_WORDS, operator };
   const fingerprintBefore = await digestFingerprint(dreams, prevDigest, fpCtx);
   if (canSkipDigestRebuild({
     stored: fresh.DREAMS_DIGEST_FINGERPRINT,
@@ -391,7 +395,6 @@ async function rebuildDigest(
 
   let digest = "";
   if (dreams.length > 0 || prevDigest) {
-    const operator = cfg.getOr("OPERATOR_NAME", "el operador");
     const body = dreams.map((d) => `### ${d.path}\n${d.content}`).join("\n\n");
     const response = await anthropic.messages.create({
       model: dreamsModel,
@@ -655,6 +658,16 @@ Deno.serve(async (req: Request) => {
 
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
+
+    // Techo de gasto mensual (>=100%): Dreams también llama al modelo. No se
+    // estampa DREAMS_LAST_RUN, así que el cron lo reintenta al reanudar.
+    const budget = await getBudgetGate(supabase, cfg);
+    if (budget.blockGenerate) {
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: "budget_exceeded", pct: budget.pct }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
 
     // Modo digest_only: reconstruir SOLO el digest, sin correr el análisis.
     // Lo disparan las mutaciones del dashboard (aprobar/borrar/importar dreams)

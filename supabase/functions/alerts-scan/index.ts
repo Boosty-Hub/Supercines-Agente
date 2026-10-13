@@ -13,7 +13,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
 import { loadConfig } from "../_shared/config.ts";
-import { budgetAlertLevel, getBudgetGate, parseBudget } from "../_shared/budget.ts";
+import { budgetAlertLevel, budgetAlertStillApplies, getBudgetGate, parseBudget } from "../_shared/budget.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -392,7 +392,8 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
 // ---- Techo de gasto mensual ----
 // El gate (_shared/budget.ts) frena en el hot path pero NO avisa: el aviso sale
 // por acá para pasar por el mismo camino de dedupe/webhook/panel que el resto.
-// Una alerta por (mes, nivel): el 110% no repite la del 100% del mismo mes.
+// Una alerta ABIERTA por (mes, nivel): el 110% no repite la del 100% del mismo
+// mes, y si se resolvió (subió el techo) y se vuelve a cruzar, avisa de nuevo.
 async function detectBudgetExceeded(): Promise<AlertInput[]> {
   try {
     const cfg = await loadConfig(supabase);
@@ -406,6 +407,7 @@ async function detectBudgetExceeded(): Promise<AlertInput[]> {
       .from("alerts")
       .select("id")
       .eq("kind", "budget_exceeded")
+      .is("acknowledged_at", null)
       .eq("metadata->>month", month)
       .eq("metadata->>nivel", String(level))
       .limit(1);
@@ -417,17 +419,51 @@ async function detectBudgetExceeded(): Promise<AlertInput[]> {
       severity: level >= 110 ? "critical" : "warning",
       title: `Presupuesto mensual al ${level}%`,
       description:
-        `El gasto de IA de este mes ($${spendUsd.toFixed(2)}) alcanzó el ${level}% del presupuesto ` +
+        `El gasto estimado de IA de este mes ($${spendUsd.toFixed(2)}) alcanzó el ${level}% del presupuesto ` +
         `configurado ($${budgetUsd.toFixed(2)}). ` +
         (level >= 110
-          ? "Se dejaron de clasificar mensajes nuevos (quedan pendientes en la cola) y de generar respuestas."
-          : "Se dejaron de generar respuestas y seguimientos nuevos (los mensajes se siguen clasificando)."),
+          ? "Se dejaron de generar respuestas y de clasificar mensajes nuevos; los mensajes se siguen guardando y se clasifican y responden al reanudar."
+          : "Se dejaron de generar respuestas, seguimientos, evaluaciones y Dreams; los mensajes se siguen clasificando y guardando y se responden al reanudar."),
       metadata: { month, nivel: level, spend_usd: Number(spendUsd.toFixed(2)), budget_usd: budgetUsd },
     }];
   } catch (err) {
     // Fail-open: un fallo acá no debe tumbar el resto del escaneo.
     console.warn("detectBudgetExceeded:", err instanceof Error ? err.message : String(err));
     return [];
+  }
+}
+
+// Auto-resuelve las alertas budget_exceeded que ya no aplican (cambió el mes, se
+// subió o quitó el techo, o el gasto bajó). Mismo criterio que
+// resolveRecoveredProviderCredit: acknowledged_by es uuid, así que el marcador de
+// resolución automática va en metadata.resolved_by.
+async function resolveRecoveredBudget(): Promise<number> {
+  try {
+    const { data: open } = await supabase
+      .from("alerts")
+      .select("id, metadata")
+      .eq("kind", "budget_exceeded")
+      .is("acknowledged_at", null);
+    if (!open || open.length === 0) return 0;
+
+    const cfg = await loadConfig(supabase);
+    const level = budgetAlertLevel(await getBudgetGate(supabase, cfg));
+    const month = new Date().toISOString().slice(0, 7);
+    let resolved = 0;
+    // deno-lint-ignore no-explicit-any
+    for (const a of open as Array<{ id: string; metadata: any }>) {
+      const m = a.metadata ?? {};
+      if (budgetAlertStillApplies({ month: String(m.month ?? ""), nivel: Number(m.nivel) || 0 }, level, month)) continue;
+      const { error } = await supabase
+        .from("alerts")
+        .update({ acknowledged_at: new Date().toISOString(), metadata: { ...m, resolved_by: "auto:recovered" } })
+        .eq("id", a.id);
+      if (!error) resolved++;
+    }
+    return resolved;
+  } catch (err) {
+    console.warn("resolveRecoveredBudget:", err instanceof Error ? err.message : String(err));
+    return 0;
   }
 }
 
@@ -441,12 +477,13 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, silence, budgetAlerts, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, budgetAlerts, budgetResolved, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
       detectBudgetExceeded(),
+      resolveRecoveredBudget(),
       resolveRecoveredProviderCredit(),
     ]);
     const newAlerts = [...failed, ...review, ...regression, ...silence, ...budgetAlerts];
@@ -470,6 +507,7 @@ Deno.serve(async (req: Request) => {
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
           budget_exceeded: budgetAlerts.length,
+          budget_resolved: budgetResolved,
           provider_credit_resolved: providerCreditResolved,
         },
       }),

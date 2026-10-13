@@ -3,7 +3,7 @@
 // Override por runtime_config.AI_PRICING_OVERRIDES.
 // NOTA: contenido idéntico a web/src/lib/ai-pricing.ts (Node/Next).
 // Mantener en sync. No se comparte archivo: imports Deno vs Node son incompatibles.
-// _shared/ai-pricing.test.ts ASEGURA la paridad (falla si divergen).
+// supabase/tests/web-parity.test.ts ASEGURA la paridad (falla si divergen).
 export type RateCard = {
   input: number; output: number;
   cacheWrite5m: number; cacheWrite1h: number; cacheRead: number;

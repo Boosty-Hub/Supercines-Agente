@@ -19,7 +19,7 @@ import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { isStaleBacklog } from "../_shared/backlog.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
-import { getBudgetGate } from "../_shared/budget.ts";
+import { budgetSkipError, getBudgetGate } from "../_shared/budget.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 import { jsonOf, LLM_PROFILES, LlmRefusalError, LlmTruncatedError } from "../_shared/llm.ts";
 
@@ -615,9 +615,9 @@ Reglas:
     userContent = `${historyPreamble}Canal: ${safeChannel}\n\nMensaje NUEVO a clasificar:\n${turn("lead", text)}`;
   }
 
-  const response = await anthropic.messages.create({
+  const callOnce = (maxTokens: number) => anthropic.messages.create({
     model,
-    max_tokens: LLM_PROFILES.classify.maxTokens,
+    max_tokens: maxTokens,
     system,
     messages: [{ role: "user", content: userContent }],
     output_config: {
@@ -657,7 +657,22 @@ Reglas:
 
   // Adaptive thinking: content[0] puede ser un bloque `thinking`. jsonOf lee el
   // bloque de texto y falla explícito ante refusal / max_tokens (ver _shared/llm.ts).
-  const parsed = jsonOf<Classification & { media_summary?: string; __usage?: Anthropic.Usage }>(response, "classify");
+  type Parsed = Classification & { media_summary?: string; __usage?: Anthropic.Usage };
+  let response = await callOnce(LLM_PROFILES.classify.maxTokens);
+  let parsed: Parsed;
+  try {
+    parsed = jsonOf<Parsed>(response, "classify");
+  } catch (err) {
+    if (!(err instanceof LlmTruncatedError)) throw err;
+    // Corte por max_tokens (el thinking se comió el tope): un único reintento con
+    // el DOBLE de holgura antes de declararlo terminal. La primera llamada se
+    // cobró: se registra para que el techo de gasto no la subestime.
+    await recordFailedLlmUsage(supabase, err, {
+      component: "classify", model, metadata: { retry: "max_tokens x2" },
+    });
+    response = await callOnce(LLM_PROFILES.classify.maxTokens * 2);
+    parsed = jsonOf<Parsed>(response, "classify");
+  }
   // Clamp en código (los structured outputs no soportan min/max)
   parsed.urgency = Math.max(1, Math.min(5, Math.round(parsed.urgency ?? 1)));
   parsed.toxicity = Math.max(0, Math.min(1, parsed.toxicity ?? 0));
@@ -865,6 +880,9 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   const runtimeCfg = await loadConfig(supabase);
   // Modelo del clasificador: editable desde /consumo (DB-first, fallback Haiku 5.5).
   const classifyModel = modelFor(runtimeCfg, "CLASSIFY_MODEL");
+  // Techo de gasto (>=110%): la INGESTA sigue (leads, mensajes, etapas), solo se
+  // omite la llamada al clasificador. Ver _shared/budget.ts.
+  const budget = await getBudgetGate(supabase, runtimeCfg);
   const kommoDomain = runtimeCfg.get("KOMMO_API_DOMAIN");
   const kommoToken = runtimeCfg.get("KOMMO_ACCESS_TOKEN");
   // Key de OpenAI para transcribir notas de voz (Whisper). Sin key, los
@@ -1236,6 +1254,14 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         continue;
       }
 
+      // Techo de gasto: el mensaje queda guardado y sin clasificar, marcado con
+      // "budget:" (no "recover:"). recoverFailedClassifications lo reclasifica
+      // cuando el gate se abre; mientras tanto no cuenta como intento fallido.
+      if (budget.blockClassify) {
+        await supabase.from("messages").update({ classification: { error: budgetSkipError(budget.pct) } }).eq("id", msg.id);
+        continue;
+      }
+
       try {
         // Contexto previo del lead para desambiguar el mensaje nuevo (ej: "sí,
         // dale" tras una pregunta del agente). Excluimos el mensaje actual, que
@@ -1397,6 +1423,10 @@ const RECOVER_MAX_ATTEMPTS = 5;
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
   try {
+    // Con el techo activo no se reclasifica nada (el mensaje sigue marcado
+    // "budget:" y se retoma cuando el gate se abre).
+    if ((await getBudgetGate(supabase, await loadConfig(supabase))).blockClassify) return 0;
+
     // Mismos filtros que el hot path. Se cargan ANTES del select: (a)
     // answerMaxAgeHours acota la query (ver abajo) y (b) un mensaje de un
     // canal "clasificar sin responder" llega acá con ignored=false a
@@ -1691,18 +1721,6 @@ Deno.serve(async (req: Request) => {
 
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
-
-    // Techo de gasto mensual al 110%: deja de clasificar. Los mensajes quedan
-    // 'pending' en inbound_queue (mismo mecanismo que system_halted): nada se
-    // pierde, el sweep los retoma al subir el techo o cambiar de mes. Ausente o
-    // "0" en MONTHLY_BUDGET_USD = sin freno; fail-open (ver _shared/budget.ts).
-    const budget = await getBudgetGate(supabase, cfg);
-    if (budget.blockClassify) {
-      return new Response(
-        JSON.stringify({ ok: true, accepted: false, skipped: "budget exceeded", pct: budget.pct }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
-    }
 
     const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");

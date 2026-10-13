@@ -13,6 +13,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import {
+  scaffoldHash,
   buildAgentTools,
   composeSystem,
   filterToolRowsByGates,
@@ -174,7 +175,7 @@ export async function syncAgentTools(actor: string): Promise<SyncResult> {
 
     // 5. Persist the bumped version so the editor page can show it.
     await setConfigValues(
-      { ANTHROPIC_AGENT_VERSION: String(newVersion) },
+      { ANTHROPIC_AGENT_VERSION: String(newVersion), AGENT_SCAFFOLD_HASH: scaffoldHash() },
       actor
     );
 

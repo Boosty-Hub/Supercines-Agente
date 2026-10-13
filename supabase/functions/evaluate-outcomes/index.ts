@@ -17,6 +17,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
+import { getBudgetGate } from "../_shared/budget.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
@@ -275,7 +276,7 @@ async function runAutomatic(
 }
 
 // ---------------- Evaluación principal ----------------
-async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthropic: Anthropic, cfg: ConfigReader): Promise<number> {
+async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthropic: Anthropic, cfg: ConfigReader, llmBlocked: boolean): Promise<number> {
   // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku 5.5).
   const graderModel = modelFor(cfg, "GRADER_MODEL");
   const existing = await getExistingOutcomes(draft.id);
@@ -285,6 +286,9 @@ async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthrop
     // Si ya existe, skip — excepto para automatic que pueden cambiar con el tiempo (lead_replied)
     const isMutable = grader.source === "automatic" && grader.slug === "lead_replied";
     if (existing.has(grader.id) && !isMutable) continue;
+    // Techo de gasto (>=100%): los graders LLM esperan (no se escribe outcome; el
+    // draft se vuelve a evaluar al reanudar). Los automáticos no cuestan nada.
+    if (llmBlocked && grader.source === "llm_judge") continue;
 
     try {
       const result =
@@ -375,12 +379,13 @@ Deno.serve(async (req: Request) => {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
     const anthropic = createAnthropicClient(cfg.require("ANTHROPIC_API_KEY"), supabase);
+    const llmBlocked = (await getBudgetGate(supabase, cfg)).blockGenerate;
 
     const graders = await getEnabledGraders();
     const drafts = await getDraftsToEvaluate(body.draft_id);
     let totalEvaluated = 0;
     for (const d of drafts) {
-      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg);
+      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg, llmBlocked);
     }
     return new Response(
       JSON.stringify({

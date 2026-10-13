@@ -3,6 +3,10 @@
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
 import {
   budgetAlertLevel,
+  budgetAlertStillApplies,
+  BUDGET_ERROR_PREFIX,
+  budgetSkipError,
+  parseMarginPct,
   evaluateBudget,
   getBudgetGate,
   parseBudget,
@@ -70,4 +74,50 @@ Deno.test("getBudgetGate: cambiar el presupuesto invalida el cache (subirlo dest
   const client = sb(() => Promise.resolve({ data: 120, error: null }));
   assertEquals((await getBudgetGate(client, cfg("100"))).blockGenerate, true);
   assertEquals((await getBudgetGate(client, cfg("500"))).blockGenerate, false);
+});
+
+Deno.test("margen de seguridad: frena ANTES del techo para compensar una valuación que es cota inferior", () => {
+  // margen 10%: 90% del gasto estimado ya cuenta como 100% / 110% -> 99% y 99%+10
+  assertEquals(evaluateBudget(89.99, 100, 10).blockGenerate, false);
+  assertEquals(evaluateBudget(90, 100, 10).blockGenerate, true);
+  assertEquals(evaluateBudget(99.99, 100, 10).blockClassify, false);
+  assertEquals(evaluateBudget(100, 100, 10).blockClassify, true);
+  // pct sigue siendo el gasto REAL estimado (no el inflado)
+  assertEquals(evaluateBudget(90, 100, 10).pct, 90);
+});
+
+Deno.test("parseMarginPct: 0..50, basura => 0", () => {
+  assertEquals(parseMarginPct("10"), 10);
+  assertEquals(parseMarginPct("0"), 0);
+  for (const v of [undefined, "", "-5", "abc", "51", "Infinity"]) assertEquals(parseMarginPct(v), 0);
+});
+
+Deno.test("budgetSkipError: texto estable con el prefijo 'budget:' (NO 'recover:', para que el recover lo reclasifique al reanudar)", () => {
+  const e = budgetSkipError(112.4);
+  assertEquals(e.startsWith(BUDGET_ERROR_PREFIX), true);
+  assertEquals(e.startsWith("recover:"), false);
+});
+
+Deno.test("getBudgetGate: el cache se invalida al cambiar BUDGET_EXCLUDE_BEFORE o el margen, no solo el techo", async () => {
+  resetBudgetCacheForTests();
+  let spend = 120;
+  const client = sb(() => Promise.resolve({ data: spend, error: null }));
+  const mk = (b: string, ex?: string, m?: string) => ({
+    get: (k: string) => ({ MONTHLY_BUDGET_USD: b, BUDGET_EXCLUDE_BEFORE: ex, BUDGET_SAFETY_MARGIN_PCT: m } as Record<string, string | undefined>)[k],
+  });
+  assertEquals((await getBudgetGate(client, mk("100"))).blockGenerate, true);
+  spend = 10; // el gasto "baja" porque el operador excluyó lo anterior
+  assertEquals((await getBudgetGate(client, mk("100", "2026-10-13T00:00:00Z"))).blockGenerate, false);
+  spend = 95;
+  assertEquals((await getBudgetGate(client, mk("100", "2026-10-13T00:00:00Z", "10"))).blockGenerate, true);
+});
+
+Deno.test("budgetAlertStillApplies: se resuelve al cambiar de mes, al subir el techo o al quitarlo", () => {
+  const a100 = { month: "2026-10", nivel: 100 };
+  const a110 = { month: "2026-10", nivel: 110 };
+  assertEquals(budgetAlertStillApplies(a100, 100, "2026-10"), true);
+  assertEquals(budgetAlertStillApplies(a100, 110, "2026-10"), true); // el 100 sigue siendo cierto en el 110
+  assertEquals(budgetAlertStillApplies(a110, 100, "2026-10"), false); // bajó de 110 a 100
+  assertEquals(budgetAlertStillApplies(a100, null, "2026-10"), false); // subió el techo / sin presupuesto
+  assertEquals(budgetAlertStillApplies(a100, 100, "2026-11"), false); // otro mes
 });

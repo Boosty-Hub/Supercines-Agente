@@ -3,7 +3,7 @@
 import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert@^1.0.0";
 import { canSkipDigestRebuild, digestFingerprint } from "./dreams-digest-fingerprint.ts";
 
-const ctx = { model: "claude-haiku-5-5", promptVersion: "1", maxWords: 900 };
+const ctx = { model: "claude-haiku-5-5", promptVersion: "1", maxWords: 900, operator: "Acme" };
 const d = (path: string, content: string) => ({ path, content });
 
 Deno.test("mismo set + mismo digest => mismo fingerprint, sin importar el orden de listado", async () => {
@@ -30,6 +30,8 @@ Deno.test("cambia si cambia el modelo, la versión del prompt o el tope de palab
   assertNotEquals(a, await digestFingerprint([d("/dreams/a.md", "A")], "x", { ...ctx, model: "claude-sonnet-4-6" }));
   assertNotEquals(a, await digestFingerprint([d("/dreams/a.md", "A")], "x", { ...ctx, promptVersion: "2" }));
   assertNotEquals(a, await digestFingerprint([d("/dreams/a.md", "A")], "x", { ...ctx, maxWords: 500 }));
+  // OPERATOR_NAME se interpola en el prompt de consolidación: renombrar al operador debe reconstruir.
+  assertNotEquals(a, await digestFingerprint([d("/dreams/a.md", "A")], "x", { ...ctx, operator: "Otra Marca" }));
 });
 
 Deno.test("no hay colisión por concatenación (path/contenido ambiguos)", async () => {

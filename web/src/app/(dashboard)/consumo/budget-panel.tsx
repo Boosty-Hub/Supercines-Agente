@@ -2,8 +2,10 @@
 
 // Panel "Techo de gasto mensual": fija runtime_config.MONTHLY_BUDGET_USD vía
 // /api/usage/budget. Muestra lo gastado en el mes (UTC) contra el techo.
-// Al 100% el agente deja de generar respuestas y seguimientos; al 110% también
-// deja de clasificar (los mensajes quedan en cola, no se pierden).
+// Al 100% se frenan respuestas, seguimientos, evaluaciones y Dreams; al 110%
+// también la clasificación. La ingesta NO se frena: los mensajes se guardan y se
+// atienden al reanudar. El gasto es una ESTIMACIÓN (las sesiones del agente se
+// valúan a tarifa base: cota inferior); el margen de seguridad lo compensa.
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -16,22 +18,27 @@ function usd(n: number): string {
 export function BudgetPanel({
   budgetUsd,
   excludeBefore,
+  marginPct,
   spendUsd,
   readOnly = false,
 }: {
   budgetUsd: number | null;
   excludeBefore: string | null;
+  marginPct: number;
   spendUsd: number;
   readOnly?: boolean;
 }) {
   const router = useRouter();
   const [value, setValue] = useState(budgetUsd !== null ? String(budgetUsd) : "");
   const [excludeSoFar, setExcludeSoFar] = useState(false);
+  const [margin, setMargin] = useState(String(marginPct || ""));
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const pct = budgetUsd ? (spendUsd / budgetUsd) * 100 : null;
-  const dirty = value.trim() !== (budgetUsd !== null ? String(budgetUsd) : "");
+  const dirty =
+    value.trim() !== (budgetUsd !== null ? String(budgetUsd) : "") ||
+    (Number(margin) || 0) !== marginPct;
   const barColor = pct === null ? "bg-neutral-300" : pct >= 110 ? "bg-red-500" : pct >= 100 ? "bg-amber-500" : "bg-emerald-500";
 
   async function save() {
@@ -39,6 +46,11 @@ export function BudgetPanel({
     const parsed = trimmed === "" ? null : Number(trimmed.replace(",", "."));
     if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) {
       setMsg({ ok: false, text: "Ingresá un monto en USD (por ejemplo 50)." });
+      return;
+    }
+    const marginNum = margin.trim() === "" ? 0 : Number(margin.replace(",", "."));
+    if (!Number.isFinite(marginNum) || marginNum < 0 || marginNum > 50) {
+      setMsg({ ok: false, text: "El margen va de 0 a 50 (%)." });
       return;
     }
     setSaving(true);
@@ -49,6 +61,7 @@ export function BudgetPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           monthlyBudgetUsd: parsed,
+          safetyMarginPct: marginNum,
           // Solo tiene sentido al ACTIVAR el techo; al cambiarlo, no se toca.
           ...(budgetUsd === null && parsed ? { excludeSpentSoFar: excludeSoFar } : {}),
         }),
@@ -69,7 +82,7 @@ export function BudgetPanel({
       <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-sm font-semibold text-neutral-900">
-            Gastado este mes: {usd(spendUsd)}
+            Gastado este mes (estimado): {usd(spendUsd)}
             {budgetUsd !== null && <span className="font-normal text-neutral-500"> de {usd(budgetUsd)}</span>}
           </p>
           {pct !== null && <p className="font-mono text-xs font-semibold text-neutral-700">{pct.toFixed(0)}%</p>}
@@ -80,7 +93,7 @@ export function BudgetPanel({
         <p className="mt-2 text-xs text-neutral-500">
           {budgetUsd === null
             ? "Sin techo: el agente no se detiene por gasto."
-            : "Se cuenta el mes calendario en UTC."}
+            : `Estimación sobre el mes calendario en UTC${marginPct ? `; frena ${marginPct}% antes del techo` : ""}.`}
           {excludeBefore && ` No cuenta lo gastado antes del ${new Date(excludeBefore).toLocaleDateString("es")}.`}
         </p>
       </div>
@@ -96,6 +109,20 @@ export function BudgetPanel({
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder="50"
+            className={inputCls}
+            disabled={readOnly}
+          />
+        </div>
+        <div className="sm:w-44">
+          <label className="mb-1 block text-xs font-medium text-neutral-600" htmlFor="budget-margin">
+            Margen de seguridad (%)
+          </label>
+          <input
+            id="budget-margin"
+            inputMode="decimal"
+            value={margin}
+            onChange={(e) => setMargin(e.target.value)}
+            placeholder="0"
             className={inputCls}
             disabled={readOnly}
           />

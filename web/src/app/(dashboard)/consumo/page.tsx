@@ -1,5 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getScope } from "@/lib/auth/roles";
+import { getAgentSyncStatus } from "@/lib/agent-sync-status";
+import { AgentSyncBanner } from "@/components/agent-sync-banner";
 import {
   PageShell, StatRow, StatCard, SectionCard, EmptyState, BarChart3, TrendUp,
 } from "@/components/ui";
@@ -84,6 +86,8 @@ export default async function ConsumoPage({
   // en las APIs); acá solo se deshabilita el control para quien no puede.
   const { data: { user } } = await supabase.auth.getUser();
   const puedeConfigurar = getScope(user) === "configuracion";
+  // Desfase agente vivo vs código/config: solo se consulta (y se muestra) a quien puede sincronizar.
+  const syncStatus = puedeConfigurar ? await getAgentSyncStatus() : null;
 
   // Timezone del negocio (default America/Guayaquil)
   const { data: tzRow } = await supabase
@@ -277,7 +281,7 @@ export default async function ConsumoPage({
   }
 
   // ---- Techo de gasto mensual (gasto del mes en curso vs MONTHLY_BUDGET_USD) ----
-  const budgetCfg = await configValues(["MONTHLY_BUDGET_USD", "BUDGET_EXCLUDE_BEFORE"]);
+  const budgetCfg = await configValues(["MONTHLY_BUDGET_USD", "BUDGET_EXCLUDE_BEFORE", "BUDGET_SAFETY_MARGIN_PCT"]);
   const { data: monthSpend } = await supabase.rpc("gasto_mes_actual");
 
   // ---- Modelos por componente (DB-first, default = diseño del pipeline) ----
@@ -532,12 +536,13 @@ export default async function ConsumoPage({
       <SectionCard
         icon={<TrendUp size={17} />}
         title="Techo de gasto mensual"
-        description="Red de seguridad contra un gasto disparado. Al 100% el agente deja de generar respuestas nuevas; al 110% deja de clasificar. Aplica en menos de 1 minuto."
+        description="Red de seguridad contra un gasto disparado. Es una estimación. Al 100% se frenan las respuestas, seguimientos, evaluaciones y Dreams; al 110% también la clasificación (los mensajes se siguen guardando y se atienden al reanudar). Aplica en menos de 1 minuto."
       >
         <BudgetPanel
           readOnly={!puedeConfigurar}
           budgetUsd={parseBudget(budgetCfg.MONTHLY_BUDGET_USD)}
           excludeBefore={budgetCfg.BUDGET_EXCLUDE_BEFORE ?? null}
+          marginPct={Number(budgetCfg.BUDGET_SAFETY_MARGIN_PCT) || 0}
           spendUsd={Number(monthSpend) || 0}
         />
       </SectionCard>
@@ -548,7 +553,17 @@ export default async function ConsumoPage({
         title="Modelos por componente"
         description="Elegí qué modelo usa cada pieza. Más barato = menos calidad; más caro = mejor. Aplica en menos de 1 minuto, sin redeploy."
       >
-        <ModelsPanel current={currentModels} readOnly={!puedeConfigurar} />
+        {syncStatus?.provisioned && (
+          <div className="mb-3">
+            <AgentSyncBanner
+              scaffoldStale={syncStatus.scaffoldStale}
+              modelDrift={syncStatus.modelDrift}
+              configModel={syncStatus.configModel}
+              liveModel={syncStatus.liveModel}
+            />
+          </div>
+        )}
+        <ModelsPanel current={currentModels} readOnly={!puedeConfigurar} liveAgentModel={syncStatus?.liveModel ?? null} />
       </SectionCard>
 
       {/* Calculadora para cotizar clientes */}

@@ -32,6 +32,20 @@ export async function recordUsage(supabase: SupabaseClient, u: RecordUsageInput)
   } catch (e) { console.warn("recordUsage failed (ignored):", e instanceof Error ? e.message : String(e)); }
 }
 
+/**
+ * Modelo REAL de una sesión CMA, leído de su objeto (`agent` es el snapshot
+ * post-override: string o `{ id, … }`). El techo de gasto depende de valuar con
+ * el modelo que corrió, no con runtime_config.AGENT_MODEL (que puede estar
+ * desfasado del agente vivo). null si la respuesta no lo trae.
+ */
+export function sessionModelId(session: unknown): string | null {
+  const agent = (session as { agent?: unknown } | null)?.agent;
+  const m = (agent as { model?: unknown } | null)?.model;
+  if (typeof m === "string" && m) return m;
+  const id = (m as { id?: unknown } | null)?.id;
+  return typeof id === "string" && id ? id : null;
+}
+
 // Una llamada que terminó en refusal / max_tokens / sin texto IGUAL se cobra
 // (el thinking cuenta: hasta 4K-16K tokens). Si no se registra, usage_events —y
 // con él el techo de gasto— subestima el gasto real. Registra el usage que
@@ -87,12 +101,14 @@ export async function captureSessionUsage(
     });
     clearTimeout(t);
     if (r.ok) {
-      const s = await r.json() as { usage?: Record<string, unknown>; stats?: Record<string, unknown>; status?: string };
+      const s = await r.json() as { usage?: Record<string, unknown>; stats?: Record<string, unknown>; status?: string; agent?: unknown };
       const u = s.usage ?? {};
       const cc = (u.cache_creation ?? {}) as Record<string, unknown>;
       await recordUsage(supabase, {
         component: opts.component,
-        model: opts.model,
+        // Modelo REAL de la sesión (agent.model del objeto); opts.model es el
+        // fallback si la respuesta no lo trae.
+        model: sessionModelId(s) ?? opts.model,
         inputTokens: (u.input_tokens as number) ?? null,
         outputTokens: (u.output_tokens as number) ?? null,
         cacheReadTokens: (u.cache_read_input_tokens as number) ?? null,

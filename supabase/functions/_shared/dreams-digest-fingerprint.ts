@@ -26,6 +26,8 @@ export type DigestContext = {
   /** Subir cuando cambia el prompt de consolidación: fuerza un rebuild al desplegar. */
   promptVersion: string;
   maxWords: number;
+  /** OPERATOR_NAME: se interpola en el prompt de consolidación. */
+  operator: string;
 };
 
 export async function digestFingerprint(

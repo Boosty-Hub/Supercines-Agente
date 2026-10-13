@@ -108,3 +108,23 @@ Deno.test("PARIDAD: capacidades por modelo web == Edge, y todo modelo asignable 
   assertEquals(WEB_CAPS, MODEL_CAPS);
   for (const m of ALLOWED_MODELS) assert(MODEL_CAPS[m], `sin capacidades: ${m}`);
 });
+
+import { sessionModelId as sessionModelWeb } from "../../web/src/lib/model-capabilities.ts";
+import { sessionModelId as sessionModelEdge } from "../functions/_shared/usage.ts";
+
+Deno.test("sessionModelId: lee agent.model (string u objeto) de la sesión; web == Edge", () => {
+  const cases: Array<[unknown, string | null]> = [
+    [{ agent: { model: { id: "claude-haiku-5-5", effort: "medium" } } }, "claude-haiku-5-5"],
+    [{ agent: { model: "claude-sonnet-4-6" } }, "claude-sonnet-4-6"],
+    [{ agent: {} }, null], [{}, null], [null, null], [{ agent: { model: { id: "" } } }, null],
+  ];
+  for (const [input, want] of cases) {
+    assertEquals(sessionModelEdge(input), want);
+    assertEquals(sessionModelWeb(input), want);
+  }
+});
+
+Deno.test("alcances: /api/agent/sync (re-empuja el system prompt a producción) exige configuracion", () => {
+  assertEquals(scopeRequeridoPara("/api/agent/sync"), "configuracion");
+  assertEquals(rutaPermitida("contenido", "/api/agent/sync"), false);
+});

@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { configValue } from "@/lib/runtime-config";
 import { costUsd, parsePricingOverride } from "@/lib/ai-pricing";
 import { MODEL_KEYS } from "@/lib/model-config";
+import { sessionModelId } from "@/lib/model-capabilities";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // backfill puede tomar varios minutos
@@ -105,11 +106,13 @@ export async function POST(request: Request) {
                 usage?: Record<string, unknown>;
                 stats?: Record<string, unknown>;
                 status?: string;
+                agent?: unknown;
               };
               const u = s.usage ?? {};
               const cc = (u.cache_creation ?? {}) as Record<string, unknown>;
               const runtimeMs = Math.round(((s.stats?.active_seconds as number) ?? 0) * 1000);
-              const model = (meta.model as string) ?? MODEL_KEYS.AGENT_MODEL;
+              // Modelo REAL de la sesión; luego el guardado en el draft; luego el default.
+              const model = sessionModelId(s) ?? (meta.model as string) ?? MODEL_KEYS.AGENT_MODEL;
               const cost = costUsd({
                 model,
                 inputTokens: (u.input_tokens as number) ?? null,

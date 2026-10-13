@@ -6,6 +6,7 @@ import {
   buildAgentTools,
   composeSystem,
   filterToolRowsByGates,
+  scaffoldHash,
   type AgentToolRow,
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
@@ -193,6 +194,7 @@ export async function POST() {
         ANTHROPIC_ENVIRONMENT_ID: envId,
         ANTHROPIC_AGENT_ID: agentId,
         ANTHROPIC_AGENT_VERSION: String(agentVersion),
+        AGENT_SCAFFOLD_HASH: scaffoldHash(),
       },
       user.email ?? "setup-wizard"
     );

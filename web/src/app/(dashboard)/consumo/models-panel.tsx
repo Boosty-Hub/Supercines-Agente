@@ -8,9 +8,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { selectCls } from "@/components/ui";
-import { ALLOWED_MODELS, MODEL_LABELS, MODEL_KEY_INFO } from "@/lib/model-config";
+import { ALLOWED_MODELS, MODEL_LABELS, MODEL_KEY_INFO, MODEL_NAMES } from "@/lib/model-config";
 
-export function ModelsPanel({ current, readOnly = false }: { current: Record<string, string>; readOnly?: boolean }) {
+export function ModelsPanel({
+  current,
+  readOnly = false,
+  liveAgentModel = null,
+}: {
+  current: Record<string, string>;
+  readOnly?: boolean;
+  /** Modelo que Anthropic tiene guardado en el agente (puede diferir de la config). */
+  liveAgentModel?: string | null;
+}) {
   const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>(current);
   const [saving, setSaving] = useState(false);
@@ -50,6 +59,12 @@ export function ModelsPanel({ current, readOnly = false }: { current: Record<str
             <div className="min-w-0">
               <p className="text-sm font-semibold text-neutral-900">{info.label}</p>
               <p className="mt-0.5 text-xs text-neutral-500">{info.detail}</p>
+              {key === "AGENT_MODEL" && liveAgentModel && (
+                <p className={`mt-1 text-xs ${liveAgentModel === current.AGENT_MODEL ? "text-neutral-500" : "font-medium text-amber-700"}`}>
+                  En Anthropic corre ahora: {MODEL_NAMES[liveAgentModel] ?? liveAgentModel}
+                  {liveAgentModel !== current.AGENT_MODEL && " — distinto de la configuración; guardá o usá Sincronizar"}
+                </p>
+              )}
             </div>
             <select
               value={values[key] ?? ""}

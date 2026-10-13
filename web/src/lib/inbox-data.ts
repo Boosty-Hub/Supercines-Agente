@@ -11,6 +11,8 @@ export type LeadSummary = {
   kommo_lead_id: number | null;
   kommo_pipeline_id: number | null;
   kommo_stage_id: number | null;
+  /** Un recorrido completo de Kommo no encontró el lead (borrado allá). No es trabajo pendiente. */
+  kommo_missing_at: string | null;
   last_message_at: string | null;
   msg_count: number;
   last_content: string | null;

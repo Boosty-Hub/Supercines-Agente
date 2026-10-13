@@ -25,6 +25,8 @@ const PAGE = 25;
 
 /** Id del pseudo-pipeline para leads sin pipeline conocido (borrados en Kommo, etc.). */
 export const SIN_UBICAR = -1;
+/** Id del pseudo-pipeline de leads que un recorrido completo de Kommo no encontró (borrados allá). */
+export const NO_EXISTE = -2;
 
 type Column = {
   key: string;
@@ -40,7 +42,11 @@ export function pipelineCounts(rows: LeadSummary[], pipelines: BoardPipeline[]):
   const known = new Set(pipelines.map((p) => p.id));
   const counts = new Map<number, number>();
   for (const l of rows) {
-    const k = l.kommo_pipeline_id != null && known.has(l.kommo_pipeline_id) ? l.kommo_pipeline_id : SIN_UBICAR;
+    const k = l.kommo_missing_at
+      ? NO_EXISTE
+      : l.kommo_pipeline_id != null && known.has(l.kommo_pipeline_id)
+        ? l.kommo_pipeline_id
+        : SIN_UBICAR;
     counts.set(k, (counts.get(k) ?? 0) + 1);
   }
   return counts;
@@ -77,6 +83,18 @@ export default function Board({
 
   const columns = useMemo<Column[]>(() => {
     const known = new Set(pipelines.map((p) => p.id));
+    if (pipelineId === NO_EXISTE) {
+      return [
+        {
+          key: "no-existe",
+          stageId: null,
+          name: "No existe en Kommo",
+          color: null,
+          leads: rows.filter((l) => l.kommo_missing_at),
+          terminal: false,
+        },
+      ];
+    }
     if (pipelineId === SIN_UBICAR) {
       return [
         {
@@ -84,14 +102,14 @@ export default function Board({
           stageId: null,
           name: "Sin pipeline",
           color: null,
-          leads: rows.filter((l) => l.kommo_pipeline_id == null || !known.has(l.kommo_pipeline_id)),
+          leads: rows.filter((l) => !l.kommo_missing_at && (l.kommo_pipeline_id == null || !known.has(l.kommo_pipeline_id))),
           terminal: false,
         },
       ];
     }
     const pipeline = pipelines.find((p) => p.id === pipelineId);
     if (!pipeline) return [];
-    const inPipeline = rows.filter((l) => l.kommo_pipeline_id === pipelineId);
+    const inPipeline = rows.filter((l) => !l.kommo_missing_at && l.kommo_pipeline_id === pipelineId);
     const byStage = new Map<number, LeadSummary[]>();
     for (const l of inPipeline) {
       const k = l.kommo_stage_id ?? -1;
@@ -139,7 +157,7 @@ export default function Board({
         const empty = col.leads.length === 0;
         // Solo se puede soltar en una etapa real del pipeline (no en "Sin
         // pipeline" ni en "Etapa desconocida"), y no en la columna de origen.
-        const droppable = !!onMove && col.stageId != null && pipelineId !== SIN_UBICAR;
+        const droppable = !!onMove && col.stageId != null && pipelineId > 0;
         const isTarget = dropTarget === col.key;
         return (
           <section
@@ -212,7 +230,7 @@ export default function Board({
                         agentCfg={agentCfg}
                         moving={movingIds?.has(l.id) ?? false}
                         onDragStart={
-                          onMove && pipelineId !== SIN_UBICAR
+                          onMove && pipelineId > 0
                             ? (e) => {
                                 e.dataTransfer.setData(DRAG_TYPE, l.id);
                                 e.dataTransfer.effectAllowed = "move";

@@ -14,6 +14,10 @@
 //    cuenta y se comparten con el webhook, el agente y el panel; ~4 req/s deja
 //    margen. El 429 puntual lo absorbe fetchLeadsPositionsPage (con reintentos).
 //  - Un error NO avanza el cursor: la página fallida se reintenta entera.
+//  - Al agotar las páginas (recorrido COMPLETO desde la 1, porque el claim nunca
+//    rebobina uno en curso) llama a `finalize`: ahí la base marca los leads que
+//    Kommo no devolvió (borrados allá). Si finalize falla queda 'failed' y se
+//    reintenta sin perder lo visto.
 
 import type { KommoLeadPosition } from "./kommo.ts";
 
@@ -25,6 +29,8 @@ export type BackfillProgress = {
   scanned: number;
   updated: number;
   error?: string;
+  /** Leads marcados «no existe en Kommo» al cerrar el recorrido (solo en 'done'). */
+  missing?: number;
 };
 
 export type BackfillStart = { nextPage: number; scanned: number; updated: number };
@@ -33,6 +39,8 @@ export type BackfillDeps = {
   fetchPage(page: number): Promise<{ leads: KommoLeadPosition[]; hasMore: boolean }>;
   /** Aplica las posiciones en la base; devuelve cuántos leads CAMBIARON. */
   apply(leads: KommoLeadPosition[]): Promise<number>;
+  /** Recorrido completo: marca los leads locales que Kommo no devolvió. Devuelve cuántos. */
+  finalize(): Promise<number>;
   save(progress: BackfillProgress): Promise<void>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -54,7 +62,8 @@ export async function runPositionsBackfill(
       nextPage += 1;
 
       if (!hasMore) {
-        const done: BackfillProgress = { status: "done", nextPage, scanned, updated };
+        const missing = await deps.finalize();
+        const done: BackfillProgress = { status: "done", nextPage, scanned, updated, missing };
         await deps.save(done);
         return done;
       }

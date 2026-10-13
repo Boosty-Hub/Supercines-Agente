@@ -15,11 +15,12 @@ function lead(id: number): KommoLeadPosition {
 /** Deps de mentira: `pages[i]` es la página i+1; guarda cada save() en `saved`. */
 function fakeDeps(
   pages: Array<{ leads: KommoLeadPosition[]; hasMore: boolean } | Error>,
-  opts: { clock?: { t: number }; applyReturns?: number } = {},
+  opts: { clock?: { t: number }; applyReturns?: number; missing?: number; finalizeError?: Error } = {},
 ) {
   const saved: BackfillProgress[] = [];
   const fetched: number[] = [];
   const slept: number[] = [];
+  const finalized: number[] = [];
   const clock = opts.clock ?? { t: 0 };
   const deps: BackfillDeps = {
     fetchPage: (page) => {
@@ -29,6 +30,10 @@ function fakeDeps(
       return Promise.resolve(p);
     },
     apply: (leads) => Promise.resolve(opts.applyReturns ?? leads.length),
+    finalize: () => {
+      finalized.push(fetched.length);
+      return opts.finalizeError ? Promise.reject(opts.finalizeError) : Promise.resolve(opts.missing ?? 0);
+    },
     save: (p) => {
       saved.push(p);
       return Promise.resolve();
@@ -40,7 +45,7 @@ function fakeDeps(
       return Promise.resolve();
     },
   };
-  return { deps, saved, fetched, slept, clock };
+  return { deps, saved, fetched, slept, finalized, clock };
 }
 
 const START = { nextPage: 1, scanned: 0, updated: 0 };
@@ -53,7 +58,7 @@ Deno.test("runPositionsBackfill: recorre todas las páginas y termina en 'done'"
   ]);
   const r = await runPositionsBackfill(START, deps, OPTS);
   assertEquals(fetched, [1, 2]);
-  assertEquals(r, { status: "done", nextPage: 3, scanned: 3, updated: 3 });
+  assertEquals(r, { status: "done", nextPage: 3, scanned: 3, updated: 3, missing: 0 });
   // Progreso guardado tras CADA página: si el worker muere, se retoma ahí.
   assertEquals(saved.map((s) => [s.status, s.nextPage, s.scanned]), [
     ["running", 2, 2],
@@ -69,7 +74,7 @@ Deno.test("runPositionsBackfill: reanuda desde la página guardada y suma al acu
   ]);
   const r = await runPositionsBackfill({ nextPage: 3, scanned: 500, updated: 120 }, deps, OPTS);
   assertEquals(fetched, [3]);
-  assertEquals(r, { status: "done", nextPage: 4, scanned: 501, updated: 121 });
+  assertEquals(r, { status: "done", nextPage: 4, scanned: 501, updated: 121, missing: 0 });
 });
 
 Deno.test("runPositionsBackfill: 'updated' cuenta solo lo que la base realmente cambió", async () => {
@@ -113,4 +118,38 @@ Deno.test("runPositionsBackfill: un error de Kommo deja 'failed' con el mensaje 
   const last = saved.at(-1)!;
   assertEquals(last.status, "failed");
   assertEquals(last.error, "fetch leads page 2: 401 unauthorized");
+});
+
+Deno.test("runPositionsBackfill: finaliza (marca los no vistos) SOLO al agotar las páginas", async () => {
+  const { deps, finalized } = fakeDeps(
+    [
+      { leads: [lead(1)], hasMore: true },
+      { leads: [lead(2)], hasMore: false },
+    ],
+    { missing: 4 },
+  );
+  const r = await runPositionsBackfill(START, deps, OPTS);
+  assertEquals(finalized, [2]); // una vez, tras la última página
+  assertEquals(r.missing, 4);
+});
+
+Deno.test("runPositionsBackfill: pausado por presupuesto NO finaliza (un recorrido parcial no puede declarar leads inexistentes)", async () => {
+  const { deps, finalized } = fakeDeps(
+    [
+      { leads: [lead(1)], hasMore: true },
+      { leads: [lead(2)], hasMore: true },
+      { leads: [lead(3)], hasMore: true },
+    ],
+    { clock: { t: 0 } },
+  );
+  const r = await runPositionsBackfill(START, deps, { budgetMs: 400, pauseMs: 250 });
+  assertEquals(r.status, "pending");
+  assertEquals(finalized, []);
+});
+
+Deno.test("runPositionsBackfill: si finalize falla queda 'failed' (no 'done') para reintentar", async () => {
+  const { deps, saved } = fakeDeps([{ leads: [lead(1)], hasMore: false }], { finalizeError: new Error("mark_kommo_missing_leads: boom") });
+  const r = await runPositionsBackfill(START, deps, OPTS);
+  assertEquals(r.status, "failed");
+  assertEquals(saved.at(-1)?.error, "mark_kommo_missing_leads: boom");
 });

@@ -516,7 +516,7 @@ async function syncLeadPositions(changes: KommoLead[]): Promise<void> {
   if (latest.size === 0) return;
   const { data: rows, error } = await supabase
     .from("leads")
-    .select("id, kommo_lead_id, kommo_stage_id, kommo_pipeline_id")
+    .select("id, kommo_lead_id, kommo_stage_id, kommo_pipeline_id, kommo_missing_at")
     .in("kommo_lead_id", [...latest.keys()]);
   if (error) throw new Error(`select lead positions: ${error.message}`);
   for (const row of (rows ?? []) as Array<{
@@ -524,9 +524,17 @@ async function syncLeadPositions(changes: KommoLead[]): Promise<void> {
     kommo_lead_id: number;
     kommo_stage_id: number | null;
     kommo_pipeline_id: number | null;
+    kommo_missing_at: string | null;
   }>) {
     const pos = latest.get(Number(row.kommo_lead_id));
     if (!pos) continue;
+    // Señal de vida desde Kommo: limpia la marca de «no existe en Kommo». Solo
+    // se escribe cuando la marca está puesta (el select ya la trae): no hay una
+    // consulta extra por evento.
+    if (row.kommo_missing_at != null) {
+      const { error: clrErr } = await supabase.from("leads").update({ kommo_missing_at: null }).eq("id", row.id);
+      if (clrErr) throw new Error(`clear kommo_missing_at: ${clrErr.message}`);
+    }
     await applyLeadPosition(row, { stageId: pos.statusId, pipelineId: pos.pipelineId });
   }
 }
@@ -555,6 +563,9 @@ async function upsertLead(
   if (opts.contactId) update.kommo_contact_id = opts.contactId;
   // Hook de seguimiento: reloj de inactividad (solo inbound)
   if (opts.inbound) update.last_inbound_at = new Date().toISOString();
+  // Que Kommo nos hable de este lead es prueba de que existe: borra la marca
+  // «no existe en Kommo» que pudo dejarle un recorrido del backfill (0065).
+  update.kommo_missing_at = null;
 
   // Buscar existente
   const { data: existing } = await supabase

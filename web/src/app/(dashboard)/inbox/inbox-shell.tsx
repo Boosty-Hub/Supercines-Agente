@@ -16,7 +16,7 @@ import {
 import ChannelIcon from "./channel-icon";
 import InboxFilters from "./filters";
 import { computeAgentStatus, AgentStatusDot } from "./agent-status";
-import Board, { pipelineCounts, SIN_UBICAR } from "./board";
+import Board, { NO_EXISTE, pipelineCounts, SIN_UBICAR } from "./board";
 
 // La lista/tablero del inbox vive en el LAYOUT (este componente) y la
 // conversación en /inbox/[leadId]. Next no vuelve a renderizar un layout al
@@ -217,17 +217,76 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   );
 
   // ── Sincronizar con Kommo (pipelines/etapas + backfill) ──────────────────
+  // El reinicio completo lo concede la base (enfriamiento de 15 min; un recorrido
+  // en curso no se rebobina). El botón se deshabilita mientras hay un recorrido en
+  // marcha. Dentro del enfriamiento queda habilitado a propósito: refrescar
+  // pipelines/etapas (una llamada, con su propio freno de 30 s) sigue siendo útil;
+  // lo que no se repite es el recorrido de leads, y el tooltip/aviso lo dicen.
   const [syncing, setSyncing] = useState(false);
+  const [syncInfo, setSyncInfo] = useState<{ inProgress: boolean; availableAt: number | null }>({
+    inProgress: false,
+    availableAt: null,
+  });
+  const [reloj, setReloj] = useState(() => Date.now());
+  const cargarSync = useCallback(async () => {
+    try {
+      const res = await fetch("/api/inbox/sync", { cache: "no-store" });
+      if (!res.ok) return;
+      const b = (await res.json())?.backfill as { in_progress?: boolean; retry_after_seconds?: number } | null;
+      if (!b) return;
+      const wait = Number(b.retry_after_seconds) || 0;
+      setReloj(Date.now());
+      setSyncInfo({ inProgress: !!b.in_progress, availableAt: wait > 0 ? Date.now() + wait * 1000 : null });
+    } catch {
+      /* el botón sigue habilitado; la base igual decide */
+    }
+  }, []);
+  useEffect(() => {
+    void cargarSync();
+  }, [cargarSync]);
+  // Mientras haya un recorrido en marcha o un enfriamiento, se refresca el estado.
+  useEffect(() => {
+    if (!syncInfo.inProgress && !(syncInfo.availableAt && syncInfo.availableAt > Date.now())) return;
+    const t = setInterval(() => {
+      setReloj(Date.now());
+      if (syncInfo.inProgress || (syncInfo.availableAt && syncInfo.availableAt <= Date.now())) void cargarSync();
+    }, 15_000);
+    return () => clearInterval(t);
+  }, [syncInfo, cargarSync]);
+
+  const minutosRestantes = (hasta: number) => Math.max(1, Math.ceil((hasta - reloj) / 60_000));
+  const enfriando = !!syncInfo.availableAt && syncInfo.availableAt > reloj;
+  const syncBloqueado = syncing || syncInfo.inProgress;
+  const syncTitle = syncInfo.inProgress
+    ? "Ya está sincronizando con Kommo"
+    : enfriando
+      ? `Los leads se recorrieron hace poco: se pueden volver a recorrer en ${minutosRestantes(syncInfo.availableAt!)} min (pipelines y etapas sí se actualizan ahora)`
+      : "Trae de Kommo los pipelines y la etapa de cada lead";
+
   async function sincronizar() {
     setSyncing(true);
     try {
       const res = await fetch("/api/inbox/sync", { method: "POST" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-      setAviso({ tone: "ok", text: "Sincronizando con Kommo… el tablero se actualiza solo." });
+      const state = json?.backfill?.state as string | undefined;
+      const wait = Number(json?.backfill?.retry_after_seconds) || 0;
+      if (state === "busy" || state === "continuing") {
+        setAviso({ tone: "ok", text: "Ya está sincronizando con Kommo… el tablero se actualiza solo." });
+      } else if (state === "cooldown") {
+        const mins = Math.max(1, Math.ceil(wait / 60));
+        setAviso({ tone: "ok", text: `Se sincronizó hace poco: los leads se pueden volver a recorrer en ${mins} min. Pipelines y etapas ya se actualizaron.` });
+      } else if (state === "idle") {
+        setAviso({ tone: "ok", text: "Pipelines y etapas actualizados. No hay leads pendientes de recorrer." });
+      } else if (state === "unavailable") {
+        throw new Error("El recorrido de leads no está disponible: aplicá las migraciones pendientes (0065).");
+      } else {
+        setAviso({ tone: "ok", text: "Sincronizando con Kommo… el tablero se actualiza solo." });
+      }
       // El recorrido de leads sigue en segundo plano: recargar un par de veces.
       setTimeout(() => void load(), 3000);
       setTimeout(() => void load(), 12000);
+      void cargarSync();
     } catch (e) {
       setAviso({ tone: "error", text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -345,7 +404,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   const counts = useMemo(() => pipelineCounts(rows, pipelines), [rows, pipelines]);
   const pipelineParam = Number(sp.get("pipeline"));
   const pipelineId =
-    pipelineParam === SIN_UBICAR || pipelines.some((p) => p.id === pipelineParam)
+    pipelineParam === SIN_UBICAR || pipelineParam === NO_EXISTE || pipelines.some((p) => p.id === pipelineParam)
       ? pipelineParam
       : pipelines[0]?.id ?? SIN_UBICAR;
 
@@ -392,11 +451,11 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
             <button
               type="button"
               onClick={sincronizar}
-              disabled={syncing}
-              title="Trae de Kommo los pipelines y la etapa de cada lead"
+              disabled={syncBloqueado}
+              title={syncTitle}
               className="rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-50"
             >
-              {syncing ? "Sincronizando…" : "Sincronizar"}
+              {syncing || syncInfo.inProgress ? "Sincronizando…" : "Sincronizar"}
             </button>
             <div
               className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 text-xs font-medium"
@@ -453,6 +512,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                 {[
                   ...pipelines.map((p) => ({ id: p.id, name: p.name })),
                   ...(counts.get(SIN_UBICAR) ? [{ id: SIN_UBICAR, name: "Sin pipeline" }] : []),
+                  ...(counts.get(NO_EXISTE) ? [{ id: NO_EXISTE, name: "No existe en Kommo" }] : []),
                 ].map((p) => (
                   <button
                     key={p.id}
@@ -477,6 +537,12 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                 <p className="border-b border-neutral-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
                   Estos leads no tienen pipeline asignado todavía o están en un pipeline archivado en Kommo. Lo primero se
                   completa solo al sincronizar con Kommo (cada 10 minutos, o ahora con «Sincronizar»).
+                </p>
+              )}
+              {pipelineId === NO_EXISTE && (
+                <p className="border-b border-neutral-200 bg-neutral-100 px-4 py-2 text-xs text-neutral-700">
+                  Kommo ya no devuelve estos leads (se borraron allá). No se pueden mover ni responder desde acá y no cuentan
+                  como pendientes de ubicar. Si el lead reaparece en Kommo o escribe de nuevo, vuelve solo a su pipeline.
                 </p>
               )}
               {pipelines.length === 0 && (

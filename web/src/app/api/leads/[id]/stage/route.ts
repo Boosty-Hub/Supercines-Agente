@@ -73,7 +73,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   const upd = await supabase
     .from("leads")
-    .update({ kommo_stage_id: stageId, kommo_pipeline_id: pipelineId })
+    .update({ kommo_stage_id: stageId, kommo_pipeline_id: pipelineId, kommo_missing_at: null }) // Kommo aceptó el PATCH: el lead existe
     .eq("id", lead.id);
   const ev = await supabase.rpc("record_lead_stage_event", {
     p_lead_id: lead.id,

@@ -6,8 +6,10 @@
 // sin redeploy. AGENT_MODEL además actualiza el agente en Anthropic.
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { selectCls } from "@/components/ui";
+import { interpretSyncResponse } from "@/lib/sync-response";
 import { ALLOWED_MODELS, MODEL_LABELS, MODEL_KEY_INFO, MODEL_NAMES } from "@/lib/model-config";
 
 export function ModelsPanel({
@@ -23,7 +25,8 @@ export function ModelsPanel({
   const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>(current);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // `resolveInAgent`: el cambio se frenó por un conflicto de prompt, que solo se resuelve en /agent.
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; resolveInAgent?: boolean } | null>(null);
 
   const dirty = Object.keys(values).some((k) => values[k] !== current[k]);
 
@@ -40,8 +43,17 @@ export function ModelsPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(changed),
       });
-      const j = await res.json();
-      if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      const outcome = interpretSyncResponse(res.status, await res.json().catch(() => null));
+      if (outcome.kind === "conflict" || outcome.kind === "stale") {
+        // El prompt vivo se editó fuera del dashboard: no se tocó el agente. Se resuelve en /agent.
+        setMsg({
+          ok: false,
+          text: "El prompt del agente fue modificado fuera del dashboard: resolvelo en la página Agente antes de cambiar el modelo.",
+          resolveInAgent: true,
+        });
+        return;
+      }
+      if (outcome.kind === "error") throw new Error(outcome.message);
       setMsg({ ok: true, text: "Modelos guardados. Las funciones lo toman en menos de 1 minuto." });
       router.refresh();
     } catch (e) {
@@ -107,7 +119,17 @@ export function ModelsPanel({
           <p className="text-xs text-neutral-500">Solo quien tiene acceso de configuración puede cambiar los modelos.</p>
         )}
         {msg && (
-          <p className={`text-xs ${msg.ok ? "text-emerald-700" : "text-red-600"}`}>{msg.text}</p>
+          <p className={`text-xs ${msg.ok ? "text-emerald-700" : "text-red-600"}`}>
+            {msg.text}
+            {msg.resolveInAgent && (
+              <>
+                {" "}
+                <Link href="/agent" className="font-medium underline">
+                  Resolver en Agente
+                </Link>
+              </>
+            )}
+          </p>
         )}
       </div>
     </div>

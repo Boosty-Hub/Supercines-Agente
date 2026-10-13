@@ -3,6 +3,7 @@ import { PageShell } from "@/components/ui";
 import { TemplateEditor } from "./template-editor";
 import { SequenceEditor } from "./sequence-editor";
 import { ConfigPanel } from "./config-panel";
+import { RecentSends, type RecentSend } from "./recent-sends";
 import { Guide } from "./guide";
 
 export const dynamic = "force-dynamic";
@@ -48,10 +49,21 @@ type FollowUpConfig = {
   notes: string | null;
 };
 
+type FollowUpSendRow = {
+  id: string;
+  lead_id: string;
+  step: number;
+  status: string;
+  error: string | null;
+  sent_at: string;
+  leads: { display_name: string | null; kommo_lead_id: number | null } | { display_name: string | null; kommo_lead_id: number | null }[] | null;
+  follow_up_templates: { name: string } | { name: string }[] | null;
+};
+
 export default async function SeguimientoPage() {
   const supabase = createSupabaseServerClient();
 
-  const [templatesRes, stepsRes, configRes] = await Promise.all([
+  const [templatesRes, stepsRes, configRes, sendsRes] = await Promise.all([
     supabase
       .from("follow_up_templates")
       .select("id, name, description, body, variables, salesbot_id, enabled, created_at, updated_at")
@@ -67,11 +79,33 @@ export default async function SeguimientoPage() {
       )
       .eq("is_active", true)
       .maybeSingle(),
+    // Log de envíos (tabla `follow_ups`, append-only) para la sección "Envíos
+    // recientes" — 20 filas, no necesita fetchAllRows (no es un agregado).
+    supabase
+      .from("follow_ups")
+      .select("id, lead_id, step, status, error, sent_at, leads(display_name, kommo_lead_id), follow_up_templates(name)")
+      .order("sent_at", { ascending: false })
+      .limit(20),
   ]);
 
   const templates = (templatesRes.data ?? []) as FollowUpTemplate[];
   const steps = (stepsRes.data ?? []) as FollowUpStep[];
   const config = configRes.data as FollowUpConfig | null;
+
+  const recentSends: RecentSend[] = ((sendsRes.data ?? []) as FollowUpSendRow[]).map((s) => {
+    const lead = Array.isArray(s.leads) ? s.leads[0] : s.leads;
+    const template = Array.isArray(s.follow_up_templates) ? s.follow_up_templates[0] : s.follow_up_templates;
+    return {
+      id: s.id,
+      leadId: s.lead_id,
+      leadName: lead?.display_name ?? `Lead ${lead?.kommo_lead_id ?? "?"}`,
+      step: s.step,
+      status: s.status,
+      sentAt: s.sent_at,
+      templateName: template?.name ?? null,
+      error: s.error,
+    };
+  });
 
   return (
     <PageShell
@@ -82,6 +116,7 @@ export default async function SeguimientoPage() {
       <ConfigPanel config={config} />
       <TemplateEditor templates={templates} />
       <SequenceEditor steps={steps} templates={templates} />
+      <RecentSends rows={recentSends} />
     </PageShell>
   );
 }

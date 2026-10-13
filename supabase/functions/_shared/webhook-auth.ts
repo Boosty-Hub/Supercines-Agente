@@ -6,25 +6,31 @@
 // previous_expires_at para rotar sin downtime) y el modo en `kommo_webhook_auth`:
 //   - 'permissive' (transición para clientes vivos, que hoy tienen la URL sin secreto en
 //     Kommo): se acepta también lo que no trae secreto, y se registra para alertar.
-//   - 'strict': lo que no trae un secreto válido se rechaza con 401 genérico.
-// Un secreto presente pero INCORRECTO se rechaza siempre: nunca es Kommo bien configurado.
+//   - 'strict': lo que no trae un secreto válido se DESCARTA (no se encola).
+// Un secreto presente pero INCORRECTO se descarta siempre: nunca es Kommo bien configurado.
 //
-// FAIL-OPEN si el estado no se puede leer (DB caída o lenta, migración sin aplicar):
-// rechazar haría que Kommo DESHABILITE el webhook y el sistema quedara mudo días (ver
-// CLAUDE.md, invariante 6). El costo es una ventana corta sin la protección, nunca un apagón.
+// LA DECISIÓN CORRE DESPUÉS DE RESPONDER (invariante 6). El handler
+// (_shared/kommo-webhook-handler.ts) contesta 200 de inmediato y decide + persiste dentro
+// de EdgeRuntime.waitUntil. Por eso aquí se puede esperar el estado REAL sin riesgo de que
+// Kommo deshabilite el webhook, y por eso NO hay fail-open: sin estado conocido no se
+// acepta nada (ni en estricto ni en transición); se reintenta y, si la base sigue caída,
+// el payload se pierde con alerta `inbound_dropped` (con la base caída tampoco se podría
+// encolar). Un rechazo es un descarte silencioso para Kommo (siempre recibe 200): el
+// emisor no se entera; la auditoría queda en logs y alertas (sin el token).
 //
-// LATENCIA (invariante 6): leer el estado NUNCA puede colgar la respuesta al webhook.
-//   - Tope de espera AUTH_WAIT_MS por request; vencido → último estado conocido o fail-open.
-//   - Una sola consulta en vuelo por instancia (ráfagas concurrentes la comparten), con un
-//     techo duro propio (FETCH_TIMEOUT_MS) para que una conexión colgada no la retenga.
-//   - Stale-while-revalidate: con el caché vencido se responde con él y se refresca en
-//     segundo plano (EdgeRuntime.waitUntil).
-//   - Caché NEGATIVO (NEGATIVE_TTL_MS): tras un fallo no se vuelve a consultar en cada
-//     request (p. ej. 0070 sin aplicar → una consulta cada pocos segundos, no por request).
+// Carga del estado (por instancia):
+//   - caché fresco TTL_MS; vencido → se usa el vencido y se refresca en segundo plano
+//     (stale-while-revalidate);
+//   - UNA sola consulta en vuelo (ráfagas concurrentes la comparten), con techo duro
+//     FETCH_TIMEOUT_MS para que una conexión colgada no la retenga;
+//   - caché NEGATIVO (NEGATIVE_TTL_MS): tras un fallo no se reconsulta en cada request;
+//     las requests que esperan comparten el próximo intento;
+//   - 0070 sin aplicar (tabla inexistente) NO es un fallo: es un estado conocido
+//     («sin autenticación instalada» = transición sin secretos) y se cachea como tal.
 //
-// ROTACIÓN: tras rotar, una instancia caliente puede tener el secreto viejo en caché. Ante
-// `bad_token` con un caché de más de BAD_TOKEN_RECHECK_MS se recarga UNA vez (mismo tope,
-// misma promesa compartida) antes de rechazar, para no tirar los mensajes con el token nuevo.
+// ROTACIÓN: una instancia caliente puede tener el secreto viejo en caché. Ante `bad_token`
+// con un caché de más de BAD_TOKEN_RECHECK_MS se recarga UNA vez (consulta compartida)
+// antes de descartar, para no tirar los mensajes con el token nuevo.
 //
 // KOMMO_WEBHOOK_SECRET (env, legado) y el query param `secret` se siguen aceptando como
 // un secreto válido más, para que un cliente que ya lo usaba no quede afuera al desplegar.
@@ -52,7 +58,13 @@ export type WebhookDecision = {
   signed: boolean;
   /** true solo si el secreto que trajo es el VIGENTE (no el anterior ni el legado). */
   current?: boolean;
-  reason: "ok" | "state_unavailable" | "no_secret_configured" | "unsigned_permissive" | "unsigned_strict" | "bad_token";
+  reason:
+    | "ok"
+    | "state_unavailable"
+    | "no_secret_configured"
+    | "unsigned_permissive"
+    | "unsigned_strict"
+    | "bad_token";
 };
 
 /** El token puede venir como ?token= (canónico), ?secret= (legado) o el header x-webhook-secret. */
@@ -69,9 +81,18 @@ export function matchesAnySecret(provided: string, secrets: readonly string[]): 
   return ok;
 }
 
+/**
+ * Decisión pura. Sin estado (null) NO se acepta: nunca se abre el modo estricto por no
+ * poder leer la base. Sin ningún secreto configurado (0070 sin aplicar) rige el modo: en
+ * transición se acepta como sin firmar; en estricto no hay nada válido y se descarta.
+ */
 export function decideWebhook(provided: string | null, state: WebhookAuthState | null): WebhookDecision {
-  if (!state) return { allow: true, signed: false, reason: "state_unavailable" };
-  if (state.secrets.length === 0) return { allow: true, signed: false, reason: "no_secret_configured" };
+  if (!state) return { allow: false, signed: false, reason: "state_unavailable" };
+  if (state.secrets.length === 0) {
+    return state.mode === "strict"
+      ? { allow: false, signed: false, reason: "unsigned_strict" }
+      : { allow: true, signed: false, reason: "no_secret_configured" };
+  }
   if (provided) {
     if (!matchesAnySecret(provided, state.secrets)) return { allow: false, signed: false, reason: "bad_token" };
     const current = Boolean(state.current) && timingSafeEqual(provided, state.current as string);
@@ -82,22 +103,16 @@ export function decideWebhook(provided: string | null, state: WebhookAuthState |
     : { allow: true, signed: false, reason: "unsigned_permissive" };
 }
 
-export const FORBIDDEN = (): Response =>
-  new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
-    status: 401,
-    headers: { "content-type": "application/json" },
-  });
-
-// ---- Estado: caché por instancia con tope de espera, dedupe, SWR y caché negativo ----
+// ---- Estado: caché por instancia con dedupe, SWR y caché negativo ----
 
 /** Frescura del caché: dentro de esta ventana no se consulta la base. */
 export const TTL_MS = 30_000;
-/** Lo máximo que una request espera el estado antes de seguir (último conocido o fail-open). */
-export const AUTH_WAIT_MS = 700;
 /** Techo duro de la consulta en vuelo (libera la promesa compartida si la conexión se cuelga). */
 export const FETCH_TIMEOUT_MS = 5_000;
-/** Tras un fallo (o un timeout) no se vuelve a consultar durante esta ventana. */
-export const NEGATIVE_TTL_MS = 5_000;
+/** Tras un fallo no se vuelve a consultar durante esta ventana (las esperas comparten el siguiente intento). */
+export const NEGATIVE_TTL_MS = 2_000;
+/** Cuánto espera (en segundo plano) una request sin estado conocido antes de darse por perdida. */
+export const STATE_DEADLINE_MS = 15_000;
 /** Ante bad_token, se recarga sin caché solo si el caché tiene más de esto. */
 export const BAD_TOKEN_RECHECK_MS = 1_500;
 
@@ -108,6 +123,9 @@ type RawState = {
   previous: string | null;
   previousExpiresAt: number | null;
 };
+
+/** 0070 sin aplicar: estado CONOCIDO (transición, sin secretos), no un fallo. */
+const NOT_INSTALLED: RawState = { mode: "permissive", current: null, previous: null, previousExpiresAt: null };
 
 let cache: { raw: RawState; loadedAt: number } | null = null;
 let failedAt: number | null = null;
@@ -123,10 +141,12 @@ export function resetWebhookAuthCache(): void {
 export type LoadOptions = {
   /** Reloj (tests). */
   now?: () => number;
+  /** Espera (tests). */
+  sleep?: (ms: number) => Promise<void>;
   /** Registra trabajo en segundo plano (default: EdgeRuntime.waitUntil si existe). */
   background?: (p: Promise<unknown>) => void;
-  waitMs?: number;
   fetchTimeoutMs?: number;
+  deadlineMs?: number;
 };
 
 function defaultBackground(p: Promise<unknown>): void {
@@ -135,7 +155,7 @@ function defaultBackground(p: Promise<unknown>): void {
 }
 
 /** Rechaza si `p` no resuelve en `ms`; limpia el timer en cualquier desenlace. */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
+export function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
     Promise.resolve(p).then(
@@ -151,11 +171,18 @@ function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
   });
 }
 
+/** ¿El error es «la tabla/relación no existe» (0070 sin aplicar)? */
+function isMissingRelation(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  return err.code === "42P01" || err.code === "PGRST205" || /does not exist|could not find the table/i.test(err.message ?? "");
+}
+
 async function fetchRaw(supabase: SupabaseClient): Promise<RawState> {
   const [secrets, auth] = await Promise.all([
     (supabase as any).from("_app_secrets").select("clave, valor").in("clave", [WEBHOOK_SECRET_KEY, WEBHOOK_SECRET_PREVIOUS_KEY]),
     (supabase as any).from("kommo_webhook_auth").select("mode, previous_expires_at").eq("singleton", true).maybeSingle(),
   ]);
+  if (isMissingRelation(auth.error)) return NOT_INSTALLED;
   if (secrets.error || auth.error || !auth.data) throw new Error(secrets.error?.message ?? auth.error?.message ?? "sin estado");
   const byKey = new Map<string, string>((secrets.data ?? []).map((r: any) => [r.clave, r.valor]));
   const exp = auth.data.previous_expires_at ? Date.parse(auth.data.previous_expires_at) : NaN;
@@ -175,21 +202,33 @@ function derive(raw: RawState, legacyEnvSecret: string, nowMs: number): WebhookA
   return { mode: raw.mode, secrets, current: raw.current };
 }
 
+type Opts = Required<LoadOptions>;
+
+function resolveOpts(o: LoadOptions = {}): Opts {
+  return {
+    now: o.now ?? Date.now,
+    sleep: o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    background: o.background ?? defaultBackground,
+    fetchTimeoutMs: o.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+    deadlineMs: o.deadlineMs ?? STATE_DEADLINE_MS,
+  };
+}
+
 /**
  * La ÚNICA consulta en vuelo de la instancia (todas las requests la comparten). Nunca
  * rechaza: ante error o techo duro marca el caché negativo y resuelve null.
  */
-function refresh(supabase: SupabaseClient, now: () => number, fetchTimeoutMs: number): Promise<RawState | null> {
+function refresh(supabase: SupabaseClient, opts: Opts): Promise<RawState | null> {
   if (inflight) return inflight;
-  const p = withTimeout(fetchRaw(supabase), fetchTimeoutMs)
+  const p = withTimeout(fetchRaw(supabase), opts.fetchTimeoutMs)
     .then((raw) => {
-      cache = { raw, loadedAt: now() };
+      cache = { raw, loadedAt: opts.now() };
       failedAt = null;
       return raw;
     })
     .catch((e) => {
-      failedAt = now();
-      console.warn("webhook-auth: no se pudo leer el estado (se usa el último conocido o fail-open):", e instanceof Error ? e.message : e);
+      failedAt = opts.now();
+      console.warn("webhook-auth: no se pudo leer el estado:", e instanceof Error ? e.message : e);
       return null;
     })
     .finally(() => {
@@ -201,35 +240,12 @@ function refresh(supabase: SupabaseClient, now: () => number, fetchTimeoutMs: nu
 
 const negativeActive = (nowMs: number) => failedAt !== null && nowMs - failedAt < NEGATIVE_TTL_MS;
 
-/** Espera la consulta compartida como mucho `waitMs`; vencido el tope, la deja seguir en segundo plano. */
-async function awaitRefresh(supabase: SupabaseClient, opts: Required<LoadOptions>): Promise<RawState | null> {
-  const p = refresh(supabase, opts.now, opts.fetchTimeoutMs);
-  opts.background(p);
-  try {
-    return await withTimeout(p, opts.waitMs);
-  } catch {
-    // Tope de espera vencido: la base está lenta o colgada. Caché negativo para que las
-    // siguientes requests no esperen otra vez (la consulta sigue y, si llega, puebla el caché).
-    failedAt = opts.now();
-    return null;
-  }
-}
-
-function resolveOpts(o: LoadOptions = {}): Required<LoadOptions> {
-  return {
-    now: o.now ?? Date.now,
-    background: o.background ?? defaultBackground,
-    waitMs: o.waitMs ?? AUTH_WAIT_MS,
-    fetchTimeoutMs: o.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
-  };
-}
-
 /**
- * Estado vigente para decidir. Nunca espera más de `waitMs` y nunca lanza:
+ * Estado vigente, SIN reintentos. Nunca lanza:
  *  - caché fresco → al instante;
- *  - caché vencido → al instante con el vencido, y refresca en segundo plano;
- *  - sin caché → espera la consulta compartida hasta el tope; si no llega, null (fail-open);
- *  - caché negativo activo → no consulta: último conocido o null.
+ *  - caché vencido → al instante con el vencido (último estado conocido), y refresca atrás;
+ *  - sin caché → la consulta compartida (hasta su techo duro); null si falla;
+ *  - caché negativo activo y sin caché → null sin consultar.
  */
 export async function loadWebhookAuthState(
   supabase: SupabaseClient,
@@ -240,23 +256,41 @@ export async function loadWebhookAuthState(
   const nowMs = opts.now();
   if (cache && nowMs - cache.loadedAt < TTL_MS) return derive(cache.raw, legacyEnvSecret, nowMs);
   if (cache) {
-    if (!negativeActive(nowMs)) {
-      const p = refresh(supabase, opts.now, opts.fetchTimeoutMs);
-      opts.background(p);
-    }
+    if (!negativeActive(nowMs)) opts.background(refresh(supabase, opts));
     return derive(cache.raw, legacyEnvSecret, nowMs);
   }
   if (negativeActive(nowMs)) return null;
-  const raw = await awaitRefresh(supabase, opts);
+  const raw = await refresh(supabase, opts);
   return raw ? derive(raw, legacyEnvSecret, opts.now()) : null;
 }
 
 /**
- * Decide la request completa: carga el estado (con los topes de arriba) y, si el token no
- * coincide con un caché de más de BAD_TOKEN_RECHECK_MS, recarga UNA vez (consulta
- * compartida, mismo tope) antes de rechazar: puede ser el token nuevo de una rotación que
- * esta instancia todavía no vio. Si la recarga no llega a tiempo se rechaza igual (un token
- * presente e incorrecto nunca se acepta a ciegas).
+ * Como loadWebhookAuthState, pero si el estado nunca se conoció reintenta (respetando el
+ * caché negativo: las requests que esperan comparten cada intento) hasta `deadlineMs`.
+ * Pensado para correr en segundo plano, después de responder.
+ */
+export async function waitForWebhookAuthState(
+  supabase: SupabaseClient,
+  legacyEnvSecret = "",
+  options: LoadOptions = {},
+): Promise<WebhookAuthState | null> {
+  const opts = resolveOpts(options);
+  const deadline = opts.now() + opts.deadlineMs;
+  for (;;) {
+    const st = await loadWebhookAuthState(supabase, legacyEnvSecret, opts);
+    if (st) return st;
+    const now = opts.now();
+    if (now >= deadline) return null;
+    const untilRetry = failedAt !== null ? Math.max(0, failedAt + NEGATIVE_TTL_MS - now) : 0;
+    await opts.sleep(Math.max(1, Math.min(untilRetry, deadline - now)));
+  }
+}
+
+/**
+ * Decide la request completa con el estado REAL (en segundo plano): espera el estado
+ * (reintentando si nunca se conoció) y, si el token no coincide con un caché de más de
+ * BAD_TOKEN_RECHECK_MS, recarga UNA vez (consulta compartida) antes de descartar: puede
+ * ser el token nuevo de una rotación que esta instancia todavía no vio.
  */
 export async function authorizeWebhook(
   supabase: SupabaseClient,
@@ -265,50 +299,54 @@ export async function authorizeWebhook(
   options: LoadOptions = {},
 ): Promise<WebhookDecision> {
   const opts = resolveOpts(options);
-  const decision = decideWebhook(token, await loadWebhookAuthState(supabase, legacyEnvSecret, opts));
+  const decision = decideWebhook(token, await waitForWebhookAuthState(supabase, legacyEnvSecret, opts));
   if (decision.reason !== "bad_token" || !cache) return decision;
-  const nowMs = opts.now();
-  if (nowMs - cache.loadedAt <= BAD_TOKEN_RECHECK_MS || negativeActive(nowMs)) return decision;
-  const raw = await awaitRefresh(supabase, opts);
+  if (opts.now() - cache.loadedAt <= BAD_TOKEN_RECHECK_MS || negativeActive(opts.now())) return decision;
+  const raw = await refresh(supabase, opts);
   if (!raw) return decision;
   return decideWebhook(token, derive(raw, legacyEnvSecret, opts.now()));
 }
 
-// ---- Registro de requests (alerta, confirmación de rotación y paso automático a strict) ----
+// ---- Registro de requests (alerta, confirmación de rotación, descartes y paso a strict) ----
 const NOTE_EVERY_MS = 60_000;
-type NoteKind = "current" | "signed" | "unsigned";
-const lastNote: Record<NoteKind, number> = { current: 0, signed: 0, unsigned: 0 };
+export type NoteKind = "current" | "signed" | "unsigned" | "rejected";
+const lastNote: Record<NoteKind, number> = { current: 0, signed: 0, unsigned: 0, rejected: 0 };
 
 /** Solo para tests. */
 export function resetWebhookNoteThrottle(): void {
-  lastNote.current = 0;
-  lastNote.signed = 0;
-  lastNote.unsigned = 0;
+  for (const k of Object.keys(lastNote) as NoteKind[]) lastNote[k] = 0;
+}
+
+/** Qué registrar de una decisión (null = nada: estado desconocido, lo cubre inbound_dropped). */
+export function noteKindFor(d: WebhookDecision): NoteKind | null {
+  if (d.reason === "state_unavailable") return null;
+  if (!d.allow) return "rejected";
+  if (!d.signed) return "unsigned";
+  return d.current ? "current" : "signed";
 }
 
 /**
- * Avisa a la base (kommo_webhook_note) de una request aceptada. Como mucho una por
- * minuto y tipo (firmada con el vigente / firmada con otro / sin firma) por instancia;
- * fail-soft. Firmada con el VIGENTE confirma la última rotación (Kommo ya lo usa). Si la
- * base promueve a strict, se vence el caché para que el modo nuevo rija enseguida.
+ * Avisa a la base (kommo_webhook_note) de una request. Como mucho una por minuto y tipo
+ * por instancia; fail-soft. Firmada con el VIGENTE confirma la última rotación (Kommo ya
+ * lo usa). Un descarte deja la marca y una alerta `webhook_rejected` (como mucho una cada
+ * 6 h, en la base). Si la base promueve a strict, se vence el caché para que rija enseguida.
  */
 export async function noteWebhookRequest(
   supabase: SupabaseClient,
-  signed: boolean,
+  decision: WebhookDecision,
   nowMs = Date.now(),
-  current = false,
 ): Promise<void> {
-  const k: NoteKind = !signed ? "unsigned" : current ? "current" : "signed";
+  const k = noteKindFor(decision);
+  if (!k) return;
   if (nowMs - lastNote[k] < NOTE_EVERY_MS) return;
   lastNote[k] = nowMs;
   try {
     const { data, error } = await (supabase as any).rpc("kommo_webhook_note", {
-      p_signed: signed,
-      p_current: signed && current,
+      p_signed: decision.signed,
+      p_current: decision.current === true,
+      p_rejected: k === "rejected" ? decision.reason : null,
     });
     if (error) throw new Error(error.message);
-    // Vencerlo (no borrarlo): la próxima request sirve el estado conocido y refresca en
-    // segundo plano, sin esperar a la base.
     if (data === "strict" && cache) cache = { ...cache, loadedAt: -Infinity };
   } catch (e) {
     console.warn("webhook-auth: kommo_webhook_note falló:", e instanceof Error ? e.message : e);

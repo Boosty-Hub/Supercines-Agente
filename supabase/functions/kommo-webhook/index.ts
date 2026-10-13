@@ -1,8 +1,8 @@
 // Edge Function: kommo-webhook
-// Recibe webhooks de Kommo (mensajes, leads, etc), valida el secreto de la URL
-// (_shared/webhook-auth.ts) y encola el payload completo en `inbound_queue` para que
-// un worker lo procese asincrónicamente. Responde 200 lo más rápido
-// posible para que Kommo no reintente.
+// Recibe webhooks de Kommo (mensajes, leads, etc.), responde 200 DE INMEDIATO y, en
+// segundo plano (EdgeRuntime.waitUntil), valida el secreto de la URL con el estado real
+// de la base (_shared/webhook-auth.ts) y encola el payload en `inbound_queue` para que
+// process-inbound lo procese. El handler vive en _shared/kommo-webhook-handler.ts (con tests).
 //
 // URL pública (una vez deployada):
 //   https://<project-ref>.supabase.co/functions/v1/kommo-webhook
@@ -12,25 +12,27 @@
 // sus webhooks (no hay HMAC ni header de autenticación que verificar) y no manda un
 // JWT de Supabase, así que no puede presentar el secreto interno que exigen las
 // demás funciones (_shared/auth.ts). Mitigaciones:
-//   - Secreto en la URL (?token=, tabla _app_secrets), comparado en tiempo constante
-//     ANTES de leer el cuerpo: 401 genérico y sin encolar. Es el único control que Kommo
-//     permite. Modo 'permissive' (transición de clientes vivos: acepta también sin
-//     secreto y alerta) o 'strict'; ver _shared/webhook-auth.ts. Sin él, cualquiera
-//     podía postear un leads.update con fecha futura y congelar a un lead.
-//   - Lo único que hace es ENCOLAR el payload (inbound_queue) y responder 200: no
-//     ejecuta nada del payload, no llama a modelos ni a Kommo. El procesamiento
-//     (process-inbound) es una función con gate interno y trata el payload como
-//     dato no confiable (cada campo se valida; el texto del lead entra a los
-//     prompts saneado, ver _shared/untrusted.ts).
+//   - Secreto en la URL (?token=, tabla _app_secrets), comparado en tiempo constante.
+//     Lo que no trae un secreto válido (en modo estricto) o trae uno incorrecto se
+//     DESCARTA sin encolar; Kommo recibe 200 igual (un 4xx/5xx sostenido haría que
+//     Kommo deshabilite el webhook, invariante 6). Modo 'permissive' (transición de
+//     clientes vivos: acepta también sin secreto y alerta) o 'strict'. Sin él,
+//     cualquiera podía postear un leads.update con fecha futura y congelar a un lead.
+//   - Lo único que hace es ENCOLAR el payload (inbound_queue): no ejecuta nada del
+//     payload, no llama a modelos ni a Kommo. El procesamiento (process-inbound) es
+//     una función con gate interno y trata el payload como dato no confiable (cada
+//     campo se valida; el texto del lead entra a los prompts saneado, ver
+//     _shared/untrusted.ts).
 //   - El trigger a process-inbound está coalescido (≤ 1 cada 2 s por instancia) y
-//     el payload se persiste después de responder: un flood no multiplica el
+//     todo lo que toca la base corre después de responder: un flood no multiplica el
 //     trabajo, solo llena la cola, que el reaper y el barrido de pg_cron acotan.
-//   - Alertas: inbound_dropped (insert fallido) e inbound_silence/kommo_webhook_*
-//     (apagón) en alerts-scan / health-scan.
+//   - Alertas: inbound_dropped (insert fallido o estado de auth ilegible),
+//     webhook_unsigned / webhook_rejected (kommo_webhook_note) e
+//     inbound_silence/kommo_webhook_* (apagón) en alerts-scan / health-scan.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { callInternal } from "../_shared/auth.ts";
-import { authorizeWebhook, extractToken, FORBIDDEN, noteWebhookRequest } from "../_shared/webhook-auth.ts";
+import { createKommoWebhookHandler } from "../_shared/kommo-webhook-handler.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -40,72 +42,6 @@ const LEGACY_ENV_SECRET = Deno.env.get("KOMMO_WEBHOOK_SECRET") ?? "";
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
-
-// Parse application/x-www-form-urlencoded con notación de brackets de Kommo
-// ("leads[add][0][id]=123" → { leads: { add: [{ id: "123" }] } })
-function parseFormBracketed(body: string): Record<string, unknown> {
-  const params = new URLSearchParams(body);
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of params.entries()) {
-    const path = key.replace(/\]/g, "").split("[");
-    // deno-lint-ignore no-explicit-any
-    let cursor: any = result;
-    for (let i = 0; i < path.length; i++) {
-      const seg = path[i];
-      const last = i === path.length - 1;
-      if (last) {
-        cursor[seg] = value;
-      } else {
-        const nextIsArray = /^\d+$/.test(path[i + 1]);
-        if (cursor[seg] == null) {
-          cursor[seg] = nextIsArray ? [] : {};
-        }
-        cursor = cursor[seg];
-      }
-    }
-  }
-  return result;
-}
-
-// ¿El payload tiene algo que process-inbound sepa procesar de INMEDIATO?
-// processPayload procesa `leads.add`, `leads.update`, `leads.status` y
-// `message.add`. `update` / `status` son ~64% del tráfico real, pero solo
-// importan cuando mueven al lead de etapa o de pipeline: es lo que mueve la
-// tarjeta en el tablero del inbox (0061).
-//
-//  - `leads.status` (cambio de etapa) y `leads.add` / `message.add` disparan
-//    process-inbound al instante: la tarjeta se mueve en vivo.
-//  - `leads.update` SOLO se encola: el sweep de pg_cron (cada minuto) lo
-//    procesa. En SuperCines los Salesbots escriben custom fields del lead todo
-//    el día y cada escritura genera un leads.update; disparar una invocación por
-//    cada ráfaga de esos eventos cambiaría 1.440 barridos/día por miles de
-//    invocaciones para, casi siempre, no escribir nada. Un movimiento de etapa
-//    siempre trae su `leads.status`, así que no se pierde tiempo real donde
-//    importa, y el barrido igual sincroniza la posición de los `update`.
-//
-// El costo sigue acotado por dos lados más: el coalescing de abajo (como mucho
-// UN trigger cada 2 s por instancia) y que process-inbound solo ESCRIBE si la
-// etapa/pipeline cambió (_shared/lead-position.ts). Este endpoint no hace más
-// trabajo por eso: sigue siendo "insertar y responder" (invariante 6).
-//
-// FAIL-OPEN a propósito: ante cualquier forma que no sepamos inspeccionar
-// (`_raw` de un body que no parseó, un grupo nuevo de Kommo) devolvemos true y
-// disparamos igual. Perder el mensaje de un lead es muchísimo peor que gastar
-// una invocación de más.
-function isActionable(payload: Record<string, unknown>): boolean {
-  if (!payload || typeof payload !== "object") return true;
-  if ("_raw" in payload) return true; // body que no se pudo parsear
-
-  const group = (key: string): Record<string, unknown> | null => {
-    const g = payload[key];
-    return g && typeof g === "object" ? (g as Record<string, unknown>) : null;
-  };
-  const leads = group("leads");
-  const message = group("message");
-  // Ningún grupo conocido → puede ser una forma nueva de Kommo: disparar.
-  if (!leads && !message) return true;
-  return Boolean(leads?.add || leads?.status) || Boolean(message?.add);
-}
 
 // Coalescing del trigger a process-inbound.
 //
@@ -141,147 +77,6 @@ function triggerProcessInbound(): void {
   }
 }
 
-// Techo duro para el insert. Sin esto, una conexión colgada a PostgREST
-// retiene el worker indefinidamente y agota el pool de la función.
-const INSERT_TIMEOUT_MS = 5000;
-
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
-    Promise.resolve(p).then(
-      (v) => { clearTimeout(t); resolve(v); },
-      (e) => { clearTimeout(t); reject(e); }
-    );
-  });
-}
-
-async function readBody(req: Request): Promise<Record<string, unknown>> {
-  const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
-  const raw = await req.text();
-  if (!raw) return {};
-  if (contentType.includes("application/json")) {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return { _raw: raw };
-    }
-  }
-  if (contentType.includes("application/x-www-form-urlencoded")) {
-    return parseFormBracketed(raw);
-  }
-  // Best-effort: probar JSON, si falla devolver raw
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return { _raw: raw };
-  }
-}
-
-Deno.serve(async (req: Request) => {
-  // Healthcheck / GET → 200
-  if (req.method === "GET") {
-    return new Response("kommo-webhook OK", { status: 200 });
-  }
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  // Autenticidad: antes de leer el cuerpo. Rechazo rápido, genérico y sin encolar.
-  // authorizeWebhook espera la base como mucho AUTH_WAIT_MS (fail-open / último estado
-  // conocido): leer el estado nunca puede colgar la respuesta (invariante 6).
-  const decision = await authorizeWebhook(supabase, extractToken(new URL(req.url), req.headers), LEGACY_ENV_SECRET);
-  if (!decision.allow) {
-    console.warn(`kommo-webhook: rechazado (${decision.reason})`);
-    return FORBIDDEN();
-  }
-  if (decision.reason === "ok" || decision.reason === "unsigned_permissive") {
-    // Estrangulado (1/min) y después de responder: no agrega latencia al webhook.
-    const note = noteWebhookRequest(supabase, decision.signed, Date.now(), decision.current === true);
-    // @ts-ignore: EdgeRuntime existe en Supabase
-    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(note);
-  }
-
-  try {
-    const payload = await readBody(req);
-
-    // RESPONDER PRIMERO, PERSISTIR DESPUÉS (invariante 6 del CLAUDE.md). Este es
-    // el único endpoint que Kommo juzga: si no le contestamos rápido, DESHABILITA
-    // el webhook y el sistema queda mudo durante días (le pasó a KIA: 6 y 4 días
-    // seguidos, 219 mensajes perdidos, porque el insert se awaiteaba antes de
-    // responder y la salud del webhook quedaba atada a la de Postgres/PostgREST).
-    //
-    // Tradeoff aceptado: si la DB está caída se pierde ESE payload (Kommo ya
-    // recibió su 200 y no reintenta). Perder un payload puntual es
-    // infinitamente más barato que perder TODO el tráfico por días. Los
-    // reintentos cubren los hipos cortos, y `inbound_silence` es la red final.
-    const persist = (async () => {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const { error } = await withTimeout(
-            supabase.from("inbound_queue").insert({
-              source: "kommo_webhook",
-              payload,
-              status: "pending",
-            }),
-            INSERT_TIMEOUT_MS
-          );
-          if (!error) {
-            // Solo si el payload trae trabajo real, y como mucho una vez cada
-            // TRIGGER_COALESCE_MS. Lo demás lo levanta el sweep de pg_cron.
-            if (isActionable(payload)) triggerProcessInbound();
-            return;
-          }
-          console.error(`inbound_queue insert (intento ${attempt}):`, error.message);
-        } catch (e) {
-          console.error(`inbound_queue insert timeout/error (intento ${attempt}):`, e);
-        }
-        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1000));
-      }
-      // Agotados los reintentos, ese payload se perdió: Kommo ya recibió su 200
-      // y no lo va a reintentar. Un console.error NO alcanza — los logs de una
-      // Edge Function no son consultables y se borran, así que el mensaje de un
-      // cliente desaparecería sin dejar rastro que alguien pueda mirar después.
-      // Se deja una alerta, que es lo único que convierte esto en visible.
-      //
-      // Mejor esfuerzo a propósito: si Postgres está caído del todo, este insert
-      // también falla, y está bien — ese caso lo cubre `inbound_silence`. Lo que
-      // esta alerta atrapa es el caso COMÚN y silencioso: un hipo de PostgREST
-      // que se come un payload suelto mientras todo lo demás sigue andando.
-      console.error("inbound_queue insert: agotados los reintentos, payload perdido");
-      try {
-        await supabase.from("alerts").insert({
-          kind: "inbound_dropped",
-          severity: "critical",
-          title: "Se perdió un webhook de Kommo",
-          description:
-            "El insert a inbound_queue falló 3 veces seguidas (timeout o error de la base). " +
-            "Kommo ya recibió 200 y NO lo reintenta, así que ese mensaje del cliente no entró al sistema. " +
-            "Si se repite, revisá la salud de la base y de PostgREST.",
-          ref_table: "inbound_queue",
-          metadata: { intentos: 3, timeout_ms: INSERT_TIMEOUT_MS },
-        });
-      } catch (e) {
-        console.error("no se pudo ni dejar la alerta de payload perdido:", e);
-      }
-    })();
-
-    // @ts-ignore: EdgeRuntime existe en Supabase
-    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-      // @ts-ignore
-      EdgeRuntime.waitUntil(persist);
-    } else {
-      await persist; // fallback local/test: sin waitUntil, mantener el comportamiento
-    }
-
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  } catch (err) {
-    console.error("kommo-webhook error:", err);
-    return new Response(JSON.stringify({ ok: false }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }
-});
+Deno.serve(
+  createKommoWebhookHandler(supabase, { legacySecret: LEGACY_ENV_SECRET, trigger: triggerProcessInbound }),
+);

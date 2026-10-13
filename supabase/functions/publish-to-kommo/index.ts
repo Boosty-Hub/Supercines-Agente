@@ -15,7 +15,13 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
-import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
+import { detectInternalLeak } from "../_shared/response-guard.ts";
+import {
+  patchLeadField,
+  runSalesbot,
+  fetchOutgoingEventIds,
+  verifyOutgoingDelivery,
+} from "../_shared/kommo.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -149,8 +155,9 @@ async function publishOne(
   },
   config: KommoConfig,
   kommoDomain: string,
-  kommoToken: string
-) {
+  kommoToken: string,
+  verify: { enabled: boolean; timeoutMs: number }
+): Promise<{ delivered: boolean; verified: boolean }> {
   const kommoLeadId = draft.messages?.leads?.kommo_lead_id;
   if (!kommoLeadId) throw new Error("kommo_lead_id missing");
   if (!config.response_custom_field_id) throw new Error("response_custom_field_id no configurado");
@@ -185,7 +192,19 @@ async function publishOne(
   // ---- Flujo normal: DM por campo + salesbot estándar ----
   // SIEMPRE corre, independientemente de si la parte pública falló.
   await patchLeadField(leadId, config.response_custom_field_id, draft.body, kommoDomain, kommoToken);
+
+  // Antes de disparar, una "foto" de los mensajes salientes que el lead YA tenía,
+  // para detectar el NUEVO que (si todo va bien) genere el salesbot.
+  const baseline = verify.enabled
+    ? await fetchOutgoingEventIds(leadId, kommoDomain, kommoToken)
+    : new Set<string>();
+
   await runSalesbot(config.salesbot_id, leadId, kommoDomain, kommoToken);
+
+  // El 202 success:true de salesbot/run NO prueba la entrega (ver _shared/kommo.ts).
+  if (!verify.enabled) return { delivered: true, verified: false };
+  const delivered = await verifyOutgoingDelivery(leadId, baseline, kommoDomain, kommoToken, verify.timeoutMs);
+  return { delivered, verified: true };
 }
 
 Deno.serve(async (req: Request) => {
@@ -227,6 +246,15 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Verificador de entrega (DB-first / env-fallback). Default ON: salesbot/run
+    // devuelve 202 success aunque el bot no entregue, y sin esto se marcaría
+    // "enviado" en falso. SALESBOT_VERIFY_ENABLED="false" lo apaga;
+    // SALESBOT_VERIFY_TIMEOUT_MS ajusta la ventana.
+    const verify = {
+      enabled: runtimeCfg.getOr("SALESBOT_VERIFY_ENABLED", "true") !== "false",
+      timeoutMs: Math.max(3000, Number(runtimeCfg.getOr("SALESBOT_VERIFY_TIMEOUT_MS", "12000")) || 12000),
+    };
+
     const pending = await pickPending(config.publish_from);
     const maxAgeHours = Math.max(0, Number(config.answer_max_age_hours ?? 1));
     const { toPublish, expired } = await splitExpired(pending, maxAgeHours);
@@ -238,30 +266,89 @@ Deno.serve(async (req: Request) => {
     }
 
     let published = 0;
+    let undelivered = 0;
     let failed = 0;
     const errors: Array<{ draft_id: string; error: string }> = [];
 
     for (const d of toPublish) {
-      try {
-        await publishOne(d, config, kommoDomain, kommoToken);
+      const baseMeta = (d.agent_metadata as Record<string, unknown> | null) ?? {};
+      // deno-lint-ignore no-explicit-any
+      const msgs = d.messages as any;
+
+      // ÚLTIMO FILTRO ANTES DE KOMMO. generate-response ya tiene su gate, pero
+      // este es el único punto por el que TODO draft pasa antes de salir: uno
+      // aprobado a mano en el inbox, o publicado por el sweep de pg_cron, no
+      // vuelve a pasar por el generador. No se descarta: se manda a revisión
+      // humana (el texto suele ser recuperable con una edición).
+      const fuga = detectInternalLeak(d.body);
+      if (fuga) {
         await supabase
           .from("drafts")
-          .update({ status: "auto_sent", sent_at: new Date().toISOString() })
-          .eq("id", d.id);
-        published++;
+          .update({
+            status: "pending",
+            agent_metadata: { ...baseMeta, guard_blocked: true, guard_kind: "internal_leak", guard_reason: fuga, guard_stage: "publish" },
+          })
+          .eq("id", d.id)
+          .eq("status", "approved");
+        failed++;
+        errors.push({ draft_id: d.id, error: `bloqueado por guard: ${fuga}` });
+        console.error(`publish-to-kommo: draft ${d.id} bloqueado antes de publicar — ${fuga}`);
+        continue;
+      }
+
+      try {
+        const result = await publishOne(d, config, kommoDomain, kommoToken, verify);
+        if (result.delivered) {
+          await supabase
+            .from("drafts")
+            .update({
+              status: "auto_sent",
+              sent_at: new Date().toISOString(),
+              agent_metadata: result.verified ? { ...baseMeta, delivery_verified: true } : baseMeta,
+            })
+            .eq("id", d.id);
+          published++;
+        } else {
+          // El bot se disparó pero NO apareció un mensaje saliente en la ventana:
+          // el mensaje NO llegó al canal. No es un "enviado".
+          const publishError = "salesbot disparado pero sin entrega confirmada (no apareció outgoing_chat_message)";
+          await supabase
+            .from("drafts")
+            .update({
+              status: "failed",
+              agent_metadata: { ...baseMeta, delivery_unverified: true, publish_error: publishError },
+            })
+            .eq("id", d.id);
+          const leadName = msgs?.leads?.display_name ?? `lead ${msgs?.leads?.kommo_lead_id ?? "?"}`;
+          const { error: alertErr } = await supabase.from("alerts").insert({
+            kind: "salesbot_not_delivered",
+            severity: "warning",
+            title: `No se confirmó la entrega del mensaje a ${leadName}`,
+            description:
+              "El salesbot se disparó y Kommo respondió OK, pero no apareció un mensaje saliente en el canal dentro de la ventana de verificación. " +
+              "Causas probables: ventana de mensajería del canal vencida (p. ej. 24h en Instagram/WhatsApp Business), lead venido de un comentario sin DM abierto, o el bot con una condición que lo corta. " +
+              "Revisá la conversación y, si corresponde, respondé manualmente.",
+            ref_table: "drafts",
+            ref_id: d.id,
+            metadata: { kommo_lead_id: msgs?.leads?.kommo_lead_id ?? null, lead_id: msgs?.lead_id ?? null },
+          });
+          if (alertErr) console.warn("alert salesbot_not_delivered:", alertErr.message);
+          errors.push({ draft_id: d.id, error: publishError });
+          undelivered++;
+          failed++;
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await supabase
           .from("drafts")
-          .update({
-            status: "failed",
-            agent_metadata: { publish_error: msg },
-          })
+          .update({ status: "failed", agent_metadata: { ...baseMeta, publish_error: msg } })
           .eq("id", d.id);
         errors.push({ draft_id: d.id, error: msg });
         failed++;
       }
     }
+
+    console.log(`publish-to-kommo: published=${published} undelivered=${undelivered} failed=${failed} expired=${expired}`);
 
     // Después de publicar, disparar evaluación de outcomes (fire-and-forget)
     if (published > 0) {
@@ -278,7 +365,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, published, failed, expired, errors }),
+      JSON.stringify({ ok: true, published, undelivered, failed, expired, errors }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
   } catch (err) {

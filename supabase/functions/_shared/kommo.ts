@@ -6,6 +6,7 @@
 //   import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
 
 import { normalizeLoose } from "./text.ts";
+import { calcularEtiquetasNuevas, type EtiquetaExistente } from "./crm-tags.ts";
 
 /**
  * Actualiza un custom field de un lead en Kommo.
@@ -30,11 +31,11 @@ const BMP_EQUIVALENTE: Record<string, string> = {
 };
 
 /** Deja el texto guardable en un campo de Kommo (solo BMP). */
-export function sanitizeForKommoField(input: string): string {
+export function sanitizeKommoFieldValue(input: string): string {
   const out: string[] = [];
   for (const ch of input) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (cp === 0xfe0f || cp === 0x200d) continue; // selector de variación / ZWJ huérfanos
+    if (cp === 0xfe0f || cp === 0x200d || cp === 0x20e3) continue; // selector de variación / ZWJ / keycap huérfanos
     if (cp > 0xffff) {
       const alt = BMP_EQUIVALENTE[ch];
       if (alt && (alt.codePointAt(0) ?? 0) <= 0xffff) out.push(alt);
@@ -52,6 +53,9 @@ export function sanitizeForKommoField(input: string): string {
     .trim();
 }
 
+/** Nombre histórico de SuperCines; mismo comportamiento. */
+export const sanitizeForKommoField = sanitizeKommoFieldValue;
+
 /**
  * Escribe un campo de TEXTO/TEXTAREA de un lead. Para campos con opciones
  * predefinidas (select/radiobutton) usá patchEntityFieldTyped: este helper
@@ -65,7 +69,7 @@ export async function patchLeadField(
   kommoToken: string
 ): Promise<void> {
   const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
-  const safe = sanitizeForKommoField(value);
+  const safe = sanitizeKommoFieldValue(value);
   const res = await fetch(url, {
     method: "PATCH",
     headers: {
@@ -116,6 +120,112 @@ export async function moveLeadStage(
 // Status IDs reservados/universales de Kommo: 142 = GANADO (won), 143 = PERDIDO
 // (lost). Existen en TODOS los pipelines. Un lead en cualquiera de estas etapas
 // es terminal y nunca debe recibir seguimiento.
+/**
+ * Actualiza un custom field de un CONTACTO en Kommo (mismo shape que el lead,
+ * pero el endpoint apunta a /contacts/). Throws si la respuesta no es OK.
+ */
+export async function patchContactField(
+  kommoContactId: number,
+  fieldId: number,
+  value: string,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<void> {
+  const url = `https://${kommoDomain}/api/v4/contacts/${kommoContactId}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${kommoToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      custom_fields_values: [
+        {
+          field_id: fieldId,
+          values: [{ value: sanitizeKommoFieldValue(value) }],
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`patch contact: ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
+ * Agrega una nota interna (note_type "common", texto plano, NO visible para el
+ * cliente) a un lead de Kommo. Usada por `agregar_nota` y por `transferir_asesor`
+ * (ahí es la pieza que sobrevive aunque el movimiento de etapa falle — ver
+ * `runCrmTool` en generate-response/index.ts). Sanitiza con
+ * `sanitizeKommoFieldValue` por la misma razón que los custom fields: no hay
+ * garantía de que el endpoint de notas escape mejor que la columna utf8mb3 que
+ * causó la truncación silenciosa documentada arriba, y no cuesta nada ser
+ * conservador acá. Throws si !OK.
+ */
+export async function addLeadNote(
+  kommoLeadId: number,
+  text: string,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<void> {
+  const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}/notes`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${kommoToken}`,
+      "Content-Type": "application/json",
+    },
+    // La API espera un ARREGLO de notas aunque sea una sola.
+    body: JSON.stringify([{ note_type: "common", params: { text: sanitizeKommoFieldValue(text) } }]),
+  });
+  if (!res.ok) {
+    throw new Error(`add lead note: ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
+ * Agrega etiquetas (tags) a un lead de forma ADITIVA: lee las existentes,
+ * calcula con `calcularEtiquetasNuevas` (_shared/crm-tags.ts, puro y probado)
+ * cuáles faltan, y hace UN solo PATCH con la unión — Kommo reemplaza el set
+ * COMPLETO de `_embedded.tags` en cada PATCH, así que mandar solo las nuevas
+ * borraría las que el lead ya tenía. No-op (ni siquiera pega el PATCH) si
+ * todas las candidatas ya existían. Throws si !OK.
+ */
+export async function addLeadTags(
+  kommoLeadId: number,
+  candidatas: string[],
+  kommoDomain: string,
+  kommoToken: string
+): Promise<{ added: string[] }> {
+  const base = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
+  const getRes = await fetch(base, {
+    headers: { Authorization: `Bearer ${kommoToken}` },
+  });
+  if (!getRes.ok) {
+    throw new Error(`add lead tags (get): ${getRes.status} ${await getRes.text()}`);
+  }
+  const lead = (await getRes.json()) as { _embedded?: { tags?: EtiquetaExistente[] } };
+  const existing = lead._embedded?.tags ?? [];
+  const nuevas = calcularEtiquetasNuevas(existing, candidatas);
+  if (nuevas.length === 0) return { added: [] };
+  const tags = [
+    ...existing.map((t) => ({ id: t.id })),
+    ...nuevas.map((name) => ({ name })),
+  ];
+  const patchRes = await fetch(base, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${kommoToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ _embedded: { tags } }),
+  });
+  if (!patchRes.ok) {
+    throw new Error(`add lead tags (patch): ${patchRes.status} ${await patchRes.text()}`);
+  }
+  return { added: nuevas };
+}
+
 export const KOMMO_WON_STATUS = 142;
 export const KOMMO_LOST_STATUS = 143;
 
@@ -366,7 +476,7 @@ export function resolveFieldValue(
     if (!hit) return null;
     return { values: [{ enum_id: hit.id }], written: hit.value };
   }
-  const written = sanitizeForKommoField(value);
+  const written = sanitizeKommoFieldValue(value);
   return { values: [{ value: written }], written };
 }
 
@@ -574,4 +684,70 @@ export async function runSalesbot(
   if (!res.ok) {
     throw new Error(`run salesbot: ${res.status} ${await res.text()}`);
   }
+}
+
+/**
+ * Devuelve los IDs de eventos `outgoing_chat_message` recientes que pertenecen a un
+ * lead. Kommo NO permite filtrar estos eventos por entidad (filter[entity]=lead los
+ * excluye; filter[entity_id] da 400), así que pedimos los últimos N por TIPO a nivel
+ * cuenta y matcheamos `entity_id` del lado nuestro. Fail-open: ante cualquier error
+ * devuelve un set vacío (el verificador lo interpreta como "sin novedad todavía").
+ */
+export async function fetchOutgoingEventIds(
+  kommoLeadId: number,
+  kommoDomain: string,
+  kommoToken: string,
+  limit = 100
+): Promise<Set<string>> {
+  const url = `https://${kommoDomain}/api/v4/events?filter[type]=outgoing_chat_message&order[created_at]=desc&limit=${limit}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (!res.ok) return new Set();
+    const json = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const events: any[] = json?._embedded?.events ?? [];
+    return new Set(
+      events
+        .filter((e) => String(e.entity_id) === String(kommoLeadId))
+        .map((e) => String(e.id))
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Verifica que el salesbot HAYA ENTREGADO un mensaje al canal del lead.
+ *
+ * `POST /api/v2/salesbot/run` responde 202 `{"success":true}` SIEMPRE (fire-and-forget;
+ * no valida que el bot exista ni que entregue), así que esa respuesta NO prueba el
+ * envío. La única señal real de entrega es un evento `outgoing_chat_message` NUEVO del
+ * lead. `baseline` = los IDs de eventos salientes que ya existían ANTES de disparar el
+ * bot (con fetchOutgoingEventIds); hacemos poll hasta que aparezca un ID que no estaba,
+ * o hasta agotar `timeoutMs`. Devuelve `true` si se detectó la entrega.
+ *
+ * Caveat: `outgoing_chat_message` también se dispara con envíos MANUALES — si un humano
+ * contesta dentro de la ventana daría un falso positivo (raro, asumible). Para el
+ * problema real (NO-entrega) la señal es confiable.
+ */
+export async function verifyOutgoingDelivery(
+  kommoLeadId: number,
+  baseline: Set<string>,
+  kommoDomain: string,
+  kommoToken: string,
+  timeoutMs = 12000
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // Primer chequeo tras un respiro corto; luego cada ~3.5s hasta el deadline.
+  let delay = 2500;
+  while (Date.now() < deadline) {
+    await sleep(delay);
+    delay = 3500;
+    const current = await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken);
+    for (const id of current) {
+      if (!baseline.has(id)) return true;
+    }
+  }
+  return false;
 }

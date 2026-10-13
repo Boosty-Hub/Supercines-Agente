@@ -460,66 +460,90 @@ grant execute on function apply_lead_position(uuid, bigint, bigint, timestamptz,
 -- orden inverso al que se decidieron. claim_lead_move reserva el lead de forma atómica
 -- (select … for update): comprueba que la posición vigente sea la que el cliente vio
 -- (position_changed) y que no haya otro movimiento en vuelo (busy); la reserva vence sola
--- (p_ttl_seconds) para que un servidor caído no bloquee el lead. release_lead_move la suelta.
+-- (p_ttl_seconds) para que un servidor caído no bloquee el lead.
+--
+-- Dueño de la reserva: claim_lead_move devuelve un TOKEN (uuid nuevo por reserva) y
+-- release_lead_move(lead, token) borra SOLO si el token coincide. Sin token, un movimiento
+-- lento cuya reserva ya venció (y que otro movimiento volvió a tomar) borraba al terminar
+-- la reserva AJENA y dejaba pasar a un tercero en paralelo con el segundo.
+--
+-- TTL por defecto 45 s, por encima del peor caso real de la ruta del panel
+-- (web/src/lib/move-claim.ts, con test): PATCH a Kommo con timeout de 8 s, un reintento
+-- tras 429 con 1,2 s de espera y otro PATCH de 8 s (17,2 s) + lectura de config y la RPC
+-- apply_lead_position. La ruta pasa el TTL explícito desde esa misma constante.
 create table if not exists lead_move_claims (
   lead_id    uuid primary key references leads(id) on delete cascade,
   claimed_at timestamptz not null default now()
 );
+alter table lead_move_claims add column if not exists token uuid;
 alter table lead_move_claims enable row level security;
 revoke all on lead_move_claims from anon, authenticated, public;
 
-create or replace function claim_lead_move(
+-- DROP: cambió el tipo de retorno (se agregó token) y la firma de release (token).
+drop function if exists claim_lead_move(uuid, boolean, bigint, bigint, int);
+drop function if exists release_lead_move(uuid);
+create function claim_lead_move(
   p_lead_id          uuid,
   p_check_position   boolean default false,
   p_expected_stage   bigint  default null,
   p_expected_pipeline bigint default null,
-  p_ttl_seconds      int     default 20
+  p_ttl_seconds      int     default 45
 )
-returns table (outcome text, stage_id bigint, pipeline_id bigint)
+returns table (outcome text, stage_id bigint, pipeline_id bigint, token uuid)
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   l leads%rowtype;
-  v_claimed boolean;
+  v_token uuid := gen_random_uuid();
+  v_got   uuid;
 begin
   if public.end_user_request() then
     raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
   end if;
   select * into l from leads where id = p_lead_id for update;
   if not found then
-    return query select 'missing'::text, null::bigint, null::bigint;
+    return query select 'missing'::text, null::bigint, null::bigint, null::uuid;
     return;
   end if;
   if p_check_position
      and (l.kommo_stage_id is distinct from p_expected_stage
           or l.kommo_pipeline_id is distinct from p_expected_pipeline) then
-    return query select 'position_changed'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+    return query select 'position_changed'::text, l.kommo_stage_id, l.kommo_pipeline_id, null::uuid;
     return;
   end if;
-  insert into lead_move_claims (lead_id, claimed_at) values (l.id, clock_timestamp())
-  on conflict (lead_id) do update set claimed_at = clock_timestamp()
-   where lead_move_claims.claimed_at < clock_timestamp() - make_interval(secs => p_ttl_seconds)
-  returning true into v_claimed;
-  if v_claimed is not true then
-    return query select 'busy'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+  insert into lead_move_claims as c (lead_id, claimed_at, token) values (l.id, clock_timestamp(), v_token)
+  on conflict (lead_id) do update set claimed_at = clock_timestamp(), token = excluded.token
+   where c.claimed_at < clock_timestamp() - make_interval(secs => p_ttl_seconds)
+  returning c.token into v_got;
+  if v_got is distinct from v_token then
+    return query select 'busy'::text, l.kommo_stage_id, l.kommo_pipeline_id, null::uuid;
     return;
   end if;
-  return query select 'claimed'::text, l.kommo_stage_id, l.kommo_pipeline_id;
+  return query select 'claimed'::text, l.kommo_stage_id, l.kommo_pipeline_id, v_token;
 end;
 $$;
 revoke execute on function claim_lead_move(uuid, boolean, bigint, bigint, int) from public, anon, authenticated;
 grant execute on function claim_lead_move(uuid, boolean, bigint, bigint, int) to service_role;
 
-create or replace function release_lead_move(p_lead_id uuid)
-returns void language plpgsql security definer set search_path = public, pg_temp as $$
+-- Suelta la reserva SOLO si sigue siendo de quien la tomó (token). Devuelve true si la
+-- borró; false si ya no era suya (venció y otro la tomó) o ya no existía.
+create or replace function release_lead_move(p_lead_id uuid, p_token uuid)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_deleted int;
 begin
   if public.end_user_request() then
     raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
   end if;
-  delete from lead_move_claims where lead_id = p_lead_id;
+  if p_token is null then
+    return false;
+  end if;
+  delete from lead_move_claims where lead_id = p_lead_id and token = p_token;
+  get diagnostics v_deleted = row_count;
+  return v_deleted > 0;
 end;
 $$;
-revoke execute on function release_lead_move(uuid) from public, anon, authenticated;
-grant execute on function release_lead_move(uuid) to service_role;
+revoke execute on function release_lead_move(uuid, uuid) from public, anon, authenticated;
+grant execute on function release_lead_move(uuid, uuid) to service_role;
 
 do $$
 begin

@@ -325,29 +325,57 @@ delete from lead_stage_events where true;
 delete from leads where true;
 insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values
   ('00000000-0000-0000-0000-0000000000e1', 501, 1, 10);
-select pg_temp.expect('claim con la posicion esperada: claimed',
-  (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
-select pg_temp.expect('segundo claim del mismo lead mientras hay uno en vuelo: busy',
-  (select outcome = 'busy' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
-select release_lead_move('00000000-0000-0000-0000-0000000000e1');
+select pg_temp.expect('claim con la posicion esperada: claimed con token',
+  (select outcome = 'claimed' and token is not null from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
+select pg_temp.expect('segundo claim del mismo lead mientras hay uno en vuelo: busy y sin token',
+  (select outcome = 'busy' and token is null from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
+select pg_temp.expect('un token AJENO no libera la reserva',
+  not release_lead_move('00000000-0000-0000-0000-0000000000e1', gen_random_uuid()));
+select pg_temp.expect('un token NULL no libera la reserva',
+  not release_lead_move('00000000-0000-0000-0000-0000000000e1', null));
+select pg_temp.expect('…la reserva sigue tomada (busy)',
+  (select outcome = 'busy' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false)));
+select pg_temp.expect('el dueño libera con su token',
+  release_lead_move('00000000-0000-0000-0000-0000000000e1', (select token from lead_move_claims where lead_id = '00000000-0000-0000-0000-0000000000e1')));
 select pg_temp.expect('liberado: se puede reservar de nuevo',
   (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false)));
+-- TTL vencido: el viejo dueño (A) tarda, B toma la reserva; el release tardio de A NO borra la de B.
+create temp table t_tok (who text primary key, token uuid);
+insert into t_tok select 'A', token from lead_move_claims where lead_id = '00000000-0000-0000-0000-0000000000e1';
+update lead_move_claims set claimed_at = clock_timestamp() - interval '44 seconds' where lead_id = '00000000-0000-0000-0000-0000000000e1';
+select pg_temp.expect('dentro del TTL por defecto (44 s de 45) la reserva NO vence',
+  (select outcome = 'busy' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false)));
+update lead_move_claims set claimed_at = clock_timestamp() - interval '46 seconds' where lead_id = '00000000-0000-0000-0000-0000000000e1';
+insert into t_tok select 'B', token from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false) where outcome = 'claimed';
+select pg_temp.expect('TTL por defecto (45 s) vencido: un nuevo dueño (B) toma la reserva con OTRO token',
+  (select count(*) = 2 and count(distinct token) = 2 from t_tok));
+select pg_temp.expect('el release tardio del viejo dueño (A) no borra la reserva de B',
+  not release_lead_move('00000000-0000-0000-0000-0000000000e1', (select token from t_tok where who = 'A')));
+select pg_temp.expect('…la reserva sigue siendo de B',
+  (select token = (select token from t_tok where who = 'B') from lead_move_claims where lead_id = '00000000-0000-0000-0000-0000000000e1'));
+select pg_temp.expect('…y un tercero sigue bloqueado (busy)',
+  (select outcome = 'busy' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false)));
+select pg_temp.expect('B libera con su token',
+  release_lead_move('00000000-0000-0000-0000-0000000000e1', (select token from t_tok where who = 'B')));
 -- la reserva vence sola (servidor caido): con ttl 0 un claim nuevo la toma
+select claim_lead_move('00000000-0000-0000-0000-0000000000e1', false);
 select pg_temp.expect('una reserva vencida no bloquea el lead',
   (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', false, null, null, 0)));
-select release_lead_move('00000000-0000-0000-0000-0000000000e1');
-select pg_temp.expect('posicion distinta de la esperada: position_changed con la vigente',
-  (select outcome = 'position_changed' and stage_id = 10 and pipeline_id = 1
+delete from lead_move_claims where true;
+select pg_temp.expect('posicion distinta de la esperada: position_changed con la vigente y sin token',
+  (select outcome = 'position_changed' and stage_id = 10 and pipeline_id = 1 and token is null
      from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 99, 1)));
 select pg_temp.expect('position_changed no deja reserva tomada',
   (select outcome = 'claimed' from claim_lead_move('00000000-0000-0000-0000-0000000000e1', true, 10, 1)));
-select release_lead_move('00000000-0000-0000-0000-0000000000e1');
+delete from lead_move_claims where true;
 select pg_temp.expect('lead inexistente: missing',
   (select outcome = 'missing' from claim_lead_move('00000000-0000-0000-0000-0000000000ff', false)));
 select pg_temp.expect('claim/release solo para service_role',
   has_function_privilege('service_role', 'claim_lead_move(uuid,boolean,bigint,bigint,int)', 'execute')
   and not has_function_privilege('authenticated', 'claim_lead_move(uuid,boolean,bigint,bigint,int)', 'execute')
-  and not has_function_privilege('anon', 'release_lead_move(uuid)', 'execute')
+  and not has_function_privilege('anon', 'release_lead_move(uuid,uuid)', 'execute')
+  and not has_function_privilege('authenticated', 'release_lead_move(uuid,uuid)', 'execute')
+  and has_function_privilege('service_role', 'release_lead_move(uuid,uuid)', 'execute')
   and not has_table_privilege('authenticated', 'lead_move_claims', 'select'));
 
 rollback;

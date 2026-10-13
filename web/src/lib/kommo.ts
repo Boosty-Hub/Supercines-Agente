@@ -2,6 +2,7 @@
 // Used by /api/kommo/pipelines and /api/filters/generate.
 import { configValues } from "@/lib/runtime-config";
 import { truncateGraphemes } from "@/lib/text-safe";
+import { KOMMO_MOVE_429_BACKOFF_MS, KOMMO_MOVE_ATTEMPTS, KOMMO_MOVE_TIMEOUT_MS } from "@/lib/move-claim";
 
 export type KommoStage = { id: number; name: string; color: string | null };
 export type KommoPipeline = { id: number; name: string; statuses: KommoStage[] };
@@ -246,7 +247,7 @@ export async function moveLeadInKommo(
     "KOMMO_ACCESS_TOKEN",
   ]);
   if (!domain || !token) return { ok: false, status: 503, error: "Kommo no está configurado." };
-  for (let intento = 0; intento < 2; intento++) {
+  for (let intento = 0; intento < KOMMO_MOVE_ATTEMPTS; intento++) {
     let res: Response;
     try {
       res = await fetch(`https://${domain}/api/v4/leads/${kommoLeadId}`, {
@@ -254,14 +255,14 @@ export async function moveLeadInKommo(
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ status_id: statusId, pipeline_id: pipelineId }),
         cache: "no-store",
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(KOMMO_MOVE_TIMEOUT_MS),
       });
     } catch (e) {
       return { ok: false, status: 504, error: `Kommo no respondió: ${e instanceof Error ? e.message : String(e)}` };
     }
     if (res.ok) return { ok: true };
-    if (res.status === 429 && intento === 0) {
-      await new Promise((r) => setTimeout(r, 1200));
+    if (res.status === 429 && intento < KOMMO_MOVE_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, KOMMO_MOVE_429_BACKOFF_MS));
       continue;
     }
     const body = truncateGraphemes(await res.text(), 300);

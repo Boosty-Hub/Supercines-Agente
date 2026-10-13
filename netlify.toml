@@ -4,7 +4,12 @@
   publish = ".next"
 
 [build.environment]
+  # Node 20 llegó a EOL (abril 2026); Next 15 corre en 22 LTS.
   NODE_VERSION = "22"
+  # Mantener igual a "packageManager" de web/package.json. El lockfile lleva `overrides`
+  # (los declara pnpm-workspace.yaml) y pnpm < 10.6 los rechaza con
+  # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH bajo --frozen-lockfile; Netlify elige un pnpm
+  # por defecto según el lockfile y puede quedar en una versión vieja.
   PNPM_VERSION = "10.32.1"
 
 [[plugins]]

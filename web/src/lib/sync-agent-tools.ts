@@ -21,6 +21,7 @@ import {
   type ToolGateFlags,
 } from "@/lib/agent-prompt";
 import { listMemories, retrieveAgent, updateAgent, type NamedResource } from "@/lib/anthropic-managed";
+import type { AgentRetriever } from "@/lib/once-retriever";
 import {
   conflictMessage,
   detectPromptConflict,
@@ -199,12 +200,16 @@ function conflictOf(p: Payload, live: NamedResource): PromptConflict | null {
  * agente SIN empujar el prompt (p. ej. cambiar el modelo en /consumo): suben la versión
  * del agente y, sin este chequeo, taparían la señal. null = sin conflicto (o agente
  * sin aprovisionar / Anthropic no responde: no se afirma lo que no se pudo comprobar).
+ * `retrieve` es inyectable: una página que además necesita el agente vivo para otra cosa
+ * pasa un retriever compartido (lib/once-retriever) y el agente se lee UNA vez por render.
  */
-export async function checkAgentPromptConflict(): Promise<PromptConflict | null> {
+export async function checkAgentPromptConflict(
+  retrieve: AgentRetriever = retrieveAgent
+): Promise<PromptConflict | null> {
   try {
     const payload = await buildPayload();
     if (!payload || "error" in payload) return null;
-    return conflictOf(payload, await retrieveAgent(payload.apiKey, payload.agentId));
+    return conflictOf(payload, await retrieve(payload.apiKey, payload.agentId));
   } catch {
     return null;
   }

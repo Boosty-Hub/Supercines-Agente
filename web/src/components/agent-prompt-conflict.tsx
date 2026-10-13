@@ -14,7 +14,14 @@ const TITLES: Record<PromptConflict["kind"], string> = {
   first_sync_differs: "El prompt del agente en Anthropic difiere del de la plataforma",
 };
 
-export function AgentPromptConflict({ conflict }: { conflict: PromptConflict }) {
+export function AgentPromptConflict({
+  conflict,
+  onResolved,
+}: {
+  conflict: PromptConflict;
+  /** Se llama tras resolver con éxito (antes del refresh), p. ej. para cerrar un panel embebido. */
+  onResolved?: () => void;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<"overwrite" | "import_live" | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -37,6 +44,7 @@ export function AgentPromptConflict({ conflict }: { conflict: PromptConflict }) 
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      onResolved?.();
       router.refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "No se pudo resolver");

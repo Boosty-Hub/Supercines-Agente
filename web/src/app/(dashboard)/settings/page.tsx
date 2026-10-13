@@ -11,6 +11,8 @@ import { getAgentSyncStatus } from "@/lib/agent-sync-status";
 import { AgentSyncBanner } from "@/components/agent-sync-banner";
 import { AgentPromptConflict } from "@/components/agent-prompt-conflict";
 import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
+import { retrieveAgent } from "@/lib/anthropic-managed";
+import { onceRetriever } from "@/lib/once-retriever";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
@@ -52,6 +54,10 @@ export default async function SettingsPage(props: {
     "HANDOFF_STAGE_NAME",
     "HANDOFF_PIPELINE_NAME",
   ]);
+
+  // El desfase (scaffold/modelo) y el conflicto de prompt miran el MISMO agente vivo:
+  // un retriever por render hace que se lea una sola vez de Anthropic.
+  const liveAgent = onceRetriever(retrieveAgent);
 
   const supabase = await createSupabaseServerClient();
   const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, crmExtraRes, syncStatus, promptConflict] =
@@ -116,10 +122,10 @@ export default async function SettingsPage(props: {
       // AGENT_MODEL? /settings exige `configuracion` (middleware), o sea que
       // quien llega acá puede sincronizar. Nunca se sincroniza solo: ver
       // lib/agent-sync-status.ts.
-      getAgentSyncStatus(),
+      getAgentSyncStatus(liveAgent),
       // ¿El prompt vivo fue editado fuera del dashboard? Si sí, ningún camino lo pisa
       // hasta que el usuario elija (importar lo vivo o sobrescribir).
-      checkAgentPromptConflict(),
+      checkAgentPromptConflict(liveAgent),
     ]);
 
   const p = pubRes.data;

@@ -15,6 +15,7 @@
 
 import { configValues } from "@/lib/runtime-config";
 import { retrieveAgent } from "@/lib/anthropic-managed";
+import type { AgentRetriever } from "@/lib/once-retriever";
 import { scaffoldHash } from "@/lib/agent-prompt";
 import { MODEL_KEYS } from "@/lib/model-config";
 
@@ -35,7 +36,8 @@ export function liveModelId(model: unknown): string | null {
   return typeof id === "string" && id ? id : null;
 }
 
-export async function getAgentSyncStatus(): Promise<AgentSyncStatus> {
+/** `retrieve`: inyectable para compartir la lectura del agente con otras consultas del mismo render (lib/once-retriever). */
+export async function getAgentSyncStatus(retrieve: AgentRetriever = retrieveAgent): Promise<AgentSyncStatus> {
   const cfg = await configValues(["ANTHROPIC_API_KEY", "ANTHROPIC_AGENT_ID", "AGENT_MODEL", "AGENT_SCAFFOLD_HASH"]);
   const configModel = cfg.AGENT_MODEL || MODEL_KEYS.AGENT_MODEL;
   if (!cfg.ANTHROPIC_API_KEY || !cfg.ANTHROPIC_AGENT_ID) {
@@ -43,7 +45,7 @@ export async function getAgentSyncStatus(): Promise<AgentSyncStatus> {
   }
   let liveModel: string | null = null;
   try {
-    liveModel = liveModelId((await retrieveAgent(cfg.ANTHROPIC_API_KEY, cfg.ANTHROPIC_AGENT_ID)).model);
+    liveModel = liveModelId((await retrieve(cfg.ANTHROPIC_API_KEY, cfg.ANTHROPIC_AGENT_ID)).model);
   } catch {
     // Anthropic degradado: no se afirma un desfase que no se pudo comprobar.
   }

@@ -7,6 +7,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MODEL_NAMES } from "@/lib/model-config";
+import type { PromptConflict } from "@/lib/agent-prompt-sync";
+import { interpretSyncResponse } from "@/lib/sync-response";
+import { AgentPromptConflict } from "@/components/agent-prompt-conflict";
 
 export function AgentSyncBanner({
   scaffoldStale,
@@ -22,6 +25,10 @@ export function AgentSyncBanner({
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // 409 de /api/agent/sync: el prompt vivo se editó fuera del dashboard. No es un error
+  // para mostrar crudo: se muestra el panel de resolución con el diff que trajo el 409.
+  const [conflict, setConflict] = useState<PromptConflict | null>(null);
+  if (conflict) return <AgentPromptConflict conflict={conflict} onResolved={() => setConflict(null)} />;
   if (!scaffoldStale && !modelDrift) return null;
 
   async function sync() {
@@ -30,16 +37,24 @@ export function AgentSyncBanner({
     try {
       // 1) scaffold/tools (no toca el modelo)  2) modelo, si difiere
       const r1 = await fetch("/api/agent/sync", { method: "POST" });
-      const j1 = await r1.json();
-      if (!r1.ok || !j1.ok) throw new Error(j1.error ?? `HTTP ${r1.status}`);
+      const o1 = interpretSyncResponse(r1.status, await r1.json().catch(() => null));
+      if (o1.kind === "conflict") {
+        setConflict(o1.conflict);
+        return;
+      }
+      if (o1.kind === "error") throw new Error(o1.message);
       if (modelDrift) {
         const r2 = await fetch("/api/usage/models", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ AGENT_MODEL: configModel }),
         });
-        const j2 = await r2.json();
-        if (!r2.ok || !j2.ok) throw new Error(j2.error ?? `HTTP ${r2.status}`);
+        const o2 = interpretSyncResponse(r2.status, await r2.json().catch(() => null));
+        if (o2.kind === "conflict") {
+          setConflict(o2.conflict);
+          return;
+        }
+        if (o2.kind === "error") throw new Error(o2.message);
       }
       setMsg({ ok: true, text: "Agente sincronizado con Anthropic." });
       router.refresh();

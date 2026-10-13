@@ -2,10 +2,10 @@
 //
 // Mantiene al día la copia local de los pipelines/etapas de Kommo (que dibuja
 // el tablero del inbox) y rellena kommo_pipeline_id / kommo_stage_id de los
-// leads que ya existían antes de la migración 0065.
+// leads que ya existían antes de la migración 0061.
 //
 // Se invoca desde:
-//   - pg_cron, cada 10 min (job `sync-pipelines`, migración 0065). Es el camino
+//   - pg_cron, cada 10 min (job `sync-pipelines`, migración 0061). Es el camino
 //     automático: tras el deploy, el backfill avanza solo hasta quedar 'done'.
 //   - el botón "Sincronizar" del inbox (POST /api/inbox/sync) para no esperar.
 //
@@ -36,7 +36,7 @@
 //
 // verify_jwt = false (config.toml; el cron y el panel no mandan JWT de usuario)
 // pero con GATE: exige el header x-internal-secret (_shared/auth.ts), el secreto
-// interno de bajo privilegio guardado en `_app_secrets` (0065). pg_cron lo manda
+// interno de bajo privilegio guardado en `_app_secrets` (0061). pg_cron lo manda
 // desde trigger_sync_pipelines() y POST /api/inbox/sync lo manda desde el
 // servidor tras validar la sesión. Sin él: 401 genérico.
 

@@ -1,5 +1,5 @@
 // _shared/backfill-claim.ts
-// Traduce la fila que devuelve claim_kommo_backfill() (migración 0065) al estado
+// Traduce la fila que devuelve claim_kommo_backfill() (migración 0061) al estado
 // que entienden sync-pipelines y el panel. La DECISIÓN (¿se reinicia? ¿hay
 // enfriamiento? ¿hay otro worker?) la toma la base, atómicamente; acá solo se
 // nombra el resultado. Sin I/O: se testea sin red ni base.

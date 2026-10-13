@@ -461,7 +461,7 @@ function extractMedia(m: KommoMessage): ExtractedMedia | null {
 // escribe SOLO si cambió: ~1.900 de cada ~2.200 leads.update por semana son de
 // otros campos, y cada UPDATE a `leads` dispara un refresco en vivo en todos los
 // inbox abiertos. Si fue un movimiento real lo registra en lead_stage_events por
-// record_lead_stage_event (0065), que además absorbe el "eco": Kommo manda
+// record_lead_stage_event (0061), que además absorbe el "eco": Kommo manda
 // leads.status también cuando el movimiento lo hizo el agente o el panel, y esas
 // fuentes ya lo registraron.
 async function applyLeadPosition(
@@ -564,7 +564,7 @@ async function upsertLead(
   // Hook de seguimiento: reloj de inactividad (solo inbound)
   if (opts.inbound) update.last_inbound_at = new Date().toISOString();
   // Que Kommo nos hable de este lead es prueba de que existe: borra la marca
-  // «no existe en Kommo» que pudo dejarle un recorrido del backfill (0065).
+  // «no existe en Kommo» que pudo dejarle un recorrido del backfill (0061).
   update.kommo_missing_at = null;
 
   // Buscar existente

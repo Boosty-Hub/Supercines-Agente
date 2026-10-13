@@ -11,7 +11,7 @@
 //   BUDGET_EXCLUDE_BEFORE ISO opcional: no cuenta el gasto anterior a esa fecha
 //                         (para activar el techo a mitad de mes sin que el gasto
 //                         previo lo dispare de entrada).
-// El gasto sale de gasto_mes_actual() (migración 0066): suma
+// El gasto sale de gasto_mes_actual() (migración 0060): suma
 // usage_events.estimated_cost_usd, que ya valúa cada llamada (ai-pricing.ts).
 //
 // El freno corta SOLO las llamadas al modelo; la INGESTA nunca se detiene

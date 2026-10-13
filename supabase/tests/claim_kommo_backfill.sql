@@ -1,5 +1,5 @@
 -- Prueba de escenarios de claim_kommo_backfill / mark_kommo_missing_leads /
--- claim_kommo_pipelines_refresh (migración 0065) contra un Postgres con TODAS
+-- claim_kommo_pipelines_refresh (migración 0061) contra un Postgres con TODAS
 -- las migraciones aplicadas (descartable: borra leads y reescribe kommo_backfill).
 --
 --   sed 's#${SUPABASE_URL}#http://x.test#g' supabase/migrations/*.sql | psql ...   (una vez)

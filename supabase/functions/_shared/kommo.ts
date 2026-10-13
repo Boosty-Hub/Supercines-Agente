@@ -168,7 +168,7 @@ export async function fetchPipelineStages(
   return flattenPipelines(await fetchPipelinesFull(kommoDomain, kommoToken));
 }
 
-/** Pipelines con orden, tipo y color: el formato que espera sync_kommo_pipelines (0065). */
+/** Pipelines con orden, tipo y color: el formato que espera sync_kommo_pipelines (0061). */
 export type KommoPipelineFull = {
   id: number;
   name: string;

@@ -279,7 +279,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
       } else if (state === "idle") {
         setAviso({ tone: "ok", text: "Pipelines y etapas actualizados. No hay leads pendientes de recorrer." });
       } else if (state === "unavailable") {
-        throw new Error("El recorrido de leads no está disponible: aplicá las migraciones pendientes (0065).");
+        throw new Error("El recorrido de leads no está disponible: aplicá las migraciones pendientes (0061).");
       } else {
         setAviso({ tone: "ok", text: "Sincronizando con Kommo… el tablero se actualiza solo." });
       }

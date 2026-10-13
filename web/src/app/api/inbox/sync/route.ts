@@ -9,19 +9,19 @@ export const dynamic = "force-dynamic";
 // mismo que hace el cron cada 10 min; el botón evita la espera cuando acaba de
 // cambiar algo en Kommo (una etapa nueva, un pipeline renombrado).
 //
-// La función exige el secreto interno (x-internal-secret, _app_secrets 0065). Se
+// La función exige el secreto interno (x-internal-secret, _app_secrets 0061). Se
 // lee ACÁ, en el servidor, con la service key, y nunca llega al navegador. La
 // sesión se valida con getUser() y el alcance (operacion) lo exige el middleware
 // sobre el prefijo /api/inbox (roles.ts).
 //
 // «Sincronizar» es una PETICIÓN, no una orden: el reinicio completo del recorrido
-// de leads lo concede la base (claim_kommo_backfill, 0065) y solo si el recorrido
+// de leads lo concede la base (claim_kommo_backfill, 0061) y solo si el recorrido
 // terminó y pasó el enfriamiento; uno en curso se retoma sin retroceder. Por eso
 // ni clics repetidos ni varias pestañas ni un usuario con scope `operacion`
 // pueden mantener un recrawl de Kommo. Esta ruta solo traduce la respuesta.
 //
 // GET devuelve el estado del backfill para que el tablero avise del progreso y
-// deshabilite el botón durante el enfriamiento (kommo_backfill, 0065).
+// deshabilite el botón durante el enfriamiento (kommo_backfill, 0061).
 
 /**
  * Solo para el aviso del botón; la autoridad es claim_kommo_backfill, que recibe
@@ -79,7 +79,7 @@ export async function POST() {
       .maybeSingle();
     if (!secret?.valor) {
       return NextResponse.json(
-        { error: "Falta el secreto interno: aplicá las migraciones pendientes (0065)." },
+        { error: "Falta el secreto interno: aplicá las migraciones pendientes (0061)." },
         { status: 503 }
       );
     }

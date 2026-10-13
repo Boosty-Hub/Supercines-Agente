@@ -12,7 +12,7 @@ type PipelineRef = { name?: string };
 // no se toca nada acá y el tablero devuelve la tarjeta a su columna.
 //
 // Registro: leads.kommo_stage_id + kommo_pipeline_id y el evento de la línea de
-// tiempo se escriben en el mismo paso (record_lead_stage_event, 0065). Kommo
+// tiempo se escriben en el mismo paso (record_lead_stage_event, 0061). Kommo
 // manda leads.status de vuelta por este movimiento: la base lo reconoce como el
 // mismo (misma etapa y pipeline) y NO crea un segundo evento, llegue antes o
 // después de este handler.

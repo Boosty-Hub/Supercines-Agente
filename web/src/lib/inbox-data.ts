@@ -3,7 +3,7 @@
 // funciones que consultan reciben el cliente de Supabase por parámetro.
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-/** Una fila de `inbox_lead_summaries()` (migración 0065). */
+/** Una fila de `inbox_lead_summaries()` (migración 0061). */
 export type LeadSummary = {
   id: string;
   display_name: string | null;
@@ -56,7 +56,7 @@ export type InboxListData = {
 export const STAGE_WON = 142;
 export const STAGE_LOST = 143;
 
-/** Pipelines y etapas desde la copia local (kommo_pipelines / kommo_stages, 0065). */
+/** Pipelines y etapas desde la copia local (kommo_pipelines / kommo_stages, 0061). */
 export async function fetchBoardPipelines(supabase: SupabaseClient): Promise<BoardPipeline[]> {
   const [{ data: pipes, error: e1 }, { data: stages, error: e2 }] = await Promise.all([
     supabase.from("kommo_pipelines").select("id, name, sort, is_main, is_archive"),

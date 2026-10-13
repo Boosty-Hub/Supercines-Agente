@@ -3,7 +3,7 @@
 // webhook externo (las invocan pg_cron o el servidor del panel).
 //
 // El secreto vive en la tabla protegida `_app_secrets` (clave
-// INTERNAL_FUNCTION_SECRET, migración 0065): sin policies y con REVOKE a
+// INTERNAL_FUNCTION_SECRET, migración 0061): sin policies y con REVOKE a
 // anon/authenticated, solo la leen service_role y las funciones SECURITY DEFINER
 // que arman la llamada (trigger_sync_pipelines). Se manda en el header
 // `x-internal-secret`. Es de bajo privilegio a propósito: si se filtra, solo

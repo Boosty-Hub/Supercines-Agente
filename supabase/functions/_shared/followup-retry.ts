@@ -14,6 +14,12 @@
 // seguimiento apagado en la config, y el tope de `max_follow_ups`. El horario
 // laboral NO vive acá — lo evalúa el llamador con `isBusinessHours` de
 // `business-hours.ts`, que ya es pura y ya tiene su propio contrato.
+//
+// Que el reintento manual y el barrido no le manden DOS veces el mismo paso al lead
+// no se decide acá: lo garantiza la reserva por lead y paso (0072, _shared/followup-claim.ts),
+// que ambos caminos toman antes de enviar.
+
+import type { LeadRunResult } from "./followup-claim.ts";
 
 export type RetryLeadRow = {
   follow_up_step: number | null;
@@ -82,44 +88,37 @@ export function evaluateRetryGate(
   return { ok: true, step, maxFollowUps };
 }
 
-export type LastFollowUpRow = {
-  status: string;
-  error: string | null;
-  step: number;
-};
-
 export type RetryOutcome = {
   ok: boolean;
   status?: string;
   error?: string | null;
   skipped?: string;
+  /** El paso pudo haberle llegado al lead y no se confirmó: el panel ofrece reenviarlo
+   *  solo si la persona lo confirma (confirm_resend). */
+  unconfirmed?: boolean;
 };
 
 /**
- * `processLead` no devuelve nada: inserta la fila del intento en `follow_ups`.
- * Para decirle al operador qué pasó de verdad —en vez de un "listo" que igual
- * pudo haber fallado— el llamador lee la fila MÁS NUEVA de ese lead y la pasa
- * acá junto con el paso que se pidió reintentar.
- *
- * Si no hay fila, o su `step` no coincide con el pedido, fue un skip
- * silencioso de los de adentro de `processLead` (etapa o responsable fuera
- * del whitelist EN VIVO contra Kommo, plantilla mal configurada, o el agente
- * decidió no escribir) — nunca hay que confundirlo con un envío real.
+ * Qué le decimos al operador tras el reintento, a partir del resultado REAL del paso
+ * (lo devuelve runClaimedFollowUp). Antes se reconstruía leyendo la fila más nueva del
+ * log, que podía ser un fallo VIEJO del mismo paso y mostrarse como si fuera el actual.
  */
-export function interpretRetryOutcome(
-  last: LastFollowUpRow | null | undefined,
-  expectedStep: number
-): RetryOutcome {
-  if (!last || Number(last.step) !== Number(expectedStep)) {
-    return {
-      ok: false,
-      skipped:
-        "el seguimiento se salteó sin intentar el envío (etapa o responsable fuera de la lista, o el agente decidió no escribir)",
-    };
+export function retryOutcomeFor(result: LeadRunResult): RetryOutcome {
+  switch (result.kind) {
+    case "refused":
+      return result.reason === "unconfirmed"
+        ? { ok: false, unconfirmed: true, skipped: result.message }
+        : { ok: false, skipped: result.message };
+    case "sent":
+      return { ok: true, status: "sent", error: null };
+    case "failed":
+      return { ok: false, status: "failed", error: result.error };
+    case "unconfirmed":
+      return { ok: false, status: "failed", unconfirmed: true, error: result.error };
+    case "released":
+      return { ok: false, skipped: result.reason };
+    case "lease_lost":
+      return { ok: false, skipped: "la reserva del seguimiento venció antes de enviar; no se envió nada" };
   }
-  return {
-    ok: last.status === "sent",
-    status: last.status,
-    error: last.error ?? null,
-  };
 }
+

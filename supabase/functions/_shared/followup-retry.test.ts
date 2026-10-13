@@ -1,14 +1,15 @@
 // _shared/followup-retry.test.ts
-// Deno test para evaluateRetryGate() / interpretRetryOutcome().
+// Deno test para evaluateRetryGate() / retryOutcomeFor().
 // Correr con: deno test --allow-read supabase/functions/_shared/followup-retry.test.ts
 
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
 import {
   evaluateRetryGate,
-  interpretRetryOutcome,
+  retryOutcomeFor,
   type RetryConfigRow,
   type RetryLeadRow,
 } from "./followup-retry.ts";
+import { CLAIM_MESSAGES } from "./followup-claim.ts";
 
 const okLead: RetryLeadRow = {
   follow_up_step: 1,
@@ -85,29 +86,41 @@ Deno.test("caso feliz completo → ok con el próximo paso y el tope", () => {
   assertEquals(r, { ok: true, step: 2, maxFollowUps: 3 });
 });
 
-// ─── interpretRetryOutcome ────────────────────────────────────────────────
+// ─── retryOutcomeFor ──────────────────────────────────────────────────────
 
-Deno.test("sin fila en follow_ups → skip silencioso, no se confunde con envío", () => {
-  const r = interpretRetryOutcome(null, 2);
-  assertEquals(r.ok, false);
-  assertEquals(
-    r.skipped,
-    "el seguimiento se salteó sin intentar el envío (etapa o responsable fuera de la lista, o el agente decidió no escribir)"
-  );
+Deno.test("reserva rechazada (otro worker lo está enviando) → skipped con el motivo, nunca un envío", () => {
+  const r = retryOutcomeFor({ kind: "refused", reason: "in_flight", message: CLAIM_MESSAGES.in_flight });
+  assertEquals(r, { ok: false, skipped: CLAIM_MESSAGES.in_flight });
 });
 
-Deno.test("la fila más nueva es de OTRO paso (uno viejo) → también es skip silencioso", () => {
-  const r = interpretRetryOutcome({ status: "sent", error: null, step: 1 }, 2);
-  assertEquals(r.ok, false);
-  assertEquals(r.skipped?.length && r.skipped.length > 0, true);
+Deno.test("reserva rechazada por intento anterior sin confirmar → unconfirmed:true para pedir confirmación", () => {
+  const r = retryOutcomeFor({ kind: "refused", reason: "unconfirmed", message: CLAIM_MESSAGES.unconfirmed });
+  assertEquals(r, { ok: false, unconfirmed: true, skipped: CLAIM_MESSAGES.unconfirmed });
 });
 
-Deno.test("fila del paso pedido con status=sent → ok:true, sin skipped", () => {
-  const r = interpretRetryOutcome({ status: "sent", error: null, step: 2 }, 2);
-  assertEquals(r, { ok: true, status: "sent", error: null });
+Deno.test("enviado → ok:true", () => {
+  assertEquals(retryOutcomeFor({ kind: "sent", variables: { a: "b" } }), { ok: true, status: "sent", error: null });
 });
 
-Deno.test("fila del paso pedido con status=failed → ok:false y el error real, no un skip inventado", () => {
-  const r = interpretRetryOutcome({ status: "failed", error: "Kommo API error: 500", step: 2 }, 2);
+Deno.test("falló antes de enviar → ok:false con el error real de ESTE intento", () => {
+  const r = retryOutcomeFor({ kind: "failed", error: "Kommo API error: 500" });
   assertEquals(r, { ok: false, status: "failed", error: "Kommo API error: 500" });
+});
+
+Deno.test("cortado después de disparar → failed + unconfirmed (el panel no lo presenta como reintentable a ciegas)", () => {
+  const r = retryOutcomeFor({ kind: "unconfirmed", error: "sin confirmar: x" });
+  assertEquals(r, { ok: false, status: "failed", unconfirmed: true, error: "sin confirmar: x" });
+});
+
+Deno.test("el agente decidió no escribir → skipped con el motivo", () => {
+  assertEquals(retryOutcomeFor({ kind: "released", reason: "el agente decidió no escribir hoy" }), {
+    ok: false,
+    skipped: "el agente decidió no escribir hoy",
+  });
+});
+
+Deno.test("lease perdido → skipped (no se envió nada)", () => {
+  const r = retryOutcomeFor({ kind: "lease_lost" });
+  assertEquals(r.ok, false);
+  assertEquals(typeof r.skipped, "string");
 });

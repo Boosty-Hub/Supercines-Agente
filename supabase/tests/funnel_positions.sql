@@ -35,8 +35,15 @@ select pg_temp.expect('segunda pasada = idempotente (0 cambios)',
   reconcile_funnel_lead_positions('[{"id":1001,"pipeline_id":7847207,"status_id":200}]'::jsonb) = 0);
 select pg_temp.expect('entrada vacía o inválida = 0',
   reconcile_funnel_lead_positions('[]'::jsonb) = 0 and reconcile_funnel_lead_positions(null) = 0);
-select pg_temp.expect('anon no puede ejecutarla', not has_function_privilege('anon', 'reconcile_funnel_lead_positions(jsonb)', 'EXECUTE'));
-select pg_temp.expect('authenticated no puede ejecutarla', not has_function_privilege('authenticated', 'reconcile_funnel_lead_positions(jsonb)', 'EXECUTE'));
+-- Orden: una lectura vieja NO pisa un movimiento más nuevo (kommo_position_at).
+update leads set kommo_stage_id = 300, kommo_position_at = now() where kommo_lead_id = 1002;
+select pg_temp.expect('una lectura anterior al último movimiento no retrocede la etapa',
+  reconcile_funnel_lead_positions('[{"id":1002,"pipeline_id":7847207,"status_id":100}]'::jsonb, now() - interval '5 minutes') = 0
+  and (select kommo_stage_id = 300 from leads where kommo_lead_id = 1002));
+select pg_temp.expect('una lectura posterior sí la actualiza',
+  reconcile_funnel_lead_positions('[{"id":1002,"pipeline_id":7847207,"status_id":100}]'::jsonb, now() + interval '1 minute') = 1);
+select pg_temp.expect('anon no puede ejecutarla', not has_function_privilege('anon', 'reconcile_funnel_lead_positions(jsonb, timestamptz)', 'EXECUTE'));
+select pg_temp.expect('authenticated no puede ejecutarla', not has_function_privilege('authenticated', 'reconcile_funnel_lead_positions(jsonb, timestamptz)', 'EXECUTE'));
 select pg_temp.expect('anon no puede disparar el cron del funnel', not has_function_privilege('anon', 'trigger_kommo_funnel_sync()', 'EXECUTE'));
 
 rollback;

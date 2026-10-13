@@ -35,7 +35,7 @@ create or replace function gasto_mes_actual()
 returns numeric
 language plpgsql
 stable
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
   v_desde timestamptz := date_trunc('month', now() at time zone 'utc') at time zone 'utc';

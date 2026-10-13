@@ -15,11 +15,12 @@
 //    margen. El 429 puntual lo absorbe fetchLeadsPositionsPage (con reintentos).
 //  - Un error NO avanza el cursor: la página fallida se reintenta entera.
 //  - Al agotar las páginas (recorrido COMPLETO desde la 1, porque el claim nunca
-//    rebobina uno en curso) llama a `finalize`: ahí la base marca los leads que
-//    Kommo no devolvió (borrados allá). Si finalize falla queda 'failed' y se
-//    reintenta sin perder lo visto.
+//    rebobina uno en curso) llama a `finalize`: los leads que no aparecieron son
+//    solo CANDIDATOS (la paginación por offset se corre si borran un lead durante
+//    la lectura) y se verifican por id en Kommo antes de marcar a ninguno. Si
+//    finalize falla queda 'failed' y se reintenta sin perder lo visto.
 
-import type { KommoLeadPosition } from "./kommo.ts";
+import type { KommoLeadPosition, KommoLeadsRead } from "./kommo.ts";
 
 export type BackfillStatus = "running" | "pending" | "done" | "failed";
 
@@ -36,10 +37,16 @@ export type BackfillProgress = {
 export type BackfillStart = { nextPage: number; scanned: number; updated: number };
 
 export type BackfillDeps = {
-  fetchPage(page: number): Promise<{ leads: KommoLeadPosition[]; hasMore: boolean }>;
-  /** Aplica las posiciones en la base; devuelve cuántos leads CAMBIARON. */
-  apply(leads: KommoLeadPosition[]): Promise<number>;
-  /** Recorrido completo: marca los leads locales que Kommo no devolvió. Devuelve cuántos. */
+  fetchPage(page: number): Promise<KommoLeadsRead>;
+  /**
+   * Aplica las posiciones en la base; devuelve cuántos leads CAMBIARON. `readAtMs`
+   * es cuándo se pidió la página: la base no pisa una posición fijada después.
+   */
+  apply(leads: KommoLeadPosition[], readAtMs: number): Promise<number>;
+  /**
+   * Recorrido completo: verifica POR ID en Kommo los leads que no aparecieron y
+   * marca solo los confirmados ausentes (_shared/reconcile-leads.ts). Devuelve cuántos marcó.
+   */
   finalize(): Promise<number>;
   save(progress: BackfillProgress): Promise<void>;
   now(): number;
@@ -56,8 +63,8 @@ export async function runPositionsBackfill(
 
   try {
     for (;;) {
-      const { leads, hasMore } = await deps.fetchPage(nextPage);
-      if (leads.length > 0) updated += await deps.apply(leads);
+      const { leads, hasMore, readAtMs } = await deps.fetchPage(nextPage);
+      if (leads.length > 0) updated += await deps.apply(leads, readAtMs);
       scanned += leads.length;
       nextPage += 1;
 

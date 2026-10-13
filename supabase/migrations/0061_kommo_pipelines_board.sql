@@ -48,6 +48,24 @@
 --    y el tablero los muestra aparte («No existe en Kommo»). Un webhook o un
 --    movimiento exitoso de ese lead borra la marca.
 --
+-- 6) Orden de los eventos: leads.kommo_position_at + apply_lead_position(). Dos
+--    process-inbound en paralelo (o el reaper de la cola) pueden aplicar un
+--    leads.status viejo DESPUÉS de uno nuevo y dejar la etapa atrás con un
+--    movimiento falso en la línea de tiempo — y la etapa gobierna los gates de
+--    «etapa ignorada» de process-inbound y generate-response. apply_lead_position
+--    es el ÚNICO camino que escribe la posición de un lead: un UPDATE condicional
+--    bajo bloqueo de fila que solo aplica si el instante del evento (last_modified
+--    del payload, o `now()` para el agente/panel/lectura en vivo) no es anterior al
+--    ya guardado, y registra el movimiento solo si de verdad se aplicó.
+--
+-- 7) Leads sin ubicar: el recorrido de páginas (page=N) no es estable si se borra
+--    un lead de Kommo mientras se lee (las páginas se corren y un lead vivo se
+--    salta). Kommo NO ofrece cursor por id (solo filter[id][] y rangos por fecha),
+--    así que ningún lead se declara inexistente por no aparecer en el recorrido:
+--    los candidatos se VERIFICAN por id en Kommo (filter[id][], lotes) y solo los
+--    que Kommo confirma ausentes se marcan. Los huecos (leads nuevos sin pipeline)
+--    se completan pidiendo a Kommo SOLO esos ids, sin recorrer todo.
+--
 -- IDEMPOTENTE. RLS: `authenticated` solo LEE las tablas espejo (kommo_*: las
 -- escribe únicamente la service key de las Edge Functions); service_role
 -- bypassea. Funciones nuevas: REVOKE EXECUTE FROM PUBLIC y GRANT mínimo.
@@ -62,13 +80,19 @@ alter table leads add column if not exists kommo_pipeline_id bigint;
 comment on column leads.kommo_pipeline_id is
   'Pipeline de Kommo en que está el lead. Hace falta junto a kommo_stage_id porque 142/143 (ganado/perdido) se repiten en todos los pipelines.';
 
--- Marca de «no existe en Kommo»: la fija un recorrido completo del backfill que
--- no vio el lead (mark_kommo_missing_leads) y la borra cualquier señal de vida
--- (webhook, mensaje, movimiento exitoso, o volver a verlo en un recorrido).
+-- Marca de «no existe en Kommo»: la fija el backfill SOLO cuando Kommo confirma por
+-- id que el lead no existe (mark_kommo_leads_missing) y la borra cualquier señal de
+-- vida (webhook, mensaje, movimiento exitoso, o volver a verlo).
 alter table leads add column if not exists kommo_missing_at timestamptz;
 
 comment on column leads.kommo_missing_at is
-  'Cuándo un recorrido completo de Kommo no encontró este lead (borrado en Kommo). NULL = existe o no se sabe. No cuenta como pendiente de ubicar.';
+  'Cuándo Kommo confirmó por id que este lead no existe (borrado en Kommo). NULL = existe o no se sabe. No cuenta como pendiente de ubicar.';
+
+-- Instante (de Kommo) del último cambio de posición aplicado. Ver apply_lead_position.
+alter table leads add column if not exists kommo_position_at timestamptz;
+
+comment on column leads.kommo_position_at is
+  'Instante del evento que fijó kommo_stage_id/kommo_pipeline_id (last_modified del webhook, o now() para el agente/panel/lectura en vivo). Un evento más viejo no puede pisar la posición. NULL = nunca se fijó por evento.';
 
 create index if not exists leads_pipeline_stage_idx
   on leads (kommo_pipeline_id, kommo_stage_id, last_message_at desc nulls last);
@@ -113,7 +137,7 @@ revoke insert, update, delete, truncate on kommo_pipelines, kommo_stages from au
 -- Todo-o-nada: si viene vacío NO borra nada (una respuesta rara de Kommo no
 -- puede dejar el tablero sin columnas).
 create or replace function sync_kommo_pipelines(p_pipelines jsonb)
-returns int language plpgsql as $$
+returns int language plpgsql set search_path = public, pg_temp as $$
 declare
   v_now timestamptz := clock_timestamp();
   v_count int;
@@ -189,7 +213,7 @@ create or replace function record_lead_stage_event(
   p_actor_name       text default null,
   p_window_seconds   int  default 120
 )
-returns uuid language plpgsql as $$
+returns uuid language plpgsql set search_path = public, pg_temp as $$
 declare
   v_last lead_stage_events%rowtype;
   v_id   uuid;
@@ -248,10 +272,115 @@ begin
 end;
 $$;
 
+-- Interno: lo llama apply_lead_position(). Sin grant a `authenticated` (un usuario
+-- no puede fabricar eventos con moved_by/actor_name a gusto).
 revoke execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int)
-  from public, anon;
+  from public, anon, authenticated;
 grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int)
-  to authenticated, service_role;
+  to service_role;
+
+-- ÚNICO camino que escribe la posición (etapa + pipeline) de un lead: webhook de
+-- Kommo, agente, panel, lectura en vivo y seguimiento. Un solo UPDATE condicional
+-- bajo bloqueo de fila (select … for update): la decisión «¿es más nuevo que lo
+-- guardado?» y la escritura son atómicas, no un select seguido de un update.
+--
+--   · 'stale'     p_at es ANTERIOR al instante ya guardado → no se toca la
+--                 posición ni se registra nada (un leads.status viejo que llega
+--                 tarde, por otro worker o por el reaper de la cola).
+--   · 'unchanged' misma etapa y pipeline → no se escribe NADA (la mayoría de los
+--                 leads.update son de otros campos y cada UPDATE a `leads` dispara
+--                 un refresco en vivo en los inbox abiertos). Única excepción: si
+--                 estaba marcado «no existe en Kommo», la señal de vida lo borra.
+--   · 'applied'   se escribió etapa + pipeline + kommo_position_at; `moved` indica
+--                 si fue un movimiento real (había etapa previa) y entonces se
+--                 registra el evento (record_lead_stage_event, que además une el
+--                 eco con la fuente). El evento se registra SOLO si se aplicó.
+--   · 'missing'   el lead no existe.
+-- p_pipeline_id NULL = el webhook no trajo pipeline: no pisa el que hay.
+-- p_at con resolución de segundos (last_modified de Kommo): un empate se aplica.
+create or replace function apply_lead_position(
+  p_lead_id        uuid,
+  p_stage_id       bigint,
+  p_pipeline_id    bigint,
+  p_at             timestamptz,
+  p_moved_by       text default 'kommo',
+  p_draft_id       uuid default null,
+  p_actor_name     text default null,
+  p_from_stage_name text default null,
+  p_to_stage_name  text default null,
+  p_pipeline_name  text default null
+)
+returns table (
+  outcome           text,
+  moved             boolean,
+  event_id          uuid,
+  prev_stage_id     bigint,
+  prev_pipeline_id  bigint
+) language plpgsql set search_path = public, pg_temp as $$
+declare
+  l          leads%rowtype;
+  v_changed  boolean;
+  v_pipeline bigint;
+  v_moved    boolean := false;
+  v_event    uuid;
+begin
+  select * into l from leads where id = p_lead_id for update;
+  if not found then
+    return query select 'missing'::text, false, null::uuid, null::bigint, null::bigint;
+    return;
+  end if;
+
+  if l.kommo_position_at is not null and p_at < l.kommo_position_at then
+    -- Evento viejo: no cambia la posición, pero sigue siendo señal de vida.
+    if l.kommo_missing_at is not null then
+      update leads set kommo_missing_at = null where id = l.id;
+    end if;
+    return query select 'stale'::text, false, null::uuid, l.kommo_stage_id, l.kommo_pipeline_id;
+    return;
+  end if;
+
+  v_pipeline := coalesce(p_pipeline_id, l.kommo_pipeline_id);
+  v_changed  := l.kommo_stage_id is distinct from p_stage_id
+                or l.kommo_pipeline_id is distinct from v_pipeline;
+
+  if not v_changed then
+    if l.kommo_missing_at is not null then
+      update leads set kommo_missing_at = null where id = l.id;
+    end if;
+    return query select 'unchanged'::text, false, null::uuid, l.kommo_stage_id, l.kommo_pipeline_id;
+    return;
+  end if;
+
+  update leads
+     set kommo_stage_id    = p_stage_id,
+         kommo_pipeline_id = v_pipeline,
+         kommo_position_at = p_at,
+         kommo_missing_at  = null
+   where id = l.id;
+
+  -- Movimiento real solo si ya había etapa (null → etapa = primera vez que la
+  -- vemos), y cambiar de pipeline conservando el id de etapa también cuenta
+  -- (142/143 existen en todos los pipelines).
+  v_moved := l.kommo_stage_id is not null
+             and (l.kommo_stage_id <> p_stage_id
+                  or (l.kommo_pipeline_id is not null and l.kommo_pipeline_id <> v_pipeline));
+  if v_moved then
+    v_event := record_lead_stage_event(
+      l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, v_pipeline,
+      p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name
+    );
+  end if;
+  return query select 'applied'::text, v_moved, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
+end;
+$$;
+
+-- Solo service_role: el panel llama a través de rutas del servidor que ya validaron
+-- sesión y alcance; un usuario con la anon key + su JWT no puede fijar posiciones
+-- ni fabricar eventos.
+revoke execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text)
+  from public, anon, authenticated;
+grant execute on function apply_lead_position(uuid, bigint, bigint, timestamptz, text, uuid, text, text, text, text)
+  to service_role;
 
 do $$
 begin
@@ -301,7 +430,7 @@ returns table (
   verticals            text[],
   awaiting_reply       boolean,
   last_reply_at        timestamptz
-) language sql stable as $$
+) language sql stable set search_path = public, pg_temp as $$
   with agg as (
     select m.lead_id,
            count(*)::int as msg_count,
@@ -409,7 +538,7 @@ revoke all on kommo_backfill_seen from anon, authenticated, public;
 -- menos de p_min_interval_seconds. Un único UPDATE/INSERT condicional: dos
 -- instancias simultáneas no pueden ganar las dos.
 create or replace function claim_kommo_pipelines_refresh(p_min_interval_seconds int default 30)
-returns boolean language plpgsql as $$
+returns boolean language plpgsql set search_path = public, pg_temp as $$
 declare
   v_won boolean;
 begin
@@ -430,25 +559,23 @@ grant execute on function claim_kommo_pipelines_refresh(int) to service_role;
 -- Reclamo atómico con lease. La BASE decide, sin importar quién llama:
 --   · lease vigente (otro worker corriendo)            → 'busy', no se toca nada.
 --   · 'pending'/'running'/'failed' sin lease           → 'claimed': CONTINÚA desde
---     el cursor guardado. Un pedido de reinicio NUNCA lo rebobina (con 'failed'
---     solo si pasó el enfriamiento; un 'failed' se retoma igual).
+--     el cursor guardado. Un pedido de reinicio NUNCA lo rebobina, tampoco con
+--     'failed': un 'failed' se retoma tal cual, sin enfriamiento.
 --   · 'done' + p_restart + enfriamiento cumplido       → 'restarted' (página 1).
 --   · 'done' + p_restart + dentro del enfriamiento     → 'cooldown' + retry_after.
---   · 'done' sin pedido, salvo hueco (ver abajo)       → 'done' (nada que hacer).
---   · p_reopen_gaps: un 'done' terminado hace más de p_gap_seconds se reabre si
---     hay leads sin pipeline que NO estén marcados como inexistentes en Kommo
---     (los que nacieron después del recorrido). Los borrados en Kommo no cuentan.
+--   · 'done' sin pedido                                → 'done' (nada que hacer).
+-- Los leads que nacieron después de un recorrido NO reabren el recorrido: se
+-- completan por id (kommo_gap_lead_ids), sin recorrer todo Kommo.
 -- p_cooldown_seconds se mide desde el último movimiento del recorrido
 -- (updated_at: lo toca el claim y cada página guardada).
--- DROP: cambia el tipo de retorno respecto de la versión anterior.
+-- DROP: cambia la firma respecto de las versiones anteriores.
 drop function if exists claim_kommo_backfill(text, int, boolean);
+drop function if exists claim_kommo_backfill(text, int, boolean, int, boolean, int);
 create or replace function claim_kommo_backfill(
   p_job text,
   p_lease_seconds int default 150,
   p_restart boolean default false,
-  p_cooldown_seconds int default 900,
-  p_reopen_gaps boolean default false,
-  p_gap_seconds int default 3600
+  p_cooldown_seconds int default 900
 )
 returns table (
   outcome             text,
@@ -457,7 +584,7 @@ returns table (
   scanned             int,
   updated             int,
   retry_after_seconds int
-) language plpgsql as $$
+) language plpgsql set search_path = public, pg_temp as $$
 declare
   b          kommo_backfill%rowtype;
   v_restart  boolean := false;
@@ -477,24 +604,15 @@ begin
   v_wait := greatest(0, ceil(extract(epoch from (b.updated_at + make_interval(secs => p_cooldown_seconds) - now()))))::int;
 
   if b.status = 'done' then
-    if p_restart then
-      if v_wait > 0 then
-        return query select 'cooldown'::text, b.status, b.next_page, b.scanned, b.updated, v_wait;
-        return;
-      end if;
-      v_restart := true;
-    elsif p_reopen_gaps
-          and b.finished_at is not null
-          and b.finished_at < now() - make_interval(secs => p_gap_seconds)
-          and exists (select 1 from leads l
-                       where l.kommo_pipeline_id is null
-                         and l.kommo_missing_at is null
-                         and l.kommo_lead_id is not null) then
-      v_restart := true;
-    else
+    if not p_restart then
       return query select 'done'::text, b.status, b.next_page, b.scanned, b.updated, null::int;
       return;
     end if;
+    if v_wait > 0 then
+      return query select 'cooldown'::text, b.status, b.next_page, b.scanned, b.updated, v_wait;
+      return;
+    end if;
+    v_restart := true;
   end if;
 
   update kommo_backfill k
@@ -520,17 +638,28 @@ begin
 end;
 $$;
 
-revoke execute on function claim_kommo_backfill(text, int, boolean, int, boolean, int) from public, anon, authenticated;
-grant execute on function claim_kommo_backfill(text, int, boolean, int, boolean, int) to service_role;
+revoke execute on function claim_kommo_backfill(text, int, boolean, int) from public, anon, authenticated;
+grant execute on function claim_kommo_backfill(text, int, boolean, int) to service_role;
 
 -- Aplica la posición (pipeline + etapa) que Kommo informa para cada lead.
--- p_leads: [{id, pipeline_id, status_id}]. Solo toca filas que CAMBIAN (cada
--- UPDATE a `leads` dispara un refresco en vivo en todos los inbox abiertos) y
--- NO escribe lead_stage_events: reconciliar no es un movimiento. Además anota
--- cada id visto (kommo_backfill_seen) y limpia kommo_missing_at de los leads
--- que Kommo sí devuelve. Devuelve cuántos leads cambió.
-create or replace function apply_kommo_lead_positions(p_leads jsonb)
-returns int language plpgsql as $$
+-- p_leads: [{id, pipeline_id, status_id}], leído de Kommo en p_read_at (el instante
+-- en que se PIDIÓ la página). Respeta el orden de eventos: no pisa una posición
+-- cuyo kommo_position_at sea posterior a la lectura (un webhook más nuevo ya la
+-- fijó). Solo toca filas que CAMBIAN (cada UPDATE a `leads` dispara un refresco en
+-- vivo en todos los inbox abiertos) y NO escribe lead_stage_events: reconciliar no
+-- es un movimiento. Anota cada id visto (kommo_backfill_seen) y limpia
+-- kommo_missing_at de los leads que Kommo sí devuelve. Devuelve cuántos cambió.
+drop function if exists apply_kommo_lead_positions(jsonb);
+-- NÚCLEO ÚNICO de escritura masiva de posición (SuperCines, desvío respecto del
+-- template, que lo tiene todo dentro de apply_kommo_lead_positions): dos llamadores
+-- lo comparten — el backfill de sync-pipelines (p_track_seen = true: cada hoja vista
+-- alimenta la detección de leads borrados en Kommo) y la reconciliación que hace
+-- kommo-funnel-sync con la lectura que YA tiene de las 3 sedes (p_track_seen = false:
+-- una ventana de 35 días de tres pipelines NO es un recorrido completo y no puede
+-- alimentar «no existe en Kommo»). Misma regla de orden por kommo_position_at, un
+-- solo lugar donde cambia.
+create or replace function apply_positions_batch(p_leads jsonb, p_read_at timestamptz, p_track_seen boolean)
+returns int language plpgsql set search_path = public, pg_temp as $$
 declare
   v_updated int;
 begin
@@ -538,11 +667,13 @@ begin
     return 0;
   end if;
 
-  insert into kommo_backfill_seen (kommo_lead_id)
-  select distinct (e->>'id')::bigint
-    from jsonb_array_elements(p_leads) e
-   where e->>'id' is not null
-  on conflict do nothing;
+  if p_track_seen then
+    insert into kommo_backfill_seen (kommo_lead_id)
+    select distinct (e->>'id')::bigint
+      from jsonb_array_elements(p_leads) e
+     where e->>'id' is not null
+    on conflict do nothing;
+  end if;
 
   with src as (
     select (e->>'id')::bigint as kommo_lead_id,
@@ -555,9 +686,11 @@ begin
     update leads l
        set kommo_pipeline_id = s.pipeline_id,
            kommo_stage_id    = s.status_id,
+           kommo_position_at = p_read_at,
            kommo_missing_at  = null
       from src s
      where l.kommo_lead_id = s.kommo_lead_id
+       and (l.kommo_position_at is null or l.kommo_position_at <= p_read_at)
        and (l.kommo_pipeline_id is distinct from s.pipeline_id
             or l.kommo_stage_id is distinct from s.status_id
             or l.kommo_missing_at is not null)
@@ -568,31 +701,64 @@ begin
 end;
 $$;
 
--- Cierra un recorrido COMPLETO: los leads locales con id de Kommo que el
--- recorrido no vio se marcan kommo_missing_at (borrados en Kommo). Salvaguardas:
---   · sin ninguna hoja vista no marca nada (una respuesta vacía/rara de Kommo no
---     puede declarar inexistente a toda la base);
---   · solo leads creados ANTES de que empezara el recorrido (uno nacido mientras
---     se recorría pudo quedar en una página ya leída);
---   · solo los que aún no tienen marca. Devuelve cuántos marcó.
-create or replace function mark_kommo_missing_leads(p_job text)
-returns int language plpgsql as $$
+-- Candidatos a «no existe en Kommo» al cerrar un recorrido COMPLETO: leads locales
+-- con id de Kommo que el recorrido no vio. NO son todavía inexistentes: las páginas
+-- (page=N) se corren si borran un lead durante la lectura y un lead vivo puede
+-- saltarse. El caller los verifica por id en Kommo y solo marca los confirmados
+-- ausentes (mark_kommo_leads_missing). Salvaguardas: sin ninguna hoja vista no hay
+-- candidatos (una respuesta vacía/rara de Kommo no puede cuestionar toda la base);
+-- solo leads creados antes de empezar el recorrido y sin señal de vida posterior
+-- (kommo_position_at); los ya marcados no vuelven a ser candidatos.
+create or replace function kommo_missing_candidates(p_job text, p_limit int default 5000)
+returns setof bigint language plpgsql stable set search_path = public, pg_temp as $$
 declare
   v_started timestamptz;
-  v_marked  int;
 begin
   select started_at into v_started from kommo_backfill where job = p_job;
   if v_started is null or not exists (select 1 from kommo_backfill_seen) then
-    return 0;
+    return;
   end if;
-
-  with m as (
-    update leads l
-       set kommo_missing_at = now()
+  return query
+    select l.kommo_lead_id
+      from leads l
      where l.kommo_lead_id is not null
        and l.kommo_missing_at is null
        and l.created_at < v_started
+       and (l.kommo_position_at is null or l.kommo_position_at < v_started)
        and not exists (select 1 from kommo_backfill_seen s where s.kommo_lead_id = l.kommo_lead_id)
+     order by l.kommo_lead_id
+     limit p_limit;
+end;
+$$;
+
+-- Leads sin pipeline que Kommo todavía no confirmó como inexistentes: los que
+-- nacieron después del recorrido (el webhook de su alta no traía pipeline). El
+-- caller pide a Kommo SOLO estos ids (lotes de filter[id][]).
+create or replace function kommo_gap_lead_ids(p_limit int default 200)
+returns setof bigint language sql stable set search_path = public, pg_temp as $$
+  select l.kommo_lead_id
+    from leads l
+   where l.kommo_lead_id is not null
+     and l.kommo_pipeline_id is null
+     and l.kommo_missing_at is null
+   order by l.last_message_at desc nulls last, l.kommo_lead_id
+   limit p_limit
+$$;
+
+-- Marca los ids que Kommo CONFIRMÓ ausentes.
+create or replace function mark_kommo_leads_missing(p_ids bigint[])
+returns int language plpgsql set search_path = public, pg_temp as $$
+declare
+  v_marked int;
+begin
+  if p_ids is null or cardinality(p_ids) = 0 then
+    return 0;
+  end if;
+  with m as (
+    update leads l
+       set kommo_missing_at = now()
+     where l.kommo_lead_id = any(p_ids)
+       and l.kommo_missing_at is null
     returning 1
   )
   select count(*)::int into v_marked from m;
@@ -600,11 +766,22 @@ begin
 end;
 $$;
 
-revoke execute on function mark_kommo_missing_leads(text) from public, anon, authenticated;
-grant execute on function mark_kommo_missing_leads(text) to service_role;
+revoke execute on function apply_positions_batch(jsonb, timestamptz, boolean) from public, anon, authenticated;
+grant execute on function apply_positions_batch(jsonb, timestamptz, boolean) to service_role;
 
-revoke execute on function apply_kommo_lead_positions(jsonb) from public, anon, authenticated;
-grant execute on function apply_kommo_lead_positions(jsonb) to service_role;
+create or replace function apply_kommo_lead_positions(p_leads jsonb, p_read_at timestamptz default now())
+returns int language sql set search_path = public, pg_temp as $$
+  select apply_positions_batch(p_leads, p_read_at, true);
+$$;
+revoke execute on function apply_kommo_lead_positions(jsonb, timestamptz) from public, anon, authenticated;
+grant execute on function apply_kommo_lead_positions(jsonb, timestamptz) to service_role;
+revoke execute on function kommo_missing_candidates(text, int) from public, anon, authenticated;
+grant execute on function kommo_missing_candidates(text, int) to service_role;
+revoke execute on function kommo_gap_lead_ids(int) from public, anon, authenticated;
+grant execute on function kommo_gap_lead_ids(int) to service_role;
+revoke execute on function mark_kommo_leads_missing(bigint[]) from public, anon, authenticated;
+grant execute on function mark_kommo_leads_missing(bigint[]) to service_role;
+drop function if exists mark_kommo_missing_leads(text);
 
 -- Secreto interno de bajo privilegio para las Edge Functions verify_jwt=false que
 -- no son webhooks externos (estándar de seguridad de Boosty: nada de service_role
@@ -628,7 +805,7 @@ on conflict (clave) do nothing;
 -- verify_jwt = false pero exige x-internal-secret (gate en _shared/auth.ts).
 -- Sin Kommo configurado responde 200 "skipped" y vuelve a intentar en 10 min.
 create or replace function trigger_sync_pipelines()
-returns void language plpgsql security definer set search_path = public as $$
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_secret text;
 begin

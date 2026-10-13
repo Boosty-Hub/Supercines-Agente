@@ -113,6 +113,7 @@ type LeadRow = {
   // hay que re-sincronizar. Sin traerlo del select, la comparación era siempre
   // NaN !== N (true) y el UPDATE corría en cada barrido para cada lead.
   kommo_stage_id: number | null;
+  kommo_pipeline_id: number | null;
 };
 
 type Deps = {
@@ -161,7 +162,7 @@ async function getField(fieldId: string): Promise<FollowUpField | null> {
 async function getLead(leadId: string): Promise<LeadRow | null> {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, kommo_lead_id, display_name, kommo_stage_id")
+    .select("id, kommo_lead_id, display_name, kommo_stage_id, kommo_pipeline_id")
     .eq("id", leadId)
     .maybeSingle();
   if (error) throw new Error(`getLead: ${error.message}`);
@@ -324,10 +325,12 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
   // a un cliente ya convertido. Acá consultamos la etapa real de Kommo antes de
   // gastar la sesión CMA y decidimos sobre ese valor.
   let liveStatusId: number;
+  let livePipelineId: number | null = null;
   let liveResponsibleUserId: number | null;
   try {
     const liveStage = await fetchLeadStage(lead.kommo_lead_id, deps.kommoDomain, deps.kommoToken);
     liveStatusId = liveStage.statusId;
+    livePipelineId = Number.isFinite(liveStage.pipelineId) ? liveStage.pipelineId : null;
     liveResponsibleUserId = liveStage.responsibleUserId;
   } catch (err) {
     // Fail-safe: si no podemos verificar la etapa, NO enviamos (mejor saltear que
@@ -339,8 +342,21 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
 
   // Re-sincronizar el cache con el valor fresco (de paso, futuros barridos del gate
   // SQL ya verán la etapa correcta y no volverán a elegir este lead si no aplica).
-  if (Number(liveStatusId) !== Number(lead.kommo_stage_id)) {
-    await supabase.from("leads").update({ kommo_stage_id: liveStatusId }).eq("id", leadId);
+  // Va por apply_lead_position (0065): etapa + pipeline juntos, respetando el
+  // orden de eventos, y registra el movimiento si lo fue. Fail-open: un error acá
+  // no debe impedir el chequeo de gates de más abajo (se usa liveStatusId directo).
+  if (
+    Number(liveStatusId) !== Number(lead.kommo_stage_id) ||
+    (livePipelineId != null && Number(livePipelineId) !== Number(lead.kommo_pipeline_id))
+  ) {
+    const { error: posErr } = await supabase.rpc("apply_lead_position", {
+      p_lead_id: leadId,
+      p_stage_id: liveStatusId,
+      p_pipeline_id: livePipelineId,
+      p_at: new Date().toISOString(),
+      p_moved_by: "kommo",
+    });
+    if (posErr) console.warn(`follow-up-scan: apply_lead_position de lead ${leadId} — fail-open: ${posErr.message}`);
   }
 
   // Guard duro: etapas terminales de Kommo (ganado 142 / perdido 143) cortan la

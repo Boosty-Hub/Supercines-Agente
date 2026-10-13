@@ -21,15 +21,19 @@ function fakeDeps(
   const fetched: number[] = [];
   const slept: number[] = [];
   const finalized: number[] = [];
+  const readAts: number[] = [];
   const clock = opts.clock ?? { t: 0 };
   const deps: BackfillDeps = {
     fetchPage: (page) => {
       fetched.push(page);
       const p = pages[page - 1];
       if (p instanceof Error) return Promise.reject(p);
-      return Promise.resolve(p);
+      return Promise.resolve({ ...p, readAtMs: 1000 + page });
     },
-    apply: (leads) => Promise.resolve(opts.applyReturns ?? leads.length),
+    apply: (leads, readAtMs) => {
+      readAts.push(readAtMs);
+      return Promise.resolve(opts.applyReturns ?? leads.length);
+    },
     finalize: () => {
       finalized.push(fetched.length);
       return opts.finalizeError ? Promise.reject(opts.finalizeError) : Promise.resolve(opts.missing ?? 0);
@@ -45,7 +49,7 @@ function fakeDeps(
       return Promise.resolve();
     },
   };
-  return { deps, saved, fetched, slept, finalized, clock };
+  return { deps, saved, fetched, slept, finalized, readAts, clock };
 }
 
 const START = { nextPage: 1, scanned: 0, updated: 0 };
@@ -152,4 +156,13 @@ Deno.test("runPositionsBackfill: si finalize falla queda 'failed' (no 'done') pa
   const r = await runPositionsBackfill(START, deps, OPTS);
   assertEquals(r.status, "failed");
   assertEquals(saved.at(-1)?.error, "mark_kommo_missing_leads: boom");
+});
+
+Deno.test("runPositionsBackfill: cada página se aplica con el instante en que se PIDIÓ (no pisa un webhook más nuevo)", async () => {
+  const { deps, readAts } = fakeDeps([
+    { leads: [lead(1)], hasMore: true },
+    { leads: [lead(2)], hasMore: false },
+  ]);
+  await runPositionsBackfill(START, deps, OPTS);
+  assertEquals(readAts, [1001, 1002]);
 });

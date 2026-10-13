@@ -1,17 +1,22 @@
 // _shared/lead-position.ts
-// Lógica PURA (sin I/O) con que process-inbound decide qué hacer cuando Kommo
-// avisa que un lead cambió (`leads.update` / `leads.status`).
+// Lógica PURA (sin I/O) con que process-inbound interpreta lo que Kommo avisa de
+// un lead (`leads.update` / `leads.status`). La DECISIÓN de si se aplica (¿es más
+// nuevo que lo guardado?, ¿fue un movimiento?) la toma la base, atómicamente, en
+// apply_lead_position() (migración 0065): acá solo se extrae la posición y el
+// instante del evento.
 //
-// Está separada de process-inbound/index.ts por dos motivos: se puede testear
-// sin Deno.serve ni Supabase, y es el punto donde se juega el volumen — esos dos
-// eventos son ~64% del tráfico del webhook y casi todos son de OTROS campos
-// (tags, precio, responsable). La regla de oro es "escribir solo si cambió".
+// Contexto de volumen: esos dos eventos son ~64% del tráfico del webhook y casi
+// todos son de OTROS campos (tags, precio, responsable). apply_lead_position no
+// escribe nada cuando la etapa y el pipeline no cambiaron.
 
-/** Lo que Kommo manda por lead en el webhook (los ids llegan como string). */
+/** Lo que Kommo manda por lead en el webhook (los ids y los instantes llegan como string). */
 export type KommoLeadChange = {
   id?: string | number;
   status_id?: string | number;
   pipeline_id?: string | number;
+  /** Unix en segundos del último cambio del lead (webhooks de leads). */
+  last_modified?: string | number;
+  updated_at?: string | number;
   // El webhook trae más campos (name, responsible_user_id, ...): no importan acá.
   [campo: string]: unknown;
 };
@@ -21,6 +26,8 @@ export type LeadPosition = {
   statusId: number;
   /** null = el webhook no trajo pipeline_id (no se pisa el que ya hay). */
   pipelineId: number | null;
+  /** Instante del evento en ms: el que informa Kommo, o el de llegada a la cola. */
+  atMs: number;
 };
 
 function positiveInt(v: unknown): number | null {
@@ -30,49 +37,25 @@ function positiveInt(v: unknown): number | null {
 }
 
 /**
- * Extrae la posición (etapa + pipeline) de un lead del webhook. Devuelve null
- * si no trae etapa: es un cambio de otro campo y no hay nada que sincronizar.
+ * Instante (ms) en que ocurrió el cambio. Kommo lo informa en segundos Unix
+ * (`last_modified`, o `updated_at`). Si falta o no es plausible se usa el de
+ * llegada del webhook a la cola (`fallbackMs`): nunca es anterior al hecho, y el
+ * orden entre dos payloads del mismo lead sigue siendo el de llegada.
  */
-export function parseLeadPosition(l: KommoLeadChange): LeadPosition | null {
+export function eventInstantMs(change: KommoLeadChange, fallbackMs: number): number {
+  const secs = positiveInt(change.last_modified) ?? positiveInt(change.updated_at);
+  // Más de ~1 día en el futuro respecto de la llegada = dato corrupto, no se confía.
+  if (secs !== null && secs * 1000 <= fallbackMs + 86_400_000) return secs * 1000;
+  return fallbackMs;
+}
+
+/**
+ * Extrae la posición (etapa + pipeline) de un lead del webhook. Devuelve null si
+ * no trae etapa: es un cambio de otro campo y no hay nada que sincronizar.
+ */
+export function parseLeadPosition(l: KommoLeadChange, fallbackMs: number): LeadPosition | null {
   const kommoLeadId = positiveInt(l.id);
   const statusId = positiveInt(l.status_id);
   if (kommoLeadId === null || statusId === null) return null;
-  return { kommoLeadId, statusId, pipelineId: positiveInt(l.pipeline_id) };
-}
-
-export type StoredPosition = { stageId: number | null; pipelineId: number | null };
-export type IncomingPosition = { stageId: number; pipelineId: number | null };
-
-export type PositionPlan = {
-  /** ¿Hay algo que escribir en `leads`? false = no tocar la fila. */
-  write: boolean;
-  patch: { kommo_stage_id?: number; kommo_pipeline_id?: number };
-  /** ¿Es un movimiento real (para lead_stage_events)? */
-  recordEvent: boolean;
-};
-
-/**
- * Compara lo guardado con lo que informa Kommo.
- *
- *  - Igual → no se escribe nada (cada UPDATE a `leads` dispara un refresco en
- *    vivo en todos los inbox abiertos).
- *  - Distinto → se escribe etapa y, si vino, pipeline.
- *  - Es un MOVIMIENTO solo si ya había etapa previa: null → etapa es la primera
- *    vez que la vemos, no un cambio. Y cambiar de pipeline conservando el id de
- *    etapa también cuenta (142/143 existen en todos los pipelines).
- */
-export function planPositionChange(prev: StoredPosition, next: IncomingPosition): PositionPlan {
-  const stageChanged = prev.stageId === null || Number(prev.stageId) !== next.stageId;
-  const pipelineChanged =
-    next.pipelineId !== null && (prev.pipelineId === null || Number(prev.pipelineId) !== next.pipelineId);
-  if (!stageChanged && !pipelineChanged) return { write: false, patch: {}, recordEvent: false };
-
-  const patch: PositionPlan["patch"] = { kommo_stage_id: next.stageId };
-  if (next.pipelineId !== null) patch.kommo_pipeline_id = next.pipelineId;
-
-  const hadStage = prev.stageId !== null;
-  const pipelineMoved =
-    prev.pipelineId !== null && next.pipelineId !== null && Number(prev.pipelineId) !== next.pipelineId;
-  const recordEvent = hadStage && (Number(prev.stageId) !== next.stageId || pipelineMoved);
-  return { write: true, patch, recordEvent };
+  return { kommoLeadId, statusId, pipelineId: positiveInt(l.pipeline_id), atMs: eventInstantMs(l, fallbackMs) };
 }

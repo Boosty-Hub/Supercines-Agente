@@ -22,10 +22,16 @@
 //        · un recorrido en curso se retoma, jamás retrocede, aunque llegue `restart`;
 //        · `restart` solo se acepta con el recorrido 'done' y pasados 15 min
 //          (COOLDOWN) desde su último movimiento; antes responde «cooldown»;
-//        · un 'done' de hace más de 1 h se reabre solo si hay leads sin pipeline
-//          que no estén marcados como inexistentes en Kommo;
-//        · al terminar un recorrido completo, los leads que Kommo no devolvió se
-//          marcan (leads.kommo_missing_at) y dejan de contar como pendientes.
+//        · al terminar un recorrido completo, los leads que no aparecieron son solo
+//          CANDIDATOS a inexistentes: la paginación por offset (Kommo no ofrece
+//          cursor por id) se corre si borran un lead durante la lectura y uno
+//          vivo puede saltarse. Se verifican POR ID en Kommo (filter[id][], lotes
+//          de 100): los que existen se aplican y solo los que Kommo confirma
+//          ausentes se marcan (leads.kommo_missing_at).
+//   3. Huecos: los leads que nacieron sin pipeline (el webhook de su alta no lo
+//      traía) se completan pidiendo a Kommo SOLO esos ids (≤ 200 por pasada). No
+//      reabre ni recorre todo Kommo, no tiene enfriamiento de 1 h: 1 lead sin
+//      pipeline cuesta 1 pedido.
 //
 // Idempotente: correrla N veces converge al mismo estado. Dos invocaciones
 // simultáneas nunca recorren Kommo a la vez (lease en la base).
@@ -43,8 +49,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
-import { fetchLeadsPositionsPage, fetchPipelinesFull } from "../_shared/kommo.ts";
+import {
+  fetchLeadsByIds,
+  fetchLeadsPositionsPage,
+  fetchPipelinesFull,
+  KOMMO_IDS_PER_REQUEST,
+} from "../_shared/kommo.ts";
 import { runPositionsBackfill } from "../_shared/backfill-positions.ts";
+import { reconcileLeadIds, type ReconcileDeps } from "../_shared/reconcile-leads.ts";
 import { interpretClaim, type ClaimDecision, type ClaimRow } from "../_shared/backfill-claim.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -65,8 +77,10 @@ const PAUSE_MS = 250;
 const PIPELINES_MIN_INTERVAL_SECONDS = 30;
 /** Un reinicio manual solo se acepta pasado este tiempo desde el último movimiento del recorrido. */
 const RESTART_COOLDOWN_SECONDS = 15 * 60;
-/** Un recorrido terminado se reabre por leads sin pipeline como máximo 1 vez por hora. */
-const GAP_REOPEN_SECONDS = 60 * 60;
+/** Candidatos a inexistentes que se verifican por pasada (los demás quedan sin marcar para la próxima). */
+const MISSING_CANDIDATES_LIMIT = 5000;
+/** Huecos (leads sin pipeline) que se completan por pasada. */
+const GAP_LIMIT = 200;
 
 type PipelinesResult =
   | { ok: true; stages: number; skipped?: "recent" }
@@ -98,11 +112,42 @@ async function claimBackfill(restart: boolean): Promise<ClaimDecision> {
     p_lease_seconds: LEASE_SECONDS,
     p_restart: restart,
     p_cooldown_seconds: RESTART_COOLDOWN_SECONDS,
-    p_reopen_gaps: true,
-    p_gap_seconds: GAP_REOPEN_SECONDS,
   });
   if (error) throw new Error(`claim_kommo_backfill: ${error.message}`);
   return interpretClaim((data as ClaimRow[] | null)?.[0]);
+}
+
+/** Reconciliación por id contra Kommo (candidatos a inexistentes y huecos). */
+function reconcileDeps(domain: string, token: string): ReconcileDeps {
+  return {
+    fetchByIds: (ids) => fetchLeadsByIds(domain, token, ids),
+    apply: async (leads, readAtMs) => {
+      const { data, error } = await supabase.rpc("apply_kommo_lead_positions", {
+        p_leads: leads,
+        p_read_at: new Date(readAtMs).toISOString(),
+      });
+      if (error) throw new Error(`apply_kommo_lead_positions: ${error.message}`);
+      return Number(data ?? 0);
+    },
+    markMissing: async (ids) => {
+      const { data, error } = await supabase.rpc("mark_kommo_leads_missing", { p_ids: ids });
+      if (error) throw new Error(`mark_kommo_leads_missing: ${error.message}`);
+      return Number(data ?? 0);
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
+}
+
+/** Completa por id los leads sin pipeline (sin recorrer Kommo). Devuelve el resultado o null si no hay huecos. */
+async function fillGaps(domain: string, token: string) {
+  const { data, error } = await supabase.rpc("kommo_gap_lead_ids", { p_limit: GAP_LIMIT });
+  if (error) throw new Error(`kommo_gap_lead_ids: ${error.message}`);
+  const ids = ((data ?? []) as Array<number | string>).map(Number);
+  if (ids.length === 0) return null;
+  return await reconcileLeadIds(ids, reconcileDeps(domain, token), {
+    batchSize: KOMMO_IDS_PER_REQUEST,
+    pauseMs: PAUSE_MS,
+  });
 }
 
 /** Recorre Kommo desde el cursor reclamado. Va en segundo plano. */
@@ -111,15 +156,28 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
     from,
     {
       fetchPage: (page) => fetchLeadsPositionsPage(domain, token, page),
-      apply: async (leads) => {
-        const { data, error: applyErr } = await supabase.rpc("apply_kommo_lead_positions", { p_leads: leads });
+      apply: async (leads, readAtMs) => {
+        const { data, error: applyErr } = await supabase.rpc("apply_kommo_lead_positions", {
+          p_leads: leads,
+          p_read_at: new Date(readAtMs).toISOString(),
+        });
         if (applyErr) throw new Error(`apply_kommo_lead_positions: ${applyErr.message}`);
         return Number(data ?? 0);
       },
       finalize: async () => {
-        const { data, error: markErr } = await supabase.rpc("mark_kommo_missing_leads", { p_job: JOB });
-        if (markErr) throw new Error(`mark_kommo_missing_leads: ${markErr.message}`);
-        return Number(data ?? 0);
+        // Candidatos = no aparecieron en el recorrido. NO se marcan: se verifican por id.
+        const { data, error: candErr } = await supabase.rpc("kommo_missing_candidates", {
+          p_job: JOB,
+          p_limit: MISSING_CANDIDATES_LIMIT,
+        });
+        if (candErr) throw new Error(`kommo_missing_candidates: ${candErr.message}`);
+        const ids = ((data ?? []) as Array<number | string>).map(Number);
+        const r = await reconcileLeadIds(ids, reconcileDeps(domain, token), {
+          batchSize: KOMMO_IDS_PER_REQUEST,
+          pauseMs: PAUSE_MS,
+        });
+        if (r.suspicious) console.warn(`sync-pipelines: Kommo no devolvió ninguno de ${r.checked} candidatos: no se marca nada`);
+        return r.marked;
       },
       save: async (p) => {
         const finished = p.status === "done";
@@ -160,7 +218,9 @@ Deno.serve(async (req: Request) => {
     const token = cfg.get("KOMMO_ACCESS_TOKEN");
     // Sin Kommo conectado todavía (deploy nuevo antes del wizard /setup): no es
     // un error. El cron vuelve a intentar en 10 min.
-    if (!domain || !token) return json({ ok: true, skipped: "kommo_not_configured" });
+    if (!domain || !token) {
+      return json({ ok: true, skipped: "kommo_not_configured", backfill: { state: "kommo_not_configured" } });
+    }
 
     const pipelines = await syncPipelines(domain, token);
     // `restart` es solo una PETICIÓN (la manda el servidor del panel con
@@ -170,25 +230,30 @@ Deno.serve(async (req: Request) => {
 
     const decision = await claimBackfill(restart);
 
-    // El recorrido de leads puede tardar: va en segundo plano y esta respuesta
+    // El trabajo contra Kommo puede tardar: va en segundo plano y esta respuesta
     // sale ya, con el refresco de pipelines y el estado del backfill.
-    if (decision.run) {
-      const from = decision.run;
-      const backfill = (async () => {
-        try {
-          const r = await runBackfill(domain, token, from);
-          console.log("sync-pipelines backfill:", JSON.stringify(r));
-        } catch (e) {
-          console.error("sync-pipelines backfill:", e);
-        }
-      })();
-      // @ts-ignore: EdgeRuntime existe en Supabase
-      if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-        // @ts-ignore
-        EdgeRuntime.waitUntil(backfill);
-      } else {
-        await backfill; // fallback local/test
+    const background = (async () => {
+      try {
+        // Huecos primero: son pocos ids y es lo que el operador espera ver resuelto.
+        const gaps = await fillGaps(domain, token);
+        if (gaps) console.log("sync-pipelines huecos:", JSON.stringify(gaps));
+      } catch (e) {
+        console.error("sync-pipelines huecos:", e);
       }
+      if (!decision.run) return;
+      try {
+        const r = await runBackfill(domain, token, decision.run);
+        console.log("sync-pipelines backfill:", JSON.stringify(r));
+      } catch (e) {
+        console.error("sync-pipelines backfill:", e);
+      }
+    })();
+    // @ts-ignore: EdgeRuntime existe en Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(background);
+    } else {
+      await background; // fallback local/test
     }
 
     return json(

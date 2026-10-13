@@ -360,8 +360,11 @@ async function moverEtapaDeLead(ctx: CrmContext, stageName: string, pipelineName
   await moveLeadStage(ctx.kommoLeadId, target.id, target.pipelineId, ctx.domain, ctx.token);
 
   // Registrar el movimiento (fail-open: nunca romper el tool). Va por
-  // record_lead_stage_event (0061): Kommo manda leads.status de vuelta por este
-  // mismo movimiento y la base evita que quede duplicado, llegue antes o después.
+  // apply_lead_position (0065): fija etapa + pipeline JUNTOS (142/143 existen en
+  // todos los pipelines; sin kommo_pipeline_id el tablero no ubicaría al lead) y
+  // registra el evento en el mismo paso. Kommo manda leads.status de vuelta por
+  // este movimiento: la base lo reconoce como eco (llegue antes o después) y no
+  // lo duplica ni lo deja retroceder.
   if (ctx.internalLeadId) {
     try {
       // Resolver nombre de etapa anterior si tenemos el id previo
@@ -373,23 +376,16 @@ async function moverEtapaDeLead(ctx: CrmContext, stageName: string, pipelineName
         );
         fromStageName = prevStage?.name ?? null;
       }
-      // Etapa + pipeline van JUNTOS: 142/143 existen en todos los pipelines y
-      // sin kommo_pipeline_id el tablero del inbox no ubicaría al lead.
-      await supabase
-        .from("leads")
-        .update({ kommo_stage_id: target.id, kommo_pipeline_id: target.pipelineId })
-        .eq("id", ctx.internalLeadId);
-      const { error: rpcErr } = await supabase.rpc("record_lead_stage_event", {
+      const { error: rpcErr } = await supabase.rpc("apply_lead_position", {
         p_lead_id: ctx.internalLeadId,
-        p_from_stage_id: prevStageId ?? null,
-        p_from_pipeline_id: ctx.currentKommoPipelineId ?? null,
-        p_to_stage_id: target.id,
-        p_to_pipeline_id: target.pipelineId,
+        p_stage_id: target.id,
+        p_pipeline_id: target.pipelineId,
+        p_at: new Date().toISOString(),
+        p_moved_by: "agente",
+        p_draft_id: ctx.draftId ?? null,
         p_from_stage_name: fromStageName,
         p_to_stage_name: target.name,
         p_pipeline_name: target.pipelineName,
-        p_moved_by: "agente",
-        p_draft_id: ctx.draftId ?? null,
       });
       if (rpcErr) throw new Error(rpcErr.message);
     } catch (evErr) {

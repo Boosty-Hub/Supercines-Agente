@@ -1,82 +1,57 @@
 // _shared/lead-position.test.ts
-// Deno tests de la lógica PURA con que process-inbound decide qué hacer cuando
-// Kommo avisa que un lead cambió (leads.update / leads.status).
+// Deno tests de la extracción de posición e instante de un leads.update/status.
+// (El orden y la detección de movimientos se prueban contra Postgres:
+// supabase/tests/claim_kommo_backfill.sql.)
 //
 // Correr con: deno test --allow-read supabase/functions/_shared/lead-position.test.ts
 
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
-import { parseLeadPosition, planPositionChange } from "./lead-position.ts";
+import { eventInstantMs, parseLeadPosition } from "./lead-position.ts";
 
-// ---- parseLeadPosition ----
+const NOW = Date.parse("2026-10-13T12:00:00Z");
 
-Deno.test("parseLeadPosition: el webhook manda strings; los pasa a número", () => {
-  assertEquals(parseLeadPosition({ id: "123", status_id: "142", pipeline_id: "9" }), {
+Deno.test("parseLeadPosition: el webhook manda strings; los pasa a número y toma last_modified en ms", () => {
+  assertEquals(parseLeadPosition({ id: "123", status_id: "142", pipeline_id: "9", last_modified: "1760356000" }, NOW), {
     kommoLeadId: 123,
     statusId: 142,
     pipelineId: 9,
+    atMs: 1760356000_000,
   });
 });
 
 Deno.test("parseLeadPosition: sin status_id no hay posición (es un cambio de otro campo)", () => {
-  assertEquals(parseLeadPosition({ id: "123", name: "x" }), null);
+  assertEquals(parseLeadPosition({ id: "123", name: "x" }, NOW), null);
 });
 
 Deno.test("parseLeadPosition: pipeline_id ausente se conserva como null, no descarta la etapa", () => {
-  assertEquals(parseLeadPosition({ id: 5, status_id: 77 }), { kommoLeadId: 5, statusId: 77, pipelineId: null });
+  assertEquals(parseLeadPosition({ id: 5, status_id: 77 }, NOW), {
+    kommoLeadId: 5,
+    statusId: 77,
+    pipelineId: null,
+    atMs: NOW,
+  });
 });
 
 Deno.test("parseLeadPosition: ids no numéricos o 0 se descartan", () => {
-  assertEquals(parseLeadPosition({ id: "abc", status_id: "1" }), null);
-  assertEquals(parseLeadPosition({ id: "1", status_id: "xyz" }), null);
-  assertEquals(parseLeadPosition({ id: "1", status_id: "0" }), null);
+  assertEquals(parseLeadPosition({ id: "abc", status_id: "1" }, NOW), null);
+  assertEquals(parseLeadPosition({ id: "1", status_id: "xyz" }, NOW), null);
+  assertEquals(parseLeadPosition({ id: "1", status_id: "0" }, NOW), null);
 });
 
-// ---- planPositionChange ----
-
-Deno.test("planPositionChange: misma etapa y mismo pipeline = no se escribe NADA", () => {
-  // ~1.900 de cada ~2.200 leads.update por semana son de otros campos (tags,
-  // precio...). Escribir en cada uno dispararía un refresco en todos los inbox.
-  const plan = planPositionChange({ stageId: 10, pipelineId: 1 }, { stageId: 10, pipelineId: 1 });
-  assertEquals(plan, { write: false, patch: {}, recordEvent: false });
+Deno.test("eventInstantMs: last_modified gana sobre updated_at, y ambos sobre la llegada", () => {
+  assertEquals(eventInstantMs({ last_modified: 100, updated_at: 200 }, NOW), 100_000);
+  assertEquals(eventInstantMs({ updated_at: 200 }, NOW), 200_000);
+  assertEquals(eventInstantMs({}, NOW), NOW);
 });
 
-Deno.test("planPositionChange: cambio de etapa dentro del pipeline = escribe y registra evento", () => {
-  const plan = planPositionChange({ stageId: 10, pipelineId: 1 }, { stageId: 11, pipelineId: 1 });
-  assertEquals(plan, {
-    write: true,
-    patch: { kommo_stage_id: 11, kommo_pipeline_id: 1 },
-    recordEvent: true,
-  });
+Deno.test("eventInstantMs: un instante absurdo (futuro lejano / basura) cae a la hora de llegada", () => {
+  assertEquals(eventInstantMs({ last_modified: "9999999999" }, NOW), NOW);
+  assertEquals(eventInstantMs({ last_modified: "abc" }, NOW), NOW);
+  assertEquals(eventInstantMs({ last_modified: "0" }, NOW), NOW);
 });
 
-Deno.test("planPositionChange: 142 en otro pipeline ES un movimiento aunque el id de etapa no cambie", () => {
-  const plan = planPositionChange({ stageId: 142, pipelineId: 1 }, { stageId: 142, pipelineId: 2 });
-  assertEquals(plan.write, true);
-  assertEquals(plan.recordEvent, true);
-  assertEquals(plan.patch, { kommo_stage_id: 142, kommo_pipeline_id: 2 });
-});
-
-Deno.test("planPositionChange: primera vez que vemos la etapa (null) escribe pero NO es un movimiento", () => {
-  const plan = planPositionChange({ stageId: null, pipelineId: null }, { stageId: 10, pipelineId: 1 });
-  assertEquals(plan, {
-    write: true,
-    patch: { kommo_stage_id: 10, kommo_pipeline_id: 1 },
-    recordEvent: false,
-  });
-});
-
-Deno.test("planPositionChange: solo faltaba el pipeline (etapa igual) completa el dato sin evento", () => {
-  const plan = planPositionChange({ stageId: 10, pipelineId: null }, { stageId: 10, pipelineId: 1 });
-  assertEquals(plan, {
-    write: true,
-    patch: { kommo_stage_id: 10, kommo_pipeline_id: 1 },
-    recordEvent: false,
-  });
-});
-
-Deno.test("planPositionChange: webhook sin pipeline_id no pisa el pipeline guardado", () => {
-  const plan = planPositionChange({ stageId: 10, pipelineId: 1 }, { stageId: 11, pipelineId: null });
-  assertEquals(plan.write, true);
-  assertEquals(plan.patch, { kommo_stage_id: 11 });
-  assertEquals(plan.recordEvent, true);
+Deno.test("eventInstantMs: dos eventos del mismo lead conservan su orden aunque lleguen invertidos", () => {
+  const viejo = eventInstantMs({ last_modified: 1000 }, NOW);
+  const nuevo = eventInstantMs({ last_modified: 2000 }, NOW - 5_000);
+  assertEquals(viejo < nuevo, true);
 });

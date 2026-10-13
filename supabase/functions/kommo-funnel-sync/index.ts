@@ -18,8 +18,9 @@
 //
 // UNA SOLA FUENTE DE VERDAD DE LA POSICIÓN. La lectura de cada sede ya trae el
 // pipeline y la etapa de cada lead: se vuelcan también en `leads`
-// (reconcile_funnel_lead_positions, 0062) en vez de pedirlos otra vez o de dejar
-// que dos jobs distintos mantengan la misma columna. Es una reconciliación: solo
+// (reconcile_funnel_lead_positions, 0062 → apply_positions_batch, 0061: el MISMO
+// camino de escritura que el backfill, ordenado por kommo_position_at) en vez de
+// pedirlos otra vez o de dejar que dos jobs mantengan la misma columna. Es una reconciliación: solo
 // escribe lo que cambió y repara cualquier webhook de movimiento que se haya
 // perdido. El recorrido completo de la cuenta (histórico) es de sync-pipelines.
 //
@@ -101,7 +102,7 @@ function classifyFlow(eventoValue: string): "cumpleanos" | "alquiler_salas" | nu
 // Vuelca pipeline + etapa de los leads leídos a `leads` (ver 0062). Por lotes
 // para no mandar un JSON gigante; devuelve cuántos leads CAMBIARON.
 const POSITIONS_BATCH = 500;
-async function reconcilePositions(leads: KommoLeadRaw[], sede: Sede): Promise<number> {
+async function reconcilePositions(leads: KommoLeadRaw[], sede: Sede, readAtIso: string): Promise<number> {
   let changed = 0;
   for (let i = 0; i < leads.length; i += POSITIONS_BATCH) {
     const batch = leads.slice(i, i + POSITIONS_BATCH).map((l) => ({
@@ -110,7 +111,10 @@ async function reconcilePositions(leads: KommoLeadRaw[], sede: Sede): Promise<nu
       status_id: l.status_id,
     }));
     try {
-      const { data, error } = await supabase.rpc("reconcile_funnel_lead_positions", { p_leads: batch });
+      const { data, error } = await supabase.rpc("reconcile_funnel_lead_positions", {
+        p_leads: batch,
+        p_read_at: readAtIso,
+      });
       if (error) throw new Error(error.message);
       changed += Number(data) || 0;
     } catch (err) {
@@ -129,12 +133,16 @@ async function syncSede(
   kommoToken: string
 ): Promise<SyncResult> {
   const pipelineId = SEDE_PIPELINES[sede];
+  // Instante en que se pidió la lectura: la posición que devuelve Kommo vale a esa
+  // hora. apply_positions_batch (0061) no la aplica sobre un movimiento más nuevo
+  // (webhook/agente/panel) que haya llegado mientras tanto.
+  const readAtIso = new Date().toISOString();
   const leads: KommoLeadRaw[] = await fetchLeadsByPipelineSince(pipelineId, sinceUnix, kommoDomain, kommoToken);
 
   // La misma lectura trae el pipeline y la etapa de cada lead: se reconcilian en
   // `leads` (tablero del inbox) antes de filtrar por el bot. Fail-open: un fallo
   // acá nunca debe impedir el snapshot del funnel.
-  const positionsUpdated = await reconcilePositions(leads, sede);
+  const positionsUpdated = await reconcilePositions(leads, sede, readAtIso);
 
   // Solo nos interesan los que entraron al bot (Evento de Interés presente) y
   // el flow_type resuelve a uno conocido.

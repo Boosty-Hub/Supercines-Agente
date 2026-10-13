@@ -353,24 +353,35 @@ export class KommoHttpError extends Error {
 const KOMMO_MAX_429_RETRIES = 4;
 const KOMMO_DEFAULT_RETRY_MS = 1000;
 
+export type KommoLeadsRead = {
+  leads: KommoLeadPosition[];
+  hasMore: boolean;
+  /**
+   * Instante (ms) en que se PIDIÓ la lectura, antes de enviarla: lo que Kommo
+   * devuelve vale a esa hora. Es el `p_read_at` de apply_kommo_lead_positions, para
+   * que una lectura lenta no pise un webhook más nuevo.
+   */
+  readAtMs: number;
+};
+
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 /**
- * Una página de GET /api/v4/leads (id, etapa y pipeline de cada lead), ordenada
- * por id para que la paginación sea estable aunque entren leads nuevos mientras
- * se recorre. Kommo limita a ~7 req/s por cuenta, compartidos con el resto del
- * sistema: ante un 429 espera (Retry-After si viene) y reintenta; el resto de
- * los errores salen como KommoHttpError para que el caller decida.
+ * GET /api/v4/leads con el manejo común: 204 = vacío; 429 espera (Retry-After si
+ * viene) y reintenta hasta KOMMO_MAX_429_RETRIES (Kommo permite ~7 req/s por
+ * cuenta, compartidos con el webhook, el agente y el panel); el resto de los
+ * errores salen como KommoHttpError para que el caller decida.
  */
-export async function fetchLeadsPositionsPage(
-  kommoDomain: string,
+async function fetchLeadsList(
+  url: string,
+  label: string,
   kommoToken: string,
-  page: number,
-  limit = 250,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
-): Promise<{ leads: KommoLeadPosition[]; hasMore: boolean }> {
-  const url = `https://${kommoDomain}/api/v4/leads?limit=${limit}&page=${page}&order[id]=asc`;
+  sleep: (ms: number) => Promise<void>
+): Promise<KommoLeadsRead> {
+  const readAtMs = Date.now();
   for (let intento = 0; ; intento++) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (res.status === 204) return { leads: [], hasMore: false };
+    if (res.status === 204) return { leads: [], hasMore: false, readAtMs };
     if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
       const retryAfter = Number(res.headers.get("retry-after"));
       await res.body?.cancel();
@@ -378,7 +389,7 @@ export async function fetchLeadsPositionsPage(
       continue;
     }
     if (!res.ok) {
-      throw new KommoHttpError(res.status, `fetch leads page ${page}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      throw new KommoHttpError(res.status, `fetch leads ${label}: ${res.status} ${(await res.text()).slice(0, 200)}`);
     }
     const json = (await res.json()) as {
       _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
@@ -390,8 +401,57 @@ export async function fetchLeadsPositionsPage(
         leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
       }
     }
-    return { leads, hasMore: Boolean(json._links?.next) };
+    return { leads, hasMore: Boolean(json._links?.next), readAtMs };
   }
+}
+
+/**
+ * Una página de GET /api/v4/leads (id, etapa y pipeline de cada lead), ordenada
+ * por id. OJO: la paginación es por offset (`page=N`) y Kommo NO ofrece cursor por
+ * id (solo `filter[id][]` y rangos por fecha): si se borra un lead mientras se
+ * recorre, las páginas se corren y un lead vivo puede saltarse. Por eso nadie debe
+ * declarar «no existe» a un lead por no verlo acá: se verifica por id con
+ * fetchLeadsByIds.
+ */
+export function fetchLeadsPositionsPage(
+  kommoDomain: string,
+  kommoToken: string,
+  page: number,
+  limit = 250,
+  sleep: (ms: number) => Promise<void> = sleepMs
+): Promise<KommoLeadsRead> {
+  return fetchLeadsList(
+    `https://${kommoDomain}/api/v4/leads?limit=${limit}&page=${page}&order[id]=asc`,
+    `page ${page}`,
+    kommoToken,
+    sleep
+  );
+}
+
+/** Máximo de ids por pedido: filter[id][] va en la URL (100 ids ≈ 3 KB, bajo el límite de 8 KB). */
+export const KOMMO_IDS_PER_REQUEST = 100;
+
+/**
+ * Los leads de Kommo con esos ids (hasta KOMMO_IDS_PER_REQUEST). Los que no
+ * vuelven en la respuesta NO existen en Kommo (borrados): 204 si ninguno existe.
+ */
+export function fetchLeadsByIds(
+  kommoDomain: string,
+  kommoToken: string,
+  ids: number[],
+  sleep: (ms: number) => Promise<void> = sleepMs
+): Promise<KommoLeadsRead> {
+  if (ids.length === 0) return Promise.resolve({ leads: [], hasMore: false, readAtMs: Date.now() });
+  if (ids.length > KOMMO_IDS_PER_REQUEST) {
+    throw new Error(`fetchLeadsByIds: máximo ${KOMMO_IDS_PER_REQUEST} ids por pedido (llegaron ${ids.length})`);
+  }
+  const qs = ids.map((id) => `filter[id][]=${encodeURIComponent(String(id))}`).join("&");
+  return fetchLeadsList(
+    `https://${kommoDomain}/api/v4/leads?limit=${KOMMO_IDS_PER_REQUEST}&${qs}`,
+    `by ids (${ids.length})`,
+    kommoToken,
+    sleep
+  );
 }
 
 export type KommoFieldLite = { id: number; name: string };

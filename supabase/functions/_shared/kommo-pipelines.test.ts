@@ -6,6 +6,7 @@
 
 import { assertEquals, assertRejects } from "jsr:@std/assert@^1.0.0";
 import {
+  fetchLeadsByIds,
   fetchLeadsPositionsPage,
   fetchPipelinesFull,
   flattenPipelines,
@@ -89,6 +90,7 @@ Deno.test("fetchLeadsPositionsPage: devuelve id/etapa/pipeline y detecta que hay
     { id: 1, status_id: 10, pipeline_id: 1 },
     { id: 2, status_id: 143, pipeline_id: 2 },
   ]);
+  assertEquals(typeof r.readAtMs, "number");
   assertEquals(r.hasMore, true);
   // orden estable por id: la paginación no se corre si entran leads nuevos.
   assertEquals(pedida.includes("order[id]=asc") && pedida.includes("page=3") && pedida.includes("limit=250"), true);
@@ -97,7 +99,7 @@ Deno.test("fetchLeadsPositionsPage: devuelve id/etapa/pipeline y detecta que hay
 Deno.test("fetchLeadsPositionsPage: 204 = no hay más leads", async () => {
   const mock = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
   const r = await withFetchMock(mock, () => fetchLeadsPositionsPage("x.kommo.com", "tok", 9, 250, noSleep));
-  assertEquals(r, { leads: [], hasMore: false });
+  assertEquals({ leads: r.leads, hasMore: r.hasMore }, { leads: [], hasMore: false });
 });
 
 Deno.test("fetchLeadsPositionsPage: ante 429 espera Retry-After y reintenta", async () => {
@@ -138,4 +140,37 @@ Deno.test("fetchLeadsPositionsPage: 401 sale como KommoHttpError con el status (
     assertRejects(() => fetchLeadsPositionsPage("x.kommo.com", "tok", 1, 250, noSleep), KommoHttpError),
   );
   assertEquals((err as KommoHttpError).status, 401);
+});
+
+Deno.test("fetchLeadsByIds: manda filter[id][] y devuelve solo los leads que Kommo conoce", async () => {
+  let pedida = "";
+  const mock = ((input: string | URL | Request) => {
+    pedida = String(input);
+    return Promise.resolve(json({ _embedded: { leads: [{ id: 7, status_id: 10, pipeline_id: 1 }] } }));
+  }) as typeof fetch;
+  const r = await withFetchMock(mock, () => fetchLeadsByIds("x.kommo.com", "tok", [7, 8, 9], noSleep));
+  assertEquals(r.leads, [{ id: 7, status_id: 10, pipeline_id: 1 }]);
+  assertEquals(
+    pedida.includes("filter[id][]=7&filter[id][]=8&filter[id][]=9") && pedida.includes("limit=100"),
+    true,
+  );
+});
+
+Deno.test("fetchLeadsByIds: 204 = ninguno existe; sin ids no pregunta; más de 100 ids es un error de uso", async () => {
+  let llamadas = 0;
+  const mock = (() => {
+    llamadas++;
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  const vacio = await withFetchMock(mock, () => fetchLeadsByIds("x.kommo.com", "tok", [1, 2], noSleep));
+  assertEquals(vacio.leads, []);
+  await withFetchMock(mock, () => fetchLeadsByIds("x.kommo.com", "tok", [], noSleep));
+  assertEquals(llamadas, 1);
+  let lanzo = false;
+  try {
+    fetchLeadsByIds("x.kommo.com", "tok", Array.from({ length: 101 }, (_, i) => i + 1), noSleep);
+  } catch {
+    lanzo = true;
+  }
+  assertEquals(lanzo, true);
 });

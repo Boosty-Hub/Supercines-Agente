@@ -20,7 +20,8 @@ export type AgentEffort = "low" | "medium" | "high";
  *  (outcomes) muestra ganancia que justifique el costo. */
 export const AGENT_EFFORT: AgentEffort = "medium";
 
-const MODELS_WITHOUT_EFFORT = new Set(["claude-haiku-4-5"]);
+// Mantener en sync con supabase/functions/_shared/models.ts (MODELS_WITHOUT_EFFORT).
+export const MODELS_WITHOUT_EFFORT: ReadonlySet<string> = new Set(["claude-haiku-4-5"]);
 
 export type AgentModelParam = string | { id: string; effort: AgentEffort };
 

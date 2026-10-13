@@ -293,7 +293,7 @@ export default async function DreamsPage({ searchParams }: { searchParams: Searc
             Aprendizajes activos ({parsedItems.length})
           </h2>
           <p className="mt-0.5 text-xs text-neutral-500">
-            Estos ya están funcionando: el agente los lee antes de cada respuesta.
+            Estos ya están funcionando: el agente los recibe consolidados en cada respuesta.
           </p>
         </div>
         {parsedItems.length === 0 ? (

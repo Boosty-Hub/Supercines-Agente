@@ -10,7 +10,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
-import { recordUsage, captureSessionUsage } from "../_shared/usage.ts";
+import { recordUsage, captureSessionUsage, recordFailedLlmUsage } from "../_shared/usage.ts";
 import {
   moveLeadStage,
   fetchPipelineStages,
@@ -30,7 +30,7 @@ import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
-import { modelFor } from "../_shared/models.ts";
+import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 
@@ -1440,7 +1440,7 @@ Deno.serve(async (req: Request) => {
           const replyRes = await anthropic.messages.create({
             model: commentReplyModel,
             max_tokens: LLM_PROFILES.commentReply.maxTokens,
-            output_config: { effort: LLM_PROFILES.commentReply.effort },
+            output_config: { ...effortFor(commentReplyModel, LLM_PROFILES.commentReply.effort) },
             system: `Sos el community manager de ${operator}. Redactás UNA respuesta pública a un comentario de Instagram. Reglas OBLIGATORIAS del negocio:\n${replyRules}\nRespondé SOLO con el texto del comentario de respuesta, sin comillas ni explicaciones.`,
             messages: [
               {
@@ -1476,6 +1476,11 @@ Deno.serve(async (req: Request) => {
             pricingOverrideRaw: resolvedCfg.get("AI_PRICING_OVERRIDES"),
           });
         } catch (replyErr) {
+          await recordFailedLlmUsage(supabase, replyErr, {
+            component: "comment_reply", model: modelFor(resolvedCfg, "COMMENT_REPLY_MODEL"),
+            leadId: batch.leadId, draftId: draft.id,
+            pricingOverrideRaw: resolvedCfg.get("AI_PRICING_OVERRIDES"),
+          });
           // fail-open: la parte pública no sale pero el DM sigue.
           console.warn("generate-response: comment_reply generation failed (fail-open):", replyErr instanceof Error ? replyErr.message : String(replyErr));
         }

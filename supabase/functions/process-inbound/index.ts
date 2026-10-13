@@ -11,16 +11,16 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig } from "../_shared/config.ts";
-import { recordUsage } from "../_shared/usage.ts";
+import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { isStaleBacklog } from "../_shared/backlog.ts";
-import { modelFor } from "../_shared/models.ts";
+import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
-import { jsonOf, LLM_PROFILES, LlmRefusalError } from "../_shared/llm.ts";
+import { jsonOf, LLM_PROFILES, LlmRefusalError, LlmTruncatedError } from "../_shared/llm.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -618,7 +618,7 @@ Reglas:
     system,
     messages: [{ role: "user", content: userContent }],
     output_config: {
-      effort: LLM_PROFILES.classify.effort,
+      ...effortFor(model, LLM_PROFILES.classify.effort),
       format: {
         type: "json_schema",
         schema: {
@@ -663,11 +663,16 @@ Reglas:
   return parsed;
 }
 
-// El clasificador de seguridad de Haiku 5.5 declinó el mensaje (HTTP 200,
-// stop_reason "refusal"; sin fallback server-side). Reintentar el mismo input da
-// el mismo resultado, así que se cierra el caso: prefijo "recover:" (convención
-// de este archivo para "fuera de la cola de reintentos") + revisión humana.
-function refusalOutcome(err: LlmRefusalError) {
+// Fallas del clasificador que reintentar no arregla: el clasificador de
+// seguridad de Haiku 5.5 declinó el mensaje (HTTP 200, stop_reason "refusal";
+// sin fallback server-side) o la salida se cortó en max_tokens (mismo input +
+// mismo tope = mismo corte, y cada reintento se cobra). Se cierra el caso:
+// prefijo "recover:" (convención de este archivo para "fuera de la cola de
+// reintentos") + revisión humana.
+type TerminalLlmError = LlmRefusalError | LlmTruncatedError;
+const isTerminalLlmError = (e: unknown): e is TerminalLlmError =>
+  e instanceof LlmRefusalError || e instanceof LlmTruncatedError;
+function refusalOutcome(err: TerminalLlmError) {
   return {
     requires_human_review: true,
     classification: { error: `recover: ${err.message}` },
@@ -1340,6 +1345,11 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
           pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES"),
         });
       } catch (err) {
+        await recordFailedLlmUsage(supabase, err, {
+          component: "classify", model: classifyModel, leadId,
+          metadata: { msg_id: msg.id },
+          pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES"),
+        });
         const errMsg = err instanceof Error ? err.message : String(err);
         // Si era un adjunto sin texto y la clasificación falló (p.ej. la URL no
         // es accesible), lo mandamos a revisión humana en vez de descartarlo.
@@ -1348,7 +1358,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         await supabase
           .from("messages")
           .update(
-            err instanceof LlmRefusalError
+            isTerminalLlmError(err)
               ? refusalOutcome(err)
               : {
                   classification: { error: errMsg },
@@ -1511,9 +1521,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
         });
         healed++;
       } catch (e) {
-        if (e instanceof LlmRefusalError) {
+        await recordFailedLlmUsage(supabase, e, {
+          component: "classify", model: classifyModel, leadId: msg.lead_id,
+          metadata: { msg_id: msg.id, source: "recover" },
+          pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES"),
+        });
+        if (isTerminalLlmError(e)) {
           await supabase.from("messages").update(refusalOutcome(e)).eq("id", msg.id).is("vertical_id", null);
-          console.warn("recover classify: el modelo rechazó el mensaje → revisión humana:", e.message);
+          console.warn("recover classify: clasificación sin salida (rechazo/corte) → revisión humana:", e.message);
           continue;
         }
         // Falla al reintentar: contar el intento. Transitoria → vuelve al

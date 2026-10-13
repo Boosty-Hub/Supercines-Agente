@@ -40,8 +40,8 @@ export async function listDreams(): Promise<DreamMeta[]> {
     .sort((a, b) => (a.path < b.path ? 1 : -1));
 }
 
-// Dreams pendientes de aprobación: viven bajo /dreams-pending/, que el agente
-// NO lee (su prompt solo apunta a /dreams/). Aprobar = mover a /dreams/.
+// Dreams pendientes de aprobación: viven bajo /dreams-pending/, que no entran
+// al digest del agente (solo se consolida /dreams/). Aprobar = mover a /dreams/.
 export async function listPendingDreams(): Promise<DreamMeta[]> {
   const { apiKey, storeId } = await masterCreds();
   const items = await listMemories(apiKey, storeId, "/dreams-pending/");

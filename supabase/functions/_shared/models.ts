@@ -14,6 +14,18 @@ export const MODEL_DEFAULTS = {
 
 export type ModelKey = keyof typeof MODEL_DEFAULTS;
 
+/** Modelos que rechazan `output_config.effort` con 400 (Haiku 4.5, histórico pero todavía asignable). */
+export const MODELS_WITHOUT_EFFORT: ReadonlySet<string> = new Set(["claude-haiku-4-5"]);
+
+/**
+ * Fragmento de `output_config` con el effort, o {} si el modelo no lo soporta.
+ * TODA llamada directa a la Messages API pasa por acá: `output_config: { ...effortFor(model, e), format }`.
+ * Mantener en sync con web/src/lib/agent-model.ts (web-parity.test.ts lo verifica).
+ */
+export function effortFor(model: string, effort: "low" | "medium" | "high"): { effort?: "low" | "medium" | "high" } {
+  return MODELS_WITHOUT_EFFORT.has(model) ? {} : { effort };
+}
+
 /** Modelo configurado para `key` (DB-first/env-fallback) o el default del pipeline. */
 export function modelFor(cfg: { getOr(key: string, fallback: string): string }, key: ModelKey): string {
   return cfg.getOr(key, MODEL_DEFAULTS[key]);

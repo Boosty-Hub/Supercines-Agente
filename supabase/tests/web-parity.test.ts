@@ -7,7 +7,7 @@
 // Correr con: deno test --allow-read --node-modules-dir=none supabase/tests/web-parity.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
 import { AI_PRICING, costUsd } from "../functions/_shared/ai-pricing.ts";
-import { MODEL_DEFAULTS } from "../functions/_shared/models.ts";
+import { MODEL_DEFAULTS, MODELS_WITHOUT_EFFORT } from "../functions/_shared/models.ts";
 import * as web from "../../web/src/lib/ai-pricing.ts";
 import { ALLOWED_MODELS, MODEL_KEYS, MODEL_LABELS, MODEL_NAMES } from "../../web/src/lib/model-config.ts";
 import { AGENT_EFFORT, agentModelMatches, agentModelParam } from "../../web/src/lib/agent-model.ts";
@@ -100,4 +100,10 @@ Deno.test("alcances: /api/usage/{models,budget} exigen configuracion; el resto d
   assertEquals(rutaPermitida("operacion", "/api/usage/budget"), false);
   assertEquals(rutaPermitida("configuracion", "/api/usage/budget"), true);
   assertEquals(rutaPermitida("contenido", "/api/usage/context"), true);
+});
+
+import { MODELS_WITHOUT_EFFORT as WEB_NO_EFFORT } from "../../web/src/lib/agent-model.ts";
+
+Deno.test("PARIDAD: modelos sin effort web == Edge", () => {
+  assertEquals([...MODELS_WITHOUT_EFFORT].sort(), [...WEB_NO_EFFORT].sort());
 });

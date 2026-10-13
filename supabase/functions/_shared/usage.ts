@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { costUsd, parsePricingOverride, type UsageRow } from "./ai-pricing.ts";
+import { LlmError } from "./llm.ts";
 
 export type RecordUsageInput = Omit<UsageRow, "pricingOverride"> & {
   component: string;
@@ -29,6 +30,31 @@ export async function recordUsage(supabase: SupabaseClient, u: RecordUsageInput)
       session_id: u.sessionId ?? null, metadata: u.metadata ?? null,
     });
   } catch (e) { console.warn("recordUsage failed (ignored):", e instanceof Error ? e.message : String(e)); }
+}
+
+// Una llamada que terminó en refusal / max_tokens / sin texto IGUAL se cobra
+// (el thinking cuenta: hasta 4K-16K tokens). Si no se registra, usage_events —y
+// con él el techo de gasto— subestima el gasto real. Registra el usage que
+// LlmError trae de la respuesta; si `err` no es un LlmError con usage, no hace
+// nada. Fail-open absoluto, como recordUsage.
+export async function recordFailedLlmUsage(
+  supabase: SupabaseClient,
+  err: unknown,
+  base: Omit<RecordUsageInput, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheCreation5m" | "cacheCreation1h">,
+): Promise<void> {
+  if (!(err instanceof LlmError) || !err.usage || typeof err.usage !== "object") return;
+  const u = err.usage as Record<string, unknown>;
+  const cc = (u.cache_creation ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
+  await recordUsage(supabase, {
+    ...base,
+    inputTokens: num(u.input_tokens),
+    outputTokens: num(u.output_tokens),
+    cacheReadTokens: num(u.cache_read_input_tokens),
+    cacheCreation5m: num(cc.ephemeral_5m_input_tokens),
+    cacheCreation1h: num(cc.ephemeral_1h_input_tokens),
+    metadata: { ...(base.metadata ?? {}), failed: err.name },
+  });
 }
 
 // Captura de consumo de una sesión CMA: GET /v1/sessions/{id} (timeout 8s) →

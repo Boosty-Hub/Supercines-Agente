@@ -15,9 +15,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
-import { modelFor } from "../_shared/models.ts";
+import { effortFor, modelFor } from "../_shared/models.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
-import { recordUsage } from "../_shared/usage.ts";
+import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 
@@ -144,7 +144,7 @@ Evaluá según las instrucciones del system prompt y devolvé JSON estricto.`;
     system: grader.prompt,
     messages: [{ role: "user", content: userContext }],
     output_config: {
-      effort: LLM_PROFILES.grader.effort,
+      ...effortFor(model, LLM_PROFILES.grader.effort),
       format: { type: "json_schema", schema },
     },
   });
@@ -314,6 +314,11 @@ async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthrop
       }
       count++;
     } catch (err) {
+      await recordFailedLlmUsage(supabase, err, {
+        component: "grader", model: graderModel, draftId: draft.id,
+        metadata: { grader_id: grader.id, grader_slug: grader.slug },
+        pricingOverrideRaw: cfg.get("AI_PRICING_OVERRIDES"),
+      });
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`grader ${grader.slug} en draft ${draft.id}:`, msg);
       // Insert fila de error para visibilidad

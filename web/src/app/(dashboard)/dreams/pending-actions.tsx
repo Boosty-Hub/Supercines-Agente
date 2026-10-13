@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, ConfirmDialog } from "@/components/ui";
 
-// Aprobar mueve el dream a /dreams/ (el agente lo adopta al instante).
+// Aprobar mueve el dream a /dreams/ (entra al digest y el agente lo adopta en menos de 1 minuto).
 // Descartar lo borra definitivamente.
 export default function PendingDreamActions({ id }: { id: string }) {
   const router = useRouter();

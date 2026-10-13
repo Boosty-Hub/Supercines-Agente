@@ -189,6 +189,9 @@ const PATH_SCOPES: ReadonlyArray<{ readonly prefix: string; readonly scope: Scop
   { prefix: "/api/response-limits", scope: "configuracion" },
   { prefix: "/api/media-response", scope: "configuracion" },
   { prefix: "/api/kommo", scope: "configuracion" },
+  // Recuperación de plataforma desde la franja de incidentes: omitir la cola atascada,
+  // silenciar la franja. VER la franja lo hace cualquiera; ACTUAR exige configuración.
+  { prefix: "/api/incidents", scope: "configuracion" },
   { prefix: "/api/provision", scope: "configuracion" },
   // /api/routing no existe en el template: switches de ruteo de leads
   // (kill switch, confianza mínima, asignados) editados desde

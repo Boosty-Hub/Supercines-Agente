@@ -449,3 +449,6 @@ verify_jwt = false
 
 [functions.sync-pipelines]
 verify_jwt = false
+
+[functions.health-scan]
+verify_jwt = false

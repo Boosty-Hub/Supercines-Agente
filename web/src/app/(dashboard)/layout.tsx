@@ -10,6 +10,8 @@ import { BoostySupportWidget } from "./boosty-widget";
 import { EmbedTabsNav } from "./embed-tabs-nav";
 import { NavProgress } from "./nav-progress";
 import { SetupDrawer } from "./setup-drawer";
+import { TorreDeControl } from "./torre-de-control";
+import SystemBanner from "./system-banner";
 import { SystemHaltedBanner } from "./system-halted-banner";
 
 export default async function DashboardLayout({
@@ -28,7 +30,7 @@ export default async function DashboardLayout({
       .is("acknowledged_at", null),
     supabase
       .from("kommo_publish_config")
-      .select("bcv_rate_enabled")
+      .select("bcv_rate_enabled, agent_enabled, publishing_enabled")
       .eq("is_active", true)
       .maybeSingle(),
     // Apagado total: query APARTE del select de arriba — si la migración que
@@ -39,6 +41,12 @@ export default async function DashboardLayout({
   ]);
 
   const systemHalted = haltCfg?.system_halted === true;
+  // Estado inline de la torre de control — mismo criterio que /inbox y Ajustes:
+  // generate-response solo bloquea con agent_enabled === false explícito.
+  const systemStatus = {
+    agentEnabled: pubCfg?.agent_enabled !== false,
+    publishingEnabled: pubCfg?.publishing_enabled === true,
+  };
   const email = user?.email ?? "";
   const alerts = alertsCount ?? 0;
   const scope = getScope(user);
@@ -64,18 +72,25 @@ export default async function DashboardLayout({
   if (isEmbed) {
     return (
       <div className="flex flex-col h-dvh overflow-hidden bg-neutral-50">
+        {/* La franja va ARRIBA DE TODO y fuera del <main> scrolleable: un apagón
+            del agente no puede quedar fuera de vista por haber scrolleado. */}
+        <SystemBanner puedeActuar={scope === "configuracion"} />
         {systemHalted && <SystemHaltedBanner />}
         <Suspense fallback={null}>
           <NavProgress />
         </Suspense>
         <EmbedTabsNav label={label} alertsCount={alerts} scope={scope} />
-        <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+        <div className="flex min-h-0 flex-1">
+          <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+          <TorreDeControl conteoInicial={alerts} systemStatusInicial={systemStatus} />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden bg-neutral-50">
+      <SystemBanner puedeActuar={scope === "configuracion"} />
       {systemHalted && <SystemHaltedBanner />}
       <div className="flex min-h-0 flex-1">
         <Suspense fallback={null}>
@@ -86,6 +101,7 @@ export default async function DashboardLayout({
           <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} scope={scope} />
           <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
         </div>
+        <TorreDeControl conteoInicial={alerts} systemStatusInicial={systemStatus} />
         {showSetupDrawer && <SetupDrawer state={setupState} />}
       </div>
       <BoostySupportWidget email={email} />

@@ -30,13 +30,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { callInternal } from "../_shared/auth.ts";
-import {
-  decideWebhook,
-  extractToken,
-  FORBIDDEN,
-  loadWebhookAuthState,
-  noteWebhookRequest,
-} from "../_shared/webhook-auth.ts";
+import { authorizeWebhook, extractToken, FORBIDDEN, noteWebhookRequest } from "../_shared/webhook-auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -193,17 +187,16 @@ Deno.serve(async (req: Request) => {
   }
 
   // Autenticidad: antes de leer el cuerpo. Rechazo rápido, genérico y sin encolar.
-  const decision = decideWebhook(
-    extractToken(new URL(req.url), req.headers),
-    await loadWebhookAuthState(supabase, LEGACY_ENV_SECRET),
-  );
+  // authorizeWebhook espera la base como mucho AUTH_WAIT_MS (fail-open / último estado
+  // conocido): leer el estado nunca puede colgar la respuesta (invariante 6).
+  const decision = await authorizeWebhook(supabase, extractToken(new URL(req.url), req.headers), LEGACY_ENV_SECRET);
   if (!decision.allow) {
     console.warn(`kommo-webhook: rechazado (${decision.reason})`);
     return FORBIDDEN();
   }
   if (decision.reason === "ok" || decision.reason === "unsigned_permissive") {
     // Estrangulado (1/min) y después de responder: no agrega latencia al webhook.
-    const note = noteWebhookRequest(supabase, decision.signed);
+    const note = noteWebhookRequest(supabase, decision.signed, Date.now(), decision.current === true);
     // @ts-ignore: EdgeRuntime existe en Supabase
     if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(note);
   }

@@ -544,10 +544,18 @@ function Timeline({
                             ? "red"
                             : draft.status === "rejected"
                             ? "neutral"
+                            : draft.status === "publishing"
+                            ? "blue"
                             : "amber"
                         }
                       >
-                        {draft.status === "auto_sent" ? "Respuesta automática" : generating ? "escribiendo…" : draft.status}
+                        {draft.status === "auto_sent"
+                          ? "Respuesta automática"
+                          : generating
+                          ? "escribiendo…"
+                          : draft.status === "publishing"
+                          ? "enviando…"
+                          : draft.status}
                       </Badge>
                     </div>
                     {generating ? (

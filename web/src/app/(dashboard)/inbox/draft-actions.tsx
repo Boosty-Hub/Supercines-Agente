@@ -44,6 +44,10 @@ export default function DraftActions({
       </span>
     );
   }
+  if (status === "publishing") {
+    // Reservado por publish-to-kommo (0074): el servidor y la base rechazan cualquier acción.
+    return <span className="text-xs font-medium text-sky-700">Enviando…</span>;
+  }
   if (status === "rejected") {
     return <span className="text-xs text-neutral-500">Rechazado</span>;
   }

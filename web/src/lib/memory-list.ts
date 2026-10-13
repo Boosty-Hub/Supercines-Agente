@@ -79,9 +79,18 @@ export async function createDream(path: string, content: string): Promise<string
   return mem.id;
 }
 
-export async function deleteDream(id: string): Promise<boolean> {
+/**
+ * Borra un dream (activo o pendiente). Devuelve si era ACTIVO (/dreams/): solo un
+ * activo forma parte del digest, así que solo ahí hace falta reconsolidarlo. Si no
+ * se puede saber (la lectura previa falló), se asume activo: una reconstrucción de
+ * más cuesta una llamada; una de menos deja vigente una regla que el operador acaba
+ * de borrar.
+ */
+export async function deleteDream(id: string): Promise<{ wasActive: boolean }> {
   const { apiKey, storeId } = await masterCreds();
-  return deleteMemory(apiKey, storeId, id);
+  const mem = await retrieveMemory(apiKey, storeId, id).catch(() => null);
+  await deleteMemory(apiKey, storeId, id);
+  return { wasActive: mem ? mem.path.startsWith("/dreams/") : true };
 }
 
 export function parseFrontmatter(content: string): { meta: Record<string, string>; body: string } {
@@ -98,10 +107,20 @@ export function parseFrontmatter(content: string): { meta: Record<string, string
 /**
  * Dispara la reconsolidación del digest de dreams (runtime_config.DREAMS_DIGEST,
  * lo construye dreams-run en modo digest_only) tras una mutación del dashboard
- * (aprobar / borrar / importar). Fire-and-forget: la mutación no depende del
- * rebuild — si falla, la próxima corrida programada de dreams-run lo repara.
- * Sin esto, un dream borrado seguiría vigente en el digest hasta 24h.
+ * (aprobar / borrar / importar). Sin esto, un dream borrado seguiría vigente en el
+ * digest hasta la próxima corrida.
+ *
+ * Fail-open y NO fire-and-forget a ciegas: en el runtime serverless un fetch sin
+ * await puede congelarse antes de salir. dreams-run responde 202 de inmediato (el
+ * trabajo corre en su waitUntil), así que esperar la respuesta cuesta milisegundos.
+ * Si falla, la mutación NO se revierte: la próxima corrida de dreams-run repara el
+ * digest.
  */
-export function triggerDigestRebuild(): void {
-  callInternalFunction("dreams-run", { digest_only: true }).catch(() => {});
+export async function triggerDigestRebuild(): Promise<void> {
+  try {
+    const res = await callInternalFunction("dreams-run", { digest_only: true }, { timeoutMs: 8000 });
+    if (!res.ok) console.warn("triggerDigestRebuild:", res.status);
+  } catch (err) {
+    console.warn("triggerDigestRebuild:", err instanceof Error ? err.message : String(err));
+  }
 }

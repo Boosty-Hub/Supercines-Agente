@@ -74,7 +74,7 @@ export async function POST(request: Request) {
     }
   }
 
-  if (inserted > 0) triggerDigestRebuild();
+  if (inserted > 0) await triggerDigestRebuild();
 
   return NextResponse.json({
     ok: true,

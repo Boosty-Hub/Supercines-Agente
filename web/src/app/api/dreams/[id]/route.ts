@@ -15,8 +15,9 @@ export async function DELETE(
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    await deleteDream(params.id);
-    triggerDigestRebuild();
+    const { wasActive } = await deleteDream(params.id);
+    // Solo un dream ACTIVO forma parte del digest: borrar un pendiente no lo cambia.
+    if (wasActive) await triggerDigestRebuild();
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

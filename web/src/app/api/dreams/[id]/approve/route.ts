@@ -22,7 +22,7 @@ export async function POST(
         { status: 404 }
       );
     }
-    triggerDigestRebuild();
+    await triggerDigestRebuild();
     return NextResponse.json({ ok: true, path: res.path });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

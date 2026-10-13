@@ -1,7 +1,22 @@
 packages:
   - "."
+
+# Scripts de build permitidos: ÚNICA fuente (package.json NO lleva campo "pnpm"). Con la
+# versión fijada en "packageManager" (pnpm 10.32.1) este setting se lee de acá.
+# unrs-resolver: binding nativo que arrastra eslint-config-next (solo dev/lint).
 allowBuilds:
   unrs-resolver: true
+
+# Advisories aceptados de forma explícita (pnpm audit los omite).
+auditConfig:
+  ignoreGhsas:
+    # braces <=3.0.3 (DoS por patrones anidados, SIN versión parcheada publicada: el
+    # fix no existe). Ruta única: eslint-config-next > @next/eslint-plugin-next >
+    # fast-glob > micromatch > braces. Es DEV-ONLY (el linter, nunca en el bundle ni
+    # en runtime) y solo expandiría patrones glob escritos por nosotros, no entrada de
+    # usuarios. `pnpm audit --prod` queda limpio sin necesidad de este ignore; se
+    # acepta para que `pnpm audit` completo sea verde. Revisar al subir eslint-config-next.
+    - GHSA-vfj7-8cjw-p6xm
 # Overrides de dependencias TRANSITIVAS con vulnerabilidades conocidas (pnpm audit).
 # pnpm >=10 lee ESTE archivo e ignora el campo "pnpm.overrides" de package.json: es la
 # única fuente. Directas: next 15.5.x (parche de la RCE de Image Optimization), react 19,

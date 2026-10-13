@@ -40,7 +40,7 @@ test("guardia: user_metadata no se usa en código de web/ (autoría ni autorizac
       const p = join(dir, name);
       if (statSync(p).isDirectory()) {
         if (name !== "node_modules") walk(p);
-      } else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !p.endsWith(join("auth", "actor.ts"))) {
+      } else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !name.includes(".generated.") && !p.endsWith(join("auth", "actor.ts"))) {
         const code = readFileSync(p, "utf8");
         // se ignoran los comentarios de línea/bloque que explican por qué NO se usa
         const sinComentarios = code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");

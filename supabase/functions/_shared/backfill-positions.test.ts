@@ -5,7 +5,7 @@
 // Correr con: deno test --allow-read supabase/functions/_shared/backfill-positions.test.ts
 
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
-import { runPositionsBackfill, type BackfillDeps, type BackfillProgress } from "./backfill-positions.ts";
+import { LeaseLostError, runPositionsBackfill, type BackfillDeps, type BackfillProgress } from "./backfill-positions.ts";
 import type { KommoLeadPosition } from "./kommo.ts";
 
 function lead(id: number): KommoLeadPosition {
@@ -15,9 +15,17 @@ function lead(id: number): KommoLeadPosition {
 /** Deps de mentira: `pages[i]` es la página i+1; guarda cada save() en `saved`. */
 function fakeDeps(
   pages: Array<{ leads: KommoLeadPosition[]; hasMore: boolean } | Error>,
-  opts: { clock?: { t: number }; applyReturns?: number; missing?: number; finalizeError?: Error } = {},
+  opts: {
+    clock?: { t: number };
+    applyReturns?: number;
+    missing?: number;
+    finalizeError?: Error;
+    /** El save número N (1-based) y los siguientes lanzan LeaseLostError (otro worker es el dueño). */
+    leaseLostFromSave?: number;
+  } = {},
 ) {
   const saved: BackfillProgress[] = [];
+  const attemptedSaves: BackfillProgress[] = [];
   const fetched: number[] = [];
   const slept: number[] = [];
   const finalized: number[] = [];
@@ -39,6 +47,10 @@ function fakeDeps(
       return opts.finalizeError ? Promise.reject(opts.finalizeError) : Promise.resolve(opts.missing ?? 0);
     },
     save: (p) => {
+      attemptedSaves.push(p);
+      if (opts.leaseLostFromSave && attemptedSaves.length >= opts.leaseLostFromSave) {
+        return Promise.reject(new LeaseLostError());
+      }
       saved.push(p);
       return Promise.resolve();
     },
@@ -49,7 +61,7 @@ function fakeDeps(
       return Promise.resolve();
     },
   };
-  return { deps, saved, fetched, slept, finalized, readAts, clock };
+  return { deps, saved, attemptedSaves, fetched, slept, finalized, readAts, clock };
 }
 
 const START = { nextPage: 1, scanned: 0, updated: 0 };
@@ -165,4 +177,25 @@ Deno.test("runPositionsBackfill: cada página se aplica con el instante en que s
   ]);
   await runPositionsBackfill(START, deps, OPTS);
   assertEquals(readAts, [1001, 1002]);
+});
+
+Deno.test("runPositionsBackfill: lease perdido al guardar → PARA sin pedir más páginas ni guardar 'failed' (no pisa al nuevo dueño)", async () => {
+  const pages = [1, 2, 3, 4].map((i) => ({ leads: [lead(i)], hasMore: i < 4 }));
+  const { deps, saved, attemptedSaves, fetched } = fakeDeps(pages, { leaseLostFromSave: 2 });
+  const r = await runPositionsBackfill(START, deps, OPTS);
+  assertEquals(fetched, [1, 2], "tras perder el lease no se lee ninguna página más");
+  assertEquals(saved.map((p) => p.nextPage), [2], "solo quedó guardado lo que se guardó siendo dueño");
+  assertEquals(attemptedSaves.length, 2, "no se intenta guardar un 'failed' después de perder el lease");
+  assertEquals(r.status, "failed");
+  assertEquals(r.error, new LeaseLostError().message);
+});
+
+Deno.test("runPositionsBackfill: lease perdido durante finalize (el latido no pudo renovar) → no guarda 'done' ni 'failed'", async () => {
+  const { deps, saved, attemptedSaves } = fakeDeps([{ leads: [lead(1)], hasMore: false }], {
+    finalizeError: new LeaseLostError(),
+  });
+  const r = await runPositionsBackfill(START, deps, OPTS);
+  assertEquals(attemptedSaves.length, 0);
+  assertEquals(saved.length, 0);
+  assertEquals(r.status, "failed");
 });

@@ -55,7 +55,7 @@ import {
   fetchPipelinesFull,
   KOMMO_IDS_PER_REQUEST,
 } from "../_shared/kommo.ts";
-import { runPositionsBackfill } from "../_shared/backfill-positions.ts";
+import { LeaseLostError, runPositionsBackfill } from "../_shared/backfill-positions.ts";
 import { reconcileLeadIds, type ReconcileDeps } from "../_shared/reconcile-leads.ts";
 import { interpretClaim, type ClaimDecision, type ClaimRow } from "../_shared/backfill-claim.ts";
 
@@ -173,13 +173,20 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
         });
         if (candErr) throw new Error(`kommo_missing_candidates: ${candErr.message}`);
         const ids = ((data ?? []) as Array<number | string>).map(Number);
-        // La verificación por id puede durar más que el lease: se renueva tras cada lote.
+        // La verificación por id puede durar más que el lease: se renueva tras cada lote,
+        // SOLO como dueño (lease_token). Si la base lo rechaza, otro worker reclamó el
+        // recorrido: se para (LeaseLostError) en vez de extenderle el lease ajeno.
         const renewLease = async () => {
-          const { error: leaseErr } = await supabase
-            .from("kommo_backfill")
-            .update({ lease_until: new Date(Date.now() + LEASE_SECONDS * 1000).toISOString() })
-            .eq("job", JOB);
-          if (leaseErr) console.warn("sync-pipelines: no se pudo renovar el lease:", leaseErr.message);
+          const { data: renewed, error: leaseErr } = await supabase.rpc("renew_kommo_backfill_lease", {
+            p_job: JOB,
+            p_token: from.leaseToken,
+            p_lease_seconds: LEASE_SECONDS,
+          });
+          if (leaseErr) {
+            console.warn("sync-pipelines: no se pudo renovar el lease:", leaseErr.message);
+            return;
+          }
+          if (renewed !== true) throw new LeaseLostError();
         };
         const r = await reconcileLeadIds(ids, reconcileDeps(domain, token, renewLease), {
           batchSize: KOMMO_IDS_PER_REQUEST,
@@ -188,23 +195,21 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
         if (r.suspicious) console.warn(`sync-pipelines: un lote completo de candidatos volvió vacío de Kommo (de ${r.checked}): sus ids no se marcan`);
         return r.marked;
       },
+      // Guarda como dueño del lease (save_kommo_backfill_progress, 0065): 'running' lo
+      // renueva; pending/failed/done lo sueltan. false = otro worker es el dueño → para.
       save: async (p) => {
-        const finished = p.status === "done";
-        const released = p.status !== "running"; // pending/failed/done sueltan el lease
-        const { error: saveErr } = await supabase
-          .from("kommo_backfill")
-          .update({
-            status: p.status,
-            next_page: p.nextPage,
-            scanned: p.scanned,
-            updated: p.updated,
-            last_error: p.error ?? null,
-            lease_until: released ? null : new Date(Date.now() + LEASE_SECONDS * 1000).toISOString(),
-            finished_at: finished ? new Date().toISOString() : null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("job", JOB);
-        if (saveErr) throw new Error(`kommo_backfill update: ${saveErr.message}`);
+        const { data: own, error: saveErr } = await supabase.rpc("save_kommo_backfill_progress", {
+          p_job: JOB,
+          p_token: from.leaseToken,
+          p_status: p.status,
+          p_next_page: p.nextPage,
+          p_scanned: p.scanned,
+          p_updated: p.updated,
+          p_error: p.error ?? null,
+          p_lease_seconds: LEASE_SECONDS,
+        });
+        if (saveErr) throw new Error(`save_kommo_backfill_progress: ${saveErr.message}`);
+        if (own !== true) throw new LeaseLostError();
       },
       now: () => Date.now(),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

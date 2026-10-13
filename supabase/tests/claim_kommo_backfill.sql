@@ -188,6 +188,44 @@ update kommo_backfill set status='done', lease_until=null, updated_at=now() - in
 select outcome from claim_kommo_backfill('lead_positions', 150, true);
 select pg_temp.expect('restart vacía kommo_backfill_seen', (select count(*) from kommo_backfill_seen) = 0);
 
+-- 10b) A-S3: dueño del lease (lease_token). Renovar y guardar progreso exigen el token.
+update kommo_backfill set status='pending', next_page=3, scanned=500, updated=0, lease_until=null, lease_token=null,
+       updated_at=now() where job='lead_positions';
+create temp table t_lease (who text primary key, token uuid);
+insert into t_lease select 'A', lease_token from claim_kommo_backfill('lead_positions', 150, false);
+select pg_temp.expect('el reclamo devuelve lease_token', (select token is not null from t_lease where who = 'A'));
+select pg_temp.expect('busy no devuelve token',
+  (select outcome = 'busy' and lease_token is null from claim_kommo_backfill('lead_positions', 150, false)));
+select pg_temp.expect('el dueño renueva su lease',
+  renew_kommo_backfill_lease('lead_positions', (select token from t_lease where who = 'A'), 150));
+select pg_temp.expect('un token ajeno NO renueva', not renew_kommo_backfill_lease('lead_positions', gen_random_uuid(), 150));
+select pg_temp.expect('un token NULL NO renueva', not renew_kommo_backfill_lease('lead_positions', null, 150));
+select pg_temp.expect('el dueño guarda progreso (running)',
+  save_kommo_backfill_progress('lead_positions', (select token from t_lease where who = 'A'), 'running', 4, 750, 1));
+select pg_temp.expect('…y su lease sigue vigente con el mismo token',
+  (select next_page = 4 and lease_until > now() and lease_token = (select token from t_lease where who = 'A')
+     from kommo_backfill where job = 'lead_positions'));
+-- A se cuelga: su lease vence y B reclama el recorrido.
+update kommo_backfill set lease_until = now() - interval '1 second' where job='lead_positions';
+insert into t_lease select 'B', lease_token from claim_kommo_backfill('lead_positions', 150, false) where outcome = 'claimed';
+select pg_temp.expect('vencido el lease, B reclama con OTRO token y continua en la 4',
+  (select count(*) = 2 and count(distinct token) = 2 from t_lease)
+  and (select next_page = 4 from kommo_backfill where job='lead_positions'));
+select pg_temp.expect('A (viejo dueño) ya NO puede renovar el lease de B',
+  not renew_kommo_backfill_lease('lead_positions', (select token from t_lease where who = 'A'), 150));
+select pg_temp.expect('A tampoco puede pisar el progreso de B',
+  not save_kommo_backfill_progress('lead_positions', (select token from t_lease where who = 'A'), 'failed', 99, 0, 0, 'tarde'));
+select pg_temp.expect('…el recorrido sigue running, en la 4 y con el token de B',
+  (select status = 'running' and next_page = 4 and last_error is null and lease_token = (select token from t_lease where who = 'B')
+     from kommo_backfill where job = 'lead_positions'));
+select pg_temp.expect('B termina (done): suelta lease y token',
+  save_kommo_backfill_progress('lead_positions', (select token from t_lease where who = 'B'), 'done', 6, 1000, 2));
+select pg_temp.expect('…done con finished_at y sin lease ni token',
+  (select status = 'done' and finished_at is not null and lease_until is null and lease_token is null
+     from kommo_backfill where job = 'lead_positions'));
+select pg_temp.expect('tras soltarlo, B ya no renueva (el token se borró)',
+  not renew_kommo_backfill_lease('lead_positions', (select token from t_lease where who = 'B'), 150));
+
 -- 11) Freno de pipelines en la base.
 delete from kommo_sync_state where true;
 select pg_temp.expect('primer refresco: gana', claim_kommo_pipelines_refresh(30));
@@ -201,6 +239,8 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
     select 1
       from unnest(array[
         'claim_kommo_backfill(text,int,boolean,int)',
+        'renew_kommo_backfill_lease(text,uuid,int)',
+        'save_kommo_backfill_progress(text,uuid,text,int,int,int,text,int)',
         'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text,uuid)',
         'record_lead_stage_event(uuid,bigint,bigint,bigint,bigint,text,text,text,text,uuid,text,int,boolean,uuid)',
         'apply_kommo_lead_positions(jsonb,timestamptz)',
@@ -225,6 +265,7 @@ select pg_temp.expect('todas las funciones de 0061/0060 fijan search_path = publ
      where n.nspname = 'public'
        and p.proname in ('sync_kommo_pipelines','record_lead_stage_event','apply_lead_position','inbox_lead_summaries',
                          'claim_kommo_pipelines_refresh','claim_kommo_backfill','apply_kommo_lead_positions',
+                         'renew_kommo_backfill_lease','save_kommo_backfill_progress',
                          'kommo_missing_candidates','kommo_gap_lead_ids','mark_kommo_leads_missing',
                          'trigger_sync_pipelines','gasto_mes_actual')
        and coalesce(p.proconfig, '{}'::text[]) <> array['search_path=public, pg_temp']));

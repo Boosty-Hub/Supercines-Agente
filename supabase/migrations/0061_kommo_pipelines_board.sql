@@ -669,6 +669,11 @@ create table if not exists kommo_backfill (
   updated_at  timestamptz not null default now()
 );
 
+-- Dueño del lease: uuid nuevo en cada reclamo. Renovar el lease y guardar el progreso
+-- exigen este token (renew_kommo_backfill_lease / save_kommo_backfill_progress): un
+-- worker que perdió el lease (se le venció y otro lo reclamó) ya no puede extender ni
+-- pisar el recorrido del nuevo dueño.
+alter table kommo_backfill add column if not exists lease_token uuid;
 alter table kommo_backfill enable row level security;
 drop policy if exists kommo_backfill_read on kommo_backfill;
 create policy kommo_backfill_read on kommo_backfill for select to authenticated using (true);
@@ -731,10 +736,13 @@ grant execute on function claim_kommo_pipelines_refresh(int) to service_role;
 -- completan por id (kommo_gap_lead_ids), sin recorrer todo Kommo.
 -- p_cooldown_seconds se mide desde el último movimiento del recorrido
 -- (updated_at: lo toca el claim y cada página guardada).
--- DROP: cambia la firma respecto de las versiones anteriores.
+-- 'claimed'/'restarted' devuelven lease_token: el worker lo presenta para renovar el
+-- lease y guardar progreso (ver abajo); los demás desenlaces lo devuelven NULL.
+-- DROP: cambia la firma / el tipo de retorno (lease_token) respecto de las versiones anteriores.
 drop function if exists claim_kommo_backfill(text, int, boolean);
 drop function if exists claim_kommo_backfill(text, int, boolean, int, boolean, int);
-create or replace function claim_kommo_backfill(
+drop function if exists claim_kommo_backfill(text, int, boolean, int);
+create function claim_kommo_backfill(
   p_job text,
   p_lease_seconds int default 150,
   p_restart boolean default false,
@@ -746,7 +754,8 @@ returns table (
   next_page           int,
   scanned             int,
   updated             int,
-  retry_after_seconds int
+  retry_after_seconds int,
+  lease_token         uuid
 ) language plpgsql set search_path = public, pg_temp as $$
 declare
   b          kommo_backfill%rowtype;
@@ -755,12 +764,12 @@ declare
 begin
   select * into b from kommo_backfill k where k.job = p_job for update;
   if not found then
-    return query select 'missing'::text, null::text, null::int, null::int, null::int, null::int;
+    return query select 'missing'::text, null::text, null::int, null::int, null::int, null::int, null::uuid;
     return;
   end if;
 
   if b.lease_until is not null and b.lease_until > now() then
-    return query select 'busy'::text, b.status, b.next_page, b.scanned, b.updated, null::int;
+    return query select 'busy'::text, b.status, b.next_page, b.scanned, b.updated, null::int, null::uuid;
     return;
   end if;
 
@@ -768,11 +777,11 @@ begin
 
   if b.status = 'done' then
     if not p_restart then
-      return query select 'done'::text, b.status, b.next_page, b.scanned, b.updated, null::int;
+      return query select 'done'::text, b.status, b.next_page, b.scanned, b.updated, null::int, null::uuid;
       return;
     end if;
     if v_wait > 0 then
-      return query select 'cooldown'::text, b.status, b.next_page, b.scanned, b.updated, v_wait;
+      return query select 'cooldown'::text, b.status, b.next_page, b.scanned, b.updated, v_wait, null::uuid;
       return;
     end if;
     v_restart := true;
@@ -781,6 +790,7 @@ begin
   update kommo_backfill k
      set status      = 'running',
          lease_until = now() + make_interval(secs => p_lease_seconds),
+         lease_token = gen_random_uuid(),
          next_page   = case when v_restart then 1 else k.next_page end,
          scanned     = case when v_restart then 0 else k.scanned end,
          updated     = case when v_restart then 0 else k.updated end,
@@ -797,12 +807,74 @@ begin
   end if;
 
   return query select case when v_restart then 'restarted' else 'claimed' end,
-                      b.status, b.next_page, b.scanned, b.updated, null::int;
+                      b.status, b.next_page, b.scanned, b.updated, null::int, b.lease_token;
 end;
 $$;
 
 revoke execute on function claim_kommo_backfill(text, int, boolean, int) from public, anon, authenticated;
 grant execute on function claim_kommo_backfill(text, int, boolean, int) to service_role;
+
+-- Renueva el lease SOLO si quien llama sigue siendo el dueño (mismo lease_token) y el
+-- recorrido sigue 'running'. false = lo perdió: el worker debe dejar de trabajar (otro
+-- reclamó el recorrido tras vencer su lease). Un lease vencido que NADIE reclamó todavía
+-- se puede renovar: el token sigue siendo suyo, no hay otro dueño al que pisar.
+create or replace function renew_kommo_backfill_lease(p_job text, p_token uuid, p_lease_seconds int default 150)
+returns boolean language plpgsql set search_path = public, pg_temp as $$
+declare
+  v_n int;
+begin
+  if p_token is null then
+    return false;
+  end if;
+  update kommo_backfill k
+     set lease_until = now() + make_interval(secs => p_lease_seconds)
+   where k.job = p_job and k.lease_token = p_token and k.status = 'running';
+  get diagnostics v_n = row_count;
+  return v_n > 0;
+end;
+$$;
+revoke execute on function renew_kommo_backfill_lease(text, uuid, int) from public, anon, authenticated;
+grant execute on function renew_kommo_backfill_lease(text, uuid, int) to service_role;
+
+-- Guarda el progreso del recorrido SOLO si quien llama es el dueño del lease. 'running'
+-- renueva el lease; 'pending'/'failed'/'done' lo sueltan (lease_until y lease_token a
+-- NULL). false = ya no era el dueño: no se escribió nada (el progreso del nuevo dueño
+-- manda).
+create or replace function save_kommo_backfill_progress(
+  p_job           text,
+  p_token         uuid,
+  p_status        text,
+  p_next_page     int,
+  p_scanned       int,
+  p_updated       int,
+  p_error         text default null,
+  p_lease_seconds int  default 150
+)
+returns boolean language plpgsql set search_path = public, pg_temp as $$
+declare
+  v_release boolean := p_status <> 'running';
+  v_n int;
+begin
+  if p_token is null then
+    return false;
+  end if;
+  update kommo_backfill k
+     set status      = p_status,
+         next_page   = p_next_page,
+         scanned     = p_scanned,
+         updated     = p_updated,
+         last_error  = p_error,
+         lease_until = case when v_release then null else now() + make_interval(secs => p_lease_seconds) end,
+         lease_token = case when v_release then null else k.lease_token end,
+         finished_at = case when p_status = 'done' then now() else null end,
+         updated_at  = now()
+   where k.job = p_job and k.lease_token = p_token;
+  get diagnostics v_n = row_count;
+  return v_n > 0;
+end;
+$$;
+revoke execute on function save_kommo_backfill_progress(text, uuid, text, int, int, int, text, int) from public, anon, authenticated;
+grant execute on function save_kommo_backfill_progress(text, uuid, text, int, int, int, text, int) to service_role;
 
 -- Aplica la posición (pipeline + etapa) que Kommo informa para cada lead.
 -- p_leads: [{id, pipeline_id, status_id}], leído de Kommo en p_read_at (el instante

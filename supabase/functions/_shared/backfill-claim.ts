@@ -11,6 +11,8 @@ export type ClaimRow = {
   scanned: number | null;
   updated: number | null;
   retry_after_seconds: number | null;
+  /** Dueño del lease (solo en claimed/restarted): se presenta para renovar y guardar progreso. */
+  lease_token: string | null;
 };
 
 /**
@@ -25,8 +27,11 @@ export type BackfillState = "started" | "continuing" | "busy" | "cooldown" | "id
 
 export type ClaimDecision = {
   state: BackfillState;
-  /** Desde dónde correr; null si esta invocación NO debe recorrer Kommo. */
-  run: { nextPage: number; scanned: number; updated: number } | null;
+  /**
+   * Desde dónde correr y con qué token de dueño del lease; null si esta invocación NO
+   * debe recorrer Kommo.
+   */
+  run: { nextPage: number; scanned: number; updated: number; leaseToken: string } | null;
   retryAfterSeconds: number | null;
 };
 
@@ -35,9 +40,17 @@ export function interpretClaim(row: ClaimRow | undefined | null): ClaimDecision 
   switch (row.outcome) {
     case "restarted":
     case "claimed":
+      // Sin token no hay forma de renovar ni guardar como dueño: no se recorre (una base
+      // sin la columna lease_token es una migración incompleta).
+      if (!row.lease_token) return { state: "unavailable", run: null, retryAfterSeconds: null };
       return {
         state: row.outcome === "restarted" ? "started" : "continuing",
-        run: { nextPage: row.next_page ?? 1, scanned: row.scanned ?? 0, updated: row.updated ?? 0 },
+        run: {
+          nextPage: row.next_page ?? 1,
+          scanned: row.scanned ?? 0,
+          updated: row.updated ?? 0,
+          leaseToken: row.lease_token,
+        },
         retryAfterSeconds: null,
       };
     case "busy":

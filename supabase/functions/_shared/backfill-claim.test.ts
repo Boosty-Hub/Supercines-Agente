@@ -13,13 +13,14 @@ const row = (outcome: string, extra: Partial<ClaimRow> = {}): ClaimRow => ({
   scanned: 1500,
   updated: 40,
   retry_after_seconds: null,
+  lease_token: "tok-1",
   ...extra,
 });
 
 Deno.test("interpretClaim: restarted → started, corre desde el cursor que devolvió la base", () => {
   assertEquals(interpretClaim(row("restarted", { next_page: 1, scanned: 0, updated: 0 })), {
     state: "started",
-    run: { nextPage: 1, scanned: 0, updated: 0 },
+    run: { nextPage: 1, scanned: 0, updated: 0, leaseToken: "tok-1" },
     retryAfterSeconds: null,
   });
 });
@@ -27,7 +28,7 @@ Deno.test("interpretClaim: restarted → started, corre desde el cursor que devo
 Deno.test("interpretClaim: claimed → continuing, conserva el progreso (nunca rebobina)", () => {
   assertEquals(interpretClaim(row("claimed")), {
     state: "continuing",
-    run: { nextPage: 7, scanned: 1500, updated: 40 },
+    run: { nextPage: 7, scanned: 1500, updated: 40, leaseToken: "tok-1" },
     retryAfterSeconds: null,
   });
 });
@@ -52,4 +53,12 @@ Deno.test("interpretClaim: cooldown informa cuánto falta", () => {
 Deno.test("interpretClaim: sin fila (RPC vacío) → unavailable", () => {
   assertEquals(interpretClaim(undefined).state, "unavailable");
   assertEquals(interpretClaim(null).run, null);
+});
+
+Deno.test("interpretClaim: claimed/restarted SIN lease_token → unavailable (no se recorre sin poder probar que es el dueño)", () => {
+  for (const outcome of ["claimed", "restarted"]) {
+    const d = interpretClaim(row(outcome, { lease_token: null }));
+    assertEquals(d.state, "unavailable", outcome);
+    assertEquals(d.run, null, outcome);
+  }
 });

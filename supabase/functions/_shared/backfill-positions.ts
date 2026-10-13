@@ -19,6 +19,10 @@
 //    solo CANDIDATOS (la paginación por offset se corre si borran un lead durante
 //    la lectura) y se verifican por id en Kommo antes de marcar a ninguno. Si
 //    finalize falla queda 'failed' y se reintenta sin perder lo visto.
+//  - Dueño del lease: `save` (y el latido de finalize) solo escriben si este worker sigue
+//    siendo el dueño (lease_token, 0065). Si otro reclamó el recorrido tras vencer el
+//    lease, lanzan LeaseLostError y el bucle PARA sin escribir nada más: ni el progreso ni
+//    un 'failed' que pisaría el recorrido del nuevo dueño.
 
 import type { KommoLeadPosition, KommoLeadsRead } from "./kommo.ts";
 
@@ -36,6 +40,17 @@ export type BackfillProgress = {
 
 export type BackfillStart = { nextPage: number; scanned: number; updated: number };
 
+/**
+ * Este worker ya no es el dueño del lease del recorrido (venció y otro lo reclamó). Lo
+ * lanzan `save` / el latido cuando la base rechaza el token; el bucle para sin escribir.
+ */
+export class LeaseLostError extends Error {
+  constructor(message = "lease perdido: otro worker tomó el recorrido") {
+    super(message);
+    this.name = "LeaseLostError";
+  }
+}
+
 export type BackfillDeps = {
   fetchPage(page: number): Promise<KommoLeadsRead>;
   /**
@@ -48,6 +63,7 @@ export type BackfillDeps = {
    * marca solo los confirmados ausentes (_shared/reconcile-leads.ts). Devuelve cuántos marcó.
    */
   finalize(): Promise<number>;
+  /** Guarda el progreso como dueño del lease; lanza LeaseLostError si ya no lo es. */
   save(progress: BackfillProgress): Promise<void>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -85,6 +101,10 @@ export async function runPositionsBackfill(
       }
     }
   } catch (e) {
+    if (e instanceof LeaseLostError) {
+      // Otro worker es el dueño: su progreso manda. No se guarda nada (tampoco 'failed').
+      return { status: "failed", nextPage, scanned, updated, error: e.message };
+    }
     const failed: BackfillProgress = {
       status: "failed",
       nextPage,
@@ -92,7 +112,10 @@ export async function runPositionsBackfill(
       updated,
       error: e instanceof Error ? e.message : String(e),
     };
-    await deps.save(failed).catch((se) => console.error("backfill: no se pudo guardar el fallo:", se));
+    await deps.save(failed).catch((se) => {
+      if (se instanceof LeaseLostError) return; // ya no es el dueño: no hay nada que guardar
+      console.error("backfill: no se pudo guardar el fallo:", se);
+    });
     return failed;
   }
 }

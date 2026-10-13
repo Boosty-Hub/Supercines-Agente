@@ -9,7 +9,7 @@
 -- disparar el salesbot y antes de registrar el envío, el paso no avanzaba y el
 -- siguiente barrido lo reenviaba.
 --
--- SOLUCIÓN (mismo patrón que la reserva de drafts de 0071). La reserva ES la fila del
+-- SOLUCIÓN (mismo patrón que la reserva de drafts de 0074). La reserva ES la fila del
 -- intento en `follow_ups` (el log de seguimientos, que ya existía):
 --   claim_follow_up ──▶ fila `claimed` (dueño + lease) para (lead, paso)
 --     · lockea la fila del lead y exige que el paso siga siendo follow_up_step + 1;

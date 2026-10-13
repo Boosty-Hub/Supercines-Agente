@@ -41,6 +41,10 @@ Deployá el repo en Netlify o Vercel. El proyecto Next.js vive en `web/`.
 
 **Constraint de build**: el directorio `web/` necesita acceso a `../supabase/` para correr el codegen (`predev`/`prebuild`). Asegurate de que el host clone el repo completo (no solo `web/`). Netlify y Vercel hacen checkout completo por defecto — no necesitás nada extra.
 
+**Versión de pnpm (importante)**: `web/pnpm-lock.yaml` lleva `overrides` (declarados en `web/pnpm-workspace.yaml`) y un pnpm antiguo falla con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` bajo `--frozen-lockfile`. La versión correcta está fijada en `web/package.json` (`"packageManager": "pnpm@10.32.1"`):
+- **Netlify**: `netlify.toml` fija `PNPM_VERSION = "10.32.1"` y `NODE_VERSION = "22"`. Si cambiás `packageManager`, cambiá también `PNPM_VERSION`.
+- **Vercel**: agregá la variable de entorno `ENABLE_EXPERIMENTAL_COREPACK=1` (así Vercel respeta `packageManager`; sin ella elige el pnpm por su cuenta según el lockfile) y en Project Settings → General → Node.js Version elegí `22.x`.
+
 ### Paso 3 — Configurar las 3 variables de entorno en el host
 
 Antes del primer redeploy, configurá estas variables en tu host (Site Settings en Netlify, o Project Settings en Vercel):
@@ -89,10 +93,12 @@ La migración `0073` genera el secreto y deja el webhook en **modo transición**
 
 1. Desplegar migraciones → funciones (`kommo-webhook`) → web, en ese orden.
 2. En **Configuración → Kommo**, botón **«Actualizar en Kommo automáticamente»** (o pegar a mano la URL con `?token=` en Kommo → Integraciones → Webhooks).
-3. Esperar a que la alerta deje de repetirse y pulsar **«Ya lo actualicé: pasar a modo estricto»**. Si no lo pulsás, pasa solo a estricto cuando llegaron requests con secreto y pasaron 24 h sin requests sin secreto.
-4. Rotación: **«Rotar clave»** (la anterior sigue válida 24 h; actualiza Kommo por API si está conectado).
+3. Esperar a que la alerta deje de repetirse y pulsar **«Ya lo actualicé: pasar a modo estricto»**. Si no lo pulsás, pasa solo a estricto cuando llegaron requests con secreto y pasaron 24 h sin requests sin secreto. Si todavía no llegó ninguna request con la clave (o llegó una sin clave en la última hora), el panel te avisa el motivo y solo pasa si lo confirmás.
+4. Rotación: **«Rotar clave»** (la anterior sigue válida 24 h; actualiza Kommo por API si está conectado). Si Kommo no se pudo actualizar, el panel lo muestra como error con el botón «Actualizar en Kommo». No se puede volver a rotar hasta que Kommo confirme la clave vigente (llega una request con ella o «Actualizar en Kommo» sale bien): rotar dos veces seguidas dejaría a Kommo sin ninguna clave válida.
 
-Si el estado no se puede leer (base caída) la función acepta (fail-open): rechazar haría que Kommo deshabilite el webhook.
+Cómo responde la función: contesta **200 siempre y de inmediato** (si tarda o falla de forma sostenida, Kommo deshabilita el webhook) y decide después, con el estado real de la base. Lo que llega con una clave incorrecta, o sin clave en modo estricto, se **descarta sin encolar**: Kommo no se entera, el descarte queda en la alerta «Requests al webhook descartadas» y en Configuración → Kommo. Nunca se acepta en modo estricto por no poder leer la base; si la base está caída y la función nunca pudo leer el estado, ese mensaje se pierde con la alerta «Se perdió un webhook de Kommo».
+
+**El secreto aparece en logs de terceros**: como viaja en la URL (`?token=`), queda en los logs de invocación de Supabase (Edge Functions → Logs) y en el historial de webhooks de Kommo. Quien tenga acceso a esos logs lo ve. Si se exponen (una captura, un ticket de soporte, una cuenta compartida), **rotá la clave**.
 
 ### Paso 7 — Activar el agente
 

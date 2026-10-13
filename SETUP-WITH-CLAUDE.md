@@ -132,14 +132,15 @@ git remote -v   # debe mostrar: origin <ORG>/<NOMBRE>.git
 ### Netlify
 
 1. netlify.com → "Add new site" → "Import from Git" → seleccionar el repo.
-2. **Build settings**: se leen desde `netlify.toml` — ya están correctos (`base = "web"`, `command = "pnpm build"`).
+2. **Build settings**: se leen desde `netlify.toml` — ya están correctos (`base = "web"`, `command = "pnpm build"`, Node 22 y `PNPM_VERSION` = el `packageManager` de `web/package.json`).
 3. Deploy inicial (va a fallar — no hay env vars aún). Eso es esperado.
 
 ### Vercel
 
 1. vercel.com → "Add New" → "Project" → importar repo.
 2. Root directory: `web/`. Build command: `pnpm build`.
-3. Deploy inicial (va a fallar por las mismas razones).
+3. Variable de entorno `ENABLE_EXPERIMENTAL_COREPACK=1` (para que Vercel use el pnpm fijado en `web/package.json` → `packageManager`; con otro pnpm el install falla con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`) y Node.js Version `22.x` (Project Settings → General).
+4. Deploy inicial (va a fallar por las mismas razones).
 
 **Importante — constraint de build**: el directorio `web/` necesita acceso a `../supabase/` para el codegen. Netlify y Vercel hacen checkout completo del repo — funciona sin configuración extra.
 
@@ -218,6 +219,8 @@ Webhook URL (con el secreto; la muestra el dashboard en Configuración → Kommo
 https://<ref>.supabase.co/functions/v1/kommo-webhook?token=<secreto>
 ```
 
+La función responde 200 siempre (si no, Kommo deshabilita el webhook) y descarta en silencio lo que llega con una clave incorrecta, o sin clave en modo estricto: el rechazo NO se ve como un 401 en Kommo, se ve en la alerta «Requests al webhook descartadas». El `?token=` queda en los logs de Supabase y de Kommo: si se exponen, rotá la clave (Configuración → Kommo).
+
 Eventos a habilitar:
 - Mensaje agregado (Message added)
 - Lead agregado (Lead added)
@@ -260,7 +263,7 @@ En el dashboard `/settings`:
 | Síntoma | Causa probable | Fix |
 |---|---|---|
 | El wizard /first-run no avanza tras configurar las vars | Las `NEXT_PUBLIC_*` necesitan un redeploy para ser incluidas en el bundle | Redesplegar el sitio |
-| Webhook Kommo devuelve 401 | `verify_jwt=true` en la Edge Function | Las funciones se despliegan con `verify_jwt=false` vía el wizard. Si desplegaste por CLI, revisá `supabase/config.toml` |
+| Webhook Kommo devuelve 401 (`kommo-webhook` nunca responde 401 por la clave: descarta con 200) | `verify_jwt=true` en la Edge Function | Las funciones se despliegan con `verify_jwt=false` vía el wizard. Si desplegaste por CLI, revisá `supabase/config.toml` |
 | Drafts quedan `pending` para siempre | `ANTHROPIC_AGENT_ID` no seteado en `runtime_config` | Volver a `/setup` → paso Agente |
 | Las páginas `/dreams` o `/voz` dicen "memory_stores/undefined" | Memory Stores no aprovisionados | Volver a `/setup` → paso Memory Stores |
 | Login no funciona | Las nuevas keys `sb_publishable_*` no andan con PostgREST | Usar las legacy JWT keys |

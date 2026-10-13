@@ -33,6 +33,7 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   outcomes_regression: { label: "Bajó la calidad", icon: "📉" },
   budget_exceeded: { label: "Presupuesto mensual", icon: "💸" },
   outbound_blocked: { label: "Texto bloqueado antes de enviar", icon: "🛑" },
+  media_processing_failed: { label: "No se pudo leer un adjunto", icon: "📎" },
   webhook_unsigned: { label: "Webhook de Kommo sin clave", icon: "🔓" },
   webhook_rejected: { label: "Requests al webhook descartadas", icon: "🚫" },
   salesbot_not_delivered: { label: "No se pudo confirmar un envío", icon: "❓" },

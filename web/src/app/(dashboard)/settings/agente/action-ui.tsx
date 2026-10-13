@@ -15,6 +15,7 @@ export function CapabilityCard({
   checked,
   disabled,
   onChange,
+  extra,
 }: {
   icon: string;
   title: string;
@@ -22,22 +23,27 @@ export function CapabilityCard({
   checked: boolean;
   disabled: boolean;
   onChange: (v: boolean) => void;
+  /** Contenido adicional (aviso, configuración) debajo del switch — misma tarjeta. */
+  extra?: React.ReactNode;
 }) {
   return (
     <div
       className={
-        "flex items-start justify-between gap-4 rounded-xl border p-4 transition-colors " +
+        "rounded-xl border p-4 transition-colors " +
         (disabled ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white")
       }
     >
-      <div className="flex items-start gap-3">
-        <span className="text-xl leading-none">{icon}</span>
-        <div className="space-y-0.5">
-          <p className="text-sm font-medium text-neutral-900">{title}</p>
-          <p className="text-xs text-neutral-500">{description}</p>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="text-xl leading-none">{icon}</span>
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium text-neutral-900">{title}</p>
+            <p className="text-xs text-neutral-500">{description}</p>
+          </div>
         </div>
+        <Switch checked={checked} disabled={disabled} onChange={onChange} tone="brand" />
       </div>
-      <Switch checked={checked} disabled={disabled} onChange={onChange} tone="brand" />
+      {extra}
     </div>
   );
 }

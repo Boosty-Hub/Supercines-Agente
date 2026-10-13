@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { SegmentedControl } from "@/components/ui";
 import { FiltersPanel, type Rule, type Limits, type VerticalLite, type ChannelsData, type MediaFlags } from "./filters-panel";
-import { CrmActionsPanel, type CrmFlags } from "./crm-actions-panel";
+import { CrmActionsPanel, type CrmFlags, type HandoffConfig } from "./crm-actions-panel";
 import { BcvPanel } from "./bcv-panel";
 import { BusinessHoursPanel, type BusinessHours } from "./business-hours-panel";
 import { CommentsPanel, type CommentsConfig } from "./comments-panel";
@@ -36,6 +36,7 @@ export function AgenteTab({
   freshness,
   media,
   crm,
+  handoffConfig,
   bcvEnabled,
   bcvHasCustomSource,
   businessHours,
@@ -55,6 +56,7 @@ export function AgenteTab({
   freshness: number;
   media: MediaFlags;
   crm: CrmFlags;
+  handoffConfig: HandoffConfig;
   bcvEnabled: boolean;
   bcvHasCustomSource: boolean;
   businessHours: BusinessHours | null;
@@ -96,7 +98,7 @@ export function AgenteTab({
       </div>
 
       <div className={sec === "acciones" ? "space-y-6" : "hidden"}>
-        <CrmActionsPanel initial={crm} />
+        <CrmActionsPanel initial={crm} handoffConfig={handoffConfig} />
         <RoutingPanel initialConfig={routing} initialAssignees={assignees} />
         <BcvPanel initialEnabled={bcvEnabled} hasCustomSource={bcvHasCustomSource} />
         <CommentsPanel initial={comments} />

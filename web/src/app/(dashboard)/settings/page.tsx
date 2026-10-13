@@ -48,10 +48,12 @@ export default async function SettingsPage({
     "ANTHROPIC_AGENT_VERSION",
     "BCV_RATE_URL",
     "OPENAI_API_KEY",
+    "HANDOFF_STAGE_NAME",
+    "HANDOFF_PIPELINE_NAME",
   ]);
 
   const supabase = createSupabaseServerClient();
-  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, syncStatus] =
+  const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, crmExtraRes, syncStatus] =
     await Promise.all([
       supabase
         .from("agent_skip_rules")
@@ -106,6 +108,9 @@ export default async function SettingsPage({
       // normal. Sumarla al select grande de `pubRes` haría que UN campo
       // faltante rompiera las otras ~30 columnas que sí existen.
       supabase.from("kommo_publish_config").select("system_halted").eq("is_active", true).maybeSingle(),
+      // Gates de las 3 acciones de CRM extra (0067): consulta APARTE por la misma
+      // razón que system_halted (si la migración falta, la página sigue y quedan OFF).
+      supabase.from("kommo_publish_config").select("crm_can_add_note, crm_can_handoff, crm_can_tag").eq("is_active", true).maybeSingle(),
       // ¿El agente vivo en Anthropic coincide con el scaffold del código y con
       // AGENT_MODEL? /settings exige `configuracion` (middleware), o sea que
       // quien llega acá puede sincronizar. Nunca se sincroniza solo: ver
@@ -172,6 +177,13 @@ export default async function SettingsPage({
     moveStage: p?.crm_can_move_stage === true,
     updateLead: p?.crm_can_update_lead === true,
     updateContact: p?.crm_can_update_contact === true,
+    addNote: crmExtraRes.data?.crm_can_add_note === true,
+    handoff: crmExtraRes.data?.crm_can_handoff === true,
+    tag: crmExtraRes.data?.crm_can_tag === true,
+  };
+  const handoffConfig = {
+    stageName: cfg.HANDOFF_STAGE_NAME ?? "",
+    pipelineName: cfg.HANDOFF_PIPELINE_NAME ?? "",
   };
   const comments: CommentsConfig = {
     respond_to_comments: p?.respond_to_comments === true,
@@ -281,6 +293,7 @@ export default async function SettingsPage({
             media={media}
             hasOpenaiKey={Boolean(cfg.OPENAI_API_KEY)}
             crm={crm}
+            handoffConfig={handoffConfig}
             bcvEnabled={p?.bcv_rate_enabled === true}
             bcvHasCustomSource={Boolean(cfg.BCV_RATE_URL)}
             businessHours={fuRes.data ?? null}

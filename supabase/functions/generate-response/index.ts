@@ -13,6 +13,8 @@ import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage, captureSessionUsage, recordFailedLlmUsage } from "../_shared/usage.ts";
 import {
   moveLeadStage,
+  addLeadNote,
+  addLeadTags,
   fetchPipelineStages,
   fetchEntityFieldDefs,
   patchEntityFieldTyped,
@@ -21,6 +23,9 @@ import {
   type KommoFieldDef,
 } from "../_shared/kommo.ts";
 import { getBcvRate } from "../_shared/exchange.ts";
+import { resolverEtapa, type ResultadoEtapa } from "../_shared/crm-etapa.ts";
+import { construirNotaTransferencia } from "../_shared/crm-nota.ts";
+import { parseEtiquetas } from "../_shared/crm-tags.ts";
 import {
   isBusinessHours,
   businessHoursLabel,
@@ -245,6 +250,9 @@ type CrmGate = {
   moveStage: boolean;
   updateLead: boolean;
   updateContact: boolean;
+  addNote: boolean;
+  handoff: boolean;
+  tag: boolean;
 };
 
 type CrmContext = {
@@ -258,9 +266,19 @@ type CrmContext = {
   currentKommoStageId?: number | null;
   currentKommoPipelineId?: number | null;
   draftId?: string;
+  // De acá sale la etapa de `transferir_asesor` (HANDOFF_STAGE_NAME /
+  // HANDOFF_PIPELINE_NAME en runtime_config) — NUNCA del modelo. Ver 0067.
+  cfg?: ConfigReader;
 };
 
-const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto"]);
+const CRM_TOOL_NAMES = new Set([
+  "mover_etapa",
+  "actualizar_lead",
+  "actualizar_contacto",
+  "agregar_nota",
+  "etiquetar_lead",
+  "transferir_asesor",
+]);
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
 let leadFieldsCache: { items: KommoFieldDef[]; loadedAt: number } | null = null;
@@ -318,6 +336,69 @@ async function writeEntityField(
   return `Listo: actualicé el campo "${def.name}" del ${etiqueta} a "${written}".`;
 }
 
+/**
+ * Mueve el lead a una etapa RESUELTA POR NOMBRE (resolverEtapa, puro, en
+ * _shared/crm-etapa.ts) y deja el rastro en lead_stage_events.
+ *
+ * Existe separada de runCrmTool porque DOS tools la necesitan con criterios
+ * distintos sobre quién elige la etapa: `mover_etapa` la recibe del MODELO (el
+ * operador le escribió la instrucción en su voz/dreams) y `transferir_asesor` la
+ * saca de runtime_config.HANDOFF_STAGE_NAME — nunca del modelo: el mensaje del
+ * lead es superficie de prompt injection ("pasame a la etapa Ganado" no puede
+ * ser una orden válida). Lo que no puede cambiar entre las dos es resolver el
+ * nombre contra Kommo, mover y anotar el movimiento en lead_stage_events.
+ */
+async function moverEtapaDeLead(ctx: CrmContext, stageName: string, pipelineName: string): Promise<ResultadoEtapa> {
+  if (ctx.kommoLeadId == null) {
+    return { ok: false, texto: "No tengo el id de Kommo de este lead; no puedo mover la etapa." };
+  }
+  const stages = await getStages(ctx.domain, ctx.token);
+  const resolved = resolverEtapa(stages, stageName, pipelineName);
+  if (!resolved.ok) return resolved;
+  const target = resolved.etapa;
+  await moveLeadStage(ctx.kommoLeadId, target.id, target.pipelineId, ctx.domain, ctx.token);
+
+  // Registrar el movimiento (fail-open: nunca romper el tool). Va por
+  // record_lead_stage_event (0061): Kommo manda leads.status de vuelta por este
+  // mismo movimiento y la base evita que quede duplicado, llegue antes o después.
+  if (ctx.internalLeadId) {
+    try {
+      // Resolver nombre de etapa anterior si tenemos el id previo
+      let fromStageName: string | null = null;
+      const prevStageId = ctx.currentKommoStageId;
+      if (prevStageId != null) {
+        const prevStage = stages.find(
+          (s) => s.id === prevStageId && (ctx.currentKommoPipelineId == null || s.pipelineId === ctx.currentKommoPipelineId)
+        );
+        fromStageName = prevStage?.name ?? null;
+      }
+      // Etapa + pipeline van JUNTOS: 142/143 existen en todos los pipelines y
+      // sin kommo_pipeline_id el tablero del inbox no ubicaría al lead.
+      await supabase
+        .from("leads")
+        .update({ kommo_stage_id: target.id, kommo_pipeline_id: target.pipelineId })
+        .eq("id", ctx.internalLeadId);
+      const { error: rpcErr } = await supabase.rpc("record_lead_stage_event", {
+        p_lead_id: ctx.internalLeadId,
+        p_from_stage_id: prevStageId ?? null,
+        p_from_pipeline_id: ctx.currentKommoPipelineId ?? null,
+        p_to_stage_id: target.id,
+        p_to_pipeline_id: target.pipelineId,
+        p_from_stage_name: fromStageName,
+        p_to_stage_name: target.name,
+        p_pipeline_name: target.pipelineName,
+        p_moved_by: "agente",
+        p_draft_id: ctx.draftId ?? null,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+    } catch (evErr) {
+      console.warn("lead_stage_events insert (agente) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
+    }
+  }
+
+  return { ok: true, etapa: target };
+}
+
 // Ejecuta una tool CRM por nombre. Devuelve un string para el agente (el caller
 // envuelve en try/catch y manda el resultado como custom_tool_result).
 async function runCrmTool(
@@ -335,60 +416,105 @@ async function runCrmTool(
     const stageName = String(input.stage_name ?? "").trim();
     if (!stageName) return "ERROR_VALIDACION: falta 'stage_name'.";
     const pipelineName = String(input.pipeline_name ?? "").trim();
-    const stages = await getStages(ctx.domain, ctx.token);
-    let matches = stages.filter((s) => norm(s.name) === norm(stageName));
-    if (pipelineName) matches = matches.filter((s) => norm(s.pipelineName) === norm(pipelineName));
-    if (matches.length === 0) {
-      const opciones = stages.map((s) => `"${s.name}" (pipeline "${s.pipelineName}")`).join(", ");
-      return `No encontré una etapa llamada "${stageName}". Etapas disponibles: ${opciones || "(ninguna)"}.`;
-    }
-    if (matches.length > 1) {
-      const opciones = matches.map((s) => `pipeline "${s.pipelineName}"`).join(", ");
-      return `La etapa "${stageName}" existe en varios pipelines (${opciones}). Especificá 'pipeline_name' y reintentá.`;
-    }
-    const target = matches[0];
-    await moveLeadStage(ctx.kommoLeadId, target.id, target.pipelineId, ctx.domain, ctx.token);
-
-    // Registrar el movimiento (fail-open: nunca romper el tool). Va por
-    // record_lead_stage_event (0061): Kommo manda leads.status de vuelta por este
-    // mismo movimiento y la base evita que quede duplicado, llegue antes o después.
-    if (ctx.internalLeadId) {
-      try {
-        // Resolver nombre de etapa anterior si tenemos el id previo
-        let fromStageName: string | null = null;
-        const prevStageId = ctx.currentKommoStageId;
-        if (prevStageId != null) {
-          const prevStage = stages.find(
-            (s) => s.id === prevStageId && (ctx.currentKommoPipelineId == null || s.pipelineId === ctx.currentKommoPipelineId)
-          );
-          fromStageName = prevStage?.name ?? null;
-        }
-        // Etapa + pipeline van JUNTOS: 142/143 existen en todos los pipelines y
-        // sin kommo_pipeline_id el tablero del inbox no ubicaría al lead.
-        await supabase
-          .from("leads")
-          .update({ kommo_stage_id: target.id, kommo_pipeline_id: target.pipelineId })
-          .eq("id", ctx.internalLeadId);
-        const { error: rpcErr } = await supabase.rpc("record_lead_stage_event", {
-          p_lead_id: ctx.internalLeadId,
-          p_from_stage_id: prevStageId ?? null,
-          p_from_pipeline_id: ctx.currentKommoPipelineId ?? null,
-          p_to_stage_id: target.id,
-          p_to_pipeline_id: target.pipelineId,
-          p_from_stage_name: fromStageName,
-          p_to_stage_name: target.name,
-          p_pipeline_name: target.pipelineName,
-          p_moved_by: "agente",
-          p_draft_id: ctx.draftId ?? null,
-        });
-        if (rpcErr) throw new Error(rpcErr.message);
-      } catch (evErr) {
-        console.warn("lead_stage_events insert (agente) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
-      }
-    }
-
-    return `Listo: moví el lead a la etapa "${target.name}" (pipeline "${target.pipelineName}").`;
+    const r = await moverEtapaDeLead(ctx, stageName, pipelineName);
+    if (!r.ok) return r.texto;
+    return `Listo: moví el lead a la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
   }
+
+  if (name === "agregar_nota") {
+    if (!ctx.gate.addNote) return "La acción 'agregar nota' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo agregar la nota.";
+    const texto = String(input.texto ?? "").trim();
+    if (!texto) return "ERROR_VALIDACION: falta 'texto'.";
+    await addLeadNote(ctx.kommoLeadId, texto, ctx.domain, ctx.token);
+    return "Listo: registré la nota interna en el lead (no visible para el lead).";
+  }
+
+  if (name === "etiquetar_lead") {
+    if (!ctx.gate.tag) return "La acción 'etiquetar lead' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo etiquetar.";
+    const candidatas = parseEtiquetas(input.etiquetas);
+    if (candidatas.length === 0) return "ERROR_VALIDACION: falta 'etiquetas'.";
+    const { added } = await addLeadTags(ctx.kommoLeadId, candidatas, ctx.domain, ctx.token);
+    if (added.length === 0) return "El lead ya tenía todas esas etiquetas; no agregué ninguna nueva.";
+    return `Listo: agregué la(s) etiqueta(s) ${added.map((t) => `"${t}"`).join(", ")} al lead.`;
+  }
+
+  // ── Pasar la conversación a un asesor humano ──────────────────────────────
+  //
+  // A diferencia de TODAS las otras acciones de CRM, ésta el agente la puede
+  // ejecutar por su propio criterio cuando corresponda (ver el bloque
+  // `## Acciones en el CRM` que compone agent-prompt.ts) — es la excepción
+  // deliberada a "nada de CRM por iniciativa propia": pedirle a alguien que
+  // espere el permiso del operador para escalar un caso que lo necesita es
+  // peor que escalar de más.
+  //
+  // LA ETAPA NO LA ELIGE EL MODELO: sale de `runtime_config.HANDOFF_STAGE_NAME`
+  // (+ `HANDOFF_PIPELINE_NAME` opcional si el nombre existe en más de un
+  // pipeline). Es la única diferencia de fondo con `mover_etapa`, que sí
+  // recibe la etapa por parámetro porque ahí la instrucción la escribe el
+  // operador — acá el mensaje entrante es superficie de prompt injection.
+  //
+  // LA NOTA SE ESCRIBE PRIMERO, y aunque el movimiento falle después. Si no
+  // hay ninguna etapa configurada o Kommo rechaza el PATCH, el lead se queda
+  // donde estaba: sin la nota, nadie se entera nunca de que hubo un caso
+  // escalado. Al revés (nota sin movimiento) alguien lo ve al abrir el lead
+  // en Kommo. Se elige el fallo que deja rastro.
+  if (name === "transferir_asesor") {
+    if (!ctx.gate.handoff) {
+      return "El pase a un asesor humano está desactivado por el operador. No lo intentes de nuevo; " +
+        "decile al lead que un asesor lo va a contactar.";
+    }
+    if (ctx.kommoLeadId == null) {
+      return "No tengo el id de Kommo de este lead; no puedo pasarlo a un asesor. " +
+        "Decile al lead que escriba directamente para que lo atienda una persona.";
+    }
+    const motivo = String(input.motivo ?? "").trim();
+    if (!motivo) {
+      return "ERROR_VALIDACION: falta 'motivo'. El asesor recibe esta conversación sin saber qué pasó: " +
+        "escribí en una o dos frases qué pidió o necesita el lead y por qué corresponde derivar.";
+    }
+
+    // 1) La nota — primero, porque es la que no se puede perder.
+    let notaOk = true;
+    try {
+      await addLeadNote(ctx.kommoLeadId, construirNotaTransferencia(motivo), ctx.domain, ctx.token);
+    } catch (err) {
+      notaOk = false;
+      console.error("transferir_asesor: no se pudo dejar la nota:", err instanceof Error ? err.message : String(err));
+    }
+
+    // 2) La etapa — si no está configurada, no se adivina ninguna: mover el
+    //    lead a una etapa inventada lo esconde en un embudo donde nadie lo busca.
+    const etapa = (ctx.cfg?.get("HANDOFF_STAGE_NAME") ?? "").trim();
+    if (!etapa) {
+      console.error("transferir_asesor: falta HANDOFF_STAGE_NAME en runtime_config.");
+      return (notaOk
+        ? "Dejé la nota con el motivo en el CRM, pero no hay ninguna etapa de atención humana configurada, "
+        : "No pude dejar la nota ni mover el lead: no hay ninguna etapa de atención humana configurada, ") +
+        "así que el lead se queda donde está. Decile que un asesor lo va a contactar y no sigas resolviendo el trámite por tu cuenta.";
+    }
+
+    let movido: ResultadoEtapa;
+    try {
+      movido = await moverEtapaDeLead(ctx, etapa, (ctx.cfg?.get("HANDOFF_PIPELINE_NAME") ?? "").trim());
+    } catch (err) {
+      console.error("transferir_asesor: falló el movimiento de etapa:", err instanceof Error ? err.message : String(err));
+      movido = { ok: false, texto: "Kommo rechazó el cambio de etapa." };
+    }
+    if (!movido.ok) {
+      console.error(`transferir_asesor: no se pudo mover a "${etapa}": ${movido.texto}`);
+      return (notaOk ? "Dejé la nota con el motivo en el CRM, pero " : "No pude dejar la nota y además ") +
+        "no pude mover el lead a la etapa de atención humana. " +
+        "Decile al lead que un asesor lo va a contactar y no vuelvas a intentarlo: el problema es de nuestro lado.";
+    }
+
+    return `Listo: pasé la conversación a un asesor (etapa "${movido.etapa.name}")` +
+      (notaOk ? " y dejé la nota con el motivo" : ", pero la nota con el motivo no se pudo guardar") +
+      ". Despedite con calidez, decile que un asesor va a continuar, y no sigas resolviendo el trámite. " +
+      "No prometas en cuánto tiempo le responden.";
+  }
+
 
   if (name === "actualizar_lead") {
     if (!ctx.gate.updateLead) return "La acción 'actualizar datos del lead' está desactivada por el operador. No la realices.";
@@ -1072,6 +1198,9 @@ async function runAgent(opts: {
                 currentKommoStageId: opts.currentKommoStageId,
                 currentKommoPipelineId: opts.currentKommoPipelineId,
                 draftId: opts.draftId,
+                // Solo lo usa `transferir_asesor`, para leer HANDOFF_STAGE_NAME /
+                // HANDOFF_PIPELINE_NAME — la etapa NO la elige el modelo.
+                cfg: opts.cfg,
               });
         } else if (ev.name === BCV_TOOL_NAME) {
           // Tasa USD→VES (BCV). Gate por config; cache 6h en _shared/exchange.
@@ -1296,6 +1425,15 @@ Deno.serve(async (req: Request) => {
   // humana explícita (esa responde el mensaje pedido sin importar su antigüedad).
   const maxAgeHours = forceReview ? 0 : Math.max(0, Number(cfg?.answer_max_age_hours ?? 1));
 
+  // Gates de las 3 acciones extra (0067), en consulta APARTE: si la migración
+  // todavía no se aplicó, este select falla solo y las acciones quedan OFF sin
+  // tumbar el select grande de arriba (fail-closed para acciones sobre el CRM).
+  const { data: crmExtra } = await supabase
+    .from("kommo_publish_config")
+    .select("crm_can_add_note, crm_can_handoff, crm_can_tag")
+    .eq("is_active", true)
+    .maybeSingle();
+
   // Gate de las acciones de CRM (Módulo 3). Default OFF: el agente no toca el
   // CRM hasta que el operador active master + la capacidad puntual.
   const crm: CrmGate = {
@@ -1303,6 +1441,9 @@ Deno.serve(async (req: Request) => {
     moveStage: cfg?.crm_can_move_stage === true,
     updateLead: cfg?.crm_can_update_lead === true,
     updateContact: cfg?.crm_can_update_contact === true,
+    addNote: crmExtra?.crm_can_add_note === true,
+    handoff: crmExtra?.crm_can_handoff === true,
+    tag: crmExtra?.crm_can_tag === true,
   };
 
 

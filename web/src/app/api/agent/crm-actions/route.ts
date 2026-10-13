@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { setConfigValues } from "@/lib/runtime-config";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 
 // nodejs runtime — syncAgentTools llama a Anthropic.
@@ -8,7 +9,7 @@ export const runtime = "nodejs";
 // Gate de las acciones de CRM (Módulo 3). Prende/apaga, por capacidad, lo que el
 // agente puede hacer en Kommo. El gate en sí es instantáneo (generate-response
 // lee estos flags con TTL 60s, sin redeploy). Además disparamos un sync del
-// agente (idempotente): garantiza que las 3 tools internas queden registradas
+// agente (idempotente): garantiza que las 6 tools internas queden registradas
 // en Anthropic la primera vez que el operador activa una capacidad — así no
 // necesita acordarse de "Guardar identidad" para que el agente las tenga.
 const FIELDS = new Set([
@@ -16,7 +17,17 @@ const FIELDS = new Set([
   "crm_can_move_stage",
   "crm_can_update_lead",
   "crm_can_update_contact",
+  "crm_can_add_note",
+  "crm_can_handoff",
+  "crm_can_tag",
 ]);
+
+// `transferir_asesor` NO recibe la etapa de destino como parámetro del modelo
+// (0058_crm_tools_extra.sql): un mensaje entrante que dijera "pasame a la etapa
+// Ganado" sería una orden válida si viajara por ahí. Sale de estas dos claves de
+// `runtime_config`, que este mismo endpoint escribe junto con el gate — para el
+// operador es UN solo guardado, aunque internamente toque dos tablas.
+const CONFIG_FIELDS = new Set(["HANDOFF_STAGE_NAME", "HANDOFF_PIPELINE_NAME"]);
 
 export async function POST(request: Request) {
   const supabase = createSupabaseServerClient();
@@ -42,8 +53,17 @@ export async function POST(request: Request) {
     }
   }
 
-  if (Object.keys(patch).length === 0) {
-    return NextResponse.json({ error: "sin flags válidos para actualizar" }, { status: 400 });
+  // Las claves de configuración de `transferir_asesor`. String vacío = volver a
+  // "sin configurar" (setConfigValues lo escribe como NULL, que es justo lo que
+  // hace que el runtime no invente ninguna etapa).
+  const configPatch: Record<string, string> = {};
+  CONFIG_FIELDS.forEach((key) => {
+    const v = body[key];
+    if (typeof v === "string") configPatch[key] = v.trim();
+  });
+
+  if (Object.keys(patch).length === 0 && Object.keys(configPatch).length === 0) {
+    return NextResponse.json({ error: "sin cambios para guardar" }, { status: 400 });
   }
 
   // Apagar el master apaga todo (el agente no toca el CRM con master OFF).
@@ -51,13 +71,29 @@ export async function POST(request: Request) {
     patch.crm_can_move_stage = false;
     patch.crm_can_update_lead = false;
     patch.crm_can_update_contact = false;
+    patch.crm_can_add_note = false;
+    patch.crm_can_handoff = false;
+    patch.crm_can_tag = false;
   }
 
-  const { error } = await supabase
-    .from("kommo_publish_config")
-    .update(patch)
-    .eq("is_active", true);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (Object.keys(patch).length > 0) {
+    const { error } = await supabase
+      .from("kommo_publish_config")
+      .update(patch)
+      .eq("is_active", true);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (Object.keys(configPatch).length > 0) {
+    try {
+      await setConfigValues(configPatch, user.email ?? "dashboard");
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : String(e) },
+        { status: 500 }
+      );
+    }
+  }
 
   // Sync idempotente: registra las tools internas en Anthropic si aún no están
   // (no-op si el agente no está aprovisionado). No bloquea la respuesta si falla.
@@ -67,5 +103,5 @@ export async function POST(request: Request) {
     error: String(e),
   }));
 
-  return NextResponse.json({ ok: true, applied: patch, sync });
+  return NextResponse.json({ ok: true, applied: patch, config: configPatch, sync });
 }

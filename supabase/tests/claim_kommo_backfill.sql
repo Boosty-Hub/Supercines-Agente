@@ -162,8 +162,9 @@ select pg_temp.expect('pagina desordenada con repetidos e inexistentes: cambian 
 select pg_temp.expect('…303 y 304 quedaron en 3/30, 301 intacto',
   (select bool_and(kommo_pipeline_id = 3 and kommo_stage_id = 30) from leads where kommo_lead_id in (303, 304))
   and (select kommo_stage_id = 10 from leads where kommo_lead_id = 301));
-select pg_temp.expect('apply_kommo_lead_positions bloquea las filas de la pagina en orden (select … order by id for update)',
-  (select pg_get_functiondef('apply_kommo_lead_positions(jsonb,timestamptz)'::regprocedure) ~ 'order by l\.id\s+for update'));
+-- En SuperCines el núcleo vive en apply_positions_batch (lo comparten el backfill y el funnel sync).
+select pg_temp.expect('apply_positions_batch bloquea las filas de la pagina en orden (select … order by id for update)',
+  (select pg_get_functiondef('apply_positions_batch(jsonb,timestamptz,boolean)'::regprocedure) ~ 'order by l\.id\s+for update'));
 
 -- 9) Recorrido completo: candidatos a inexistentes (W3). NO marca: solo propone.
 delete from leads where true;

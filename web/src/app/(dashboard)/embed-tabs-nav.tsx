@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_GROUPS } from "./nav";
 import { scopeAlcanza, type Scope } from "@/lib/auth/roles";
+import { firstGrapheme } from "@/lib/text-safe";
 
 const ENV_AGENT_LABEL = process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente";
 
@@ -25,7 +26,7 @@ export function EmbedTabsNav({
       {/* Barra de marca compacta */}
       <div className="flex items-center gap-2 border-b border-neutral-100 px-4 py-2">
         <div className="grid h-6 w-6 shrink-0 place-items-center rounded bg-brand text-brand-foreground text-xs font-semibold">
-          {agentLabel.charAt(0).toUpperCase()}
+          {firstGrapheme(agentLabel).toUpperCase()}
         </div>
         <span className="text-sm font-semibold tracking-tight text-neutral-900">
           {agentLabel}

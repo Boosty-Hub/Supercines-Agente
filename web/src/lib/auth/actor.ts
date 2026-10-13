@@ -8,6 +8,8 @@
 //   - el `email` (cambiarlo exige confirmación del nuevo correo).
 // Por eso se guarda el id (actor_user_id) y el nombre a mostrar sale de acá.
 
+import { truncateGraphemes } from "../text-safe.ts";
+
 export type ActorUser = {
   id: string;
   email?: string | null;
@@ -18,7 +20,7 @@ export type ActorUser = {
 export function appMetadataName(appMetadata: Record<string, unknown> | null | undefined): string | null {
   for (const k of ["full_name", "name"]) {
     const v = appMetadata?.[k];
-    if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
+    if (typeof v === "string" && v.trim()) return truncateGraphemes(v.trim(), 120);
   }
   return null;
 }

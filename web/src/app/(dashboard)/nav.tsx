@@ -10,6 +10,7 @@ import {
 import { BcvBanner } from "./bcv-banner";
 import { BOOSTY_MOUNT_DESKTOP, BOOSTY_MOUNT_MOBILE } from "./boosty-widget";
 import { scopeAlcanza, type Scope } from "@/lib/auth/roles";
+import { firstGrapheme } from "@/lib/text-safe";
 
 type BcvData = { rate: number; source: string; fetchedAt: string };
 
@@ -182,7 +183,7 @@ function NavFooter({
   collapsed?: boolean;
 }) {
   // Inicial del email para el avatar
-  const initial = (email || "U").charAt(0).toUpperCase();
+  const initial = firstGrapheme(email || "U").toUpperCase();
 
   if (collapsed) {
     return (
@@ -251,7 +252,7 @@ export function SidebarNav({
   scope?: Scope;
 }) {
   const agentLabel = label || ENV_AGENT_LABEL;
-  const initial = agentLabel.charAt(0).toUpperCase();
+  const initial = firstGrapheme(agentLabel).toUpperCase();
 
   // Colapsado: persistido en localStorage. Arranca expandido y sincroniza al
   // montar para evitar mismatch de hidratación (SSR no tiene localStorage).
@@ -332,7 +333,7 @@ export function MobileNav({
 }) {
   const [open, setOpen] = useState(false);
   const agentLabel = label || ENV_AGENT_LABEL;
-  const initial = agentLabel.charAt(0).toUpperCase();
+  const initial = firstGrapheme(agentLabel).toUpperCase();
 
   return (
     <>

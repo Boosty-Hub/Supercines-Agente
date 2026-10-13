@@ -1,6 +1,7 @@
 // server-only: reads Kommo creds from runtime_config and calls the Kommo REST API.
 // Used by /api/kommo/pipelines and /api/filters/generate.
 import { configValues } from "@/lib/runtime-config";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 export type KommoStage = { id: number; name: string; color: string | null };
 export type KommoPipeline = { id: number; name: string; statuses: KommoStage[] };
@@ -263,7 +264,7 @@ export async function moveLeadInKommo(
       await new Promise((r) => setTimeout(r, 1200));
       continue;
     }
-    const body = (await res.text()).slice(0, 300);
+    const body = truncateGraphemes(await res.text(), 300);
     if (res.status === 401) {
       return { ok: false, status: 502, error: "Kommo rechazó el token (401): hay que reconectar Kommo." };
     }

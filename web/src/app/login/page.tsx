@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { firstGrapheme } from "@/lib/text-safe";
 import { inputCls, errorCls } from "@/components/ui/styles";
 
 export default function LoginPage() {
@@ -41,7 +42,7 @@ export default function LoginPage() {
       >
         <div className="space-y-1">
           <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-brand text-brand-foreground text-sm font-semibold">
-            {(process.env.NEXT_PUBLIC_AGENT_LABEL || "A").charAt(0).toUpperCase()}
+            {firstGrapheme(process.env.NEXT_PUBLIC_AGENT_LABEL || "A").toUpperCase()}
           </div>
           <h1 className="text-[15px] font-semibold tracking-tight text-neutral-900">
             {process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente"}

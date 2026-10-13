@@ -878,12 +878,30 @@ grant execute on function save_kommo_backfill_progress(text, uuid, text, int, in
 
 -- Aplica la posición (pipeline + etapa) que Kommo informa para cada lead.
 -- p_leads: [{id, pipeline_id, status_id}], leído de Kommo en p_read_at (el instante
--- en que se PIDIÓ la página). Respeta el orden de eventos: no pisa una posición
--- cuyo kommo_position_at sea posterior a la lectura (un webhook más nuevo ya la
--- fijó). Solo toca filas que CAMBIAN (cada UPDATE a `leads` dispara un refresco en
--- vivo en todos los inbox abiertos) y NO escribe lead_stage_events: reconciliar no
--- es un movimiento. Anota cada id visto (kommo_backfill_seen) y limpia
+-- en que se PIDIÓ la página, con el reloj de Supabase). Respeta el orden de eventos:
+-- no pisa una posición cuyo kommo_position_at sea posterior a la lectura (un webhook
+-- más nuevo ya la fijó). Solo toca filas que CAMBIAN (cada UPDATE a `leads` dispara
+-- un refresco en vivo en todos los inbox abiertos) y NO escribe lead_stage_events:
+-- reconciliar no es un movimiento. Anota cada id visto (kommo_backfill_seen) y limpia
 -- kommo_missing_at de los leads que Kommo sí devuelve. Devuelve cuántos cambió.
+--
+-- Instante efectivo de la lectura = p_read_at - 5 s (READ_SKEW_MARGIN). p_read_at es el
+-- reloj de Supabase; los eventos de Kommo traen last_modified con SU reloj, en segundos.
+-- Con la lectura fechada en p_read_at, un movimiento REAL hecho en Kommo justo después de
+-- la lectura (T20 + 1 s en Kommo) llegaba con un last_modified anterior a T20 si el reloj
+-- de Kommo atrasaba un par de segundos, y se descartaba como viejo: el lead quedaba en la
+-- etapa leída, que ya no era la real. La lectura sabe que su foto es POSTERIOR a
+-- p_read_at - margen (el pedido salió en p_read_at), así que se fecha en esa cota
+-- inferior: todo evento anterior a ella es seguro previo a la foto (stale, como antes) y
+-- uno dentro del margen se aplica (si era previo a la foto, coincide con ella o lo
+-- corrige el próximo evento). Alternativa descartada: no marcar los leads que no
+-- cambiaron — reabre el caso «lectura T20 bloquea un evento viejo T12» para esos leads,
+-- que es justo el que la marca existe para cerrar.
+--
+-- Bloqueo: al empezar se bloquean las filas de `leads` de la página EN ORDEN DE id
+-- (select … order by id for update). apply_lead_position bloquea una fila por vez; sin
+-- orden fijo, este UPDATE masivo (orden arbitrario) y varios apply_lead_position
+-- concurrentes sobre leads de la misma página podían bloquearse en cruz (deadlock).
 drop function if exists apply_kommo_lead_positions(jsonb);
 -- NÚCLEO ÚNICO de escritura masiva de posición (SuperCines, desvío respecto del
 -- template, que lo tiene todo dentro de apply_kommo_lead_positions): dos llamadores
@@ -896,11 +914,24 @@ drop function if exists apply_kommo_lead_positions(jsonb);
 create or replace function apply_positions_batch(p_leads jsonb, p_read_at timestamptz, p_track_seen boolean)
 returns int language plpgsql set search_path = public, pg_temp as $$
 declare
+  -- READ_SKEW_MARGIN: tolerancia al desfase de reloj Supabase↔Kommo (ver arriba).
+  c_read_skew_margin constant interval := interval '5 seconds';
+  v_at      timestamptz;
   v_updated int;
 begin
   if p_leads is null or jsonb_typeof(p_leads) <> 'array' or jsonb_array_length(p_leads) = 0 then
     return 0;
   end if;
+  -- Misma resolución que apply_lead_position (segundos): sin esto un empate exacto
+  -- con un evento de Kommo dependería de los milisegundos del reloj de Supabase.
+  v_at := date_trunc('second', p_read_at - c_read_skew_margin);
+
+  perform 1
+     from leads l
+    where l.kommo_lead_id in (
+            select (e->>'id')::bigint from jsonb_array_elements(p_leads) e where e->>'id' is not null)
+    order by l.id
+      for update;
 
   if p_track_seen then
     insert into kommo_backfill_seen (kommo_lead_id)
@@ -910,23 +941,28 @@ begin
     on conflict do nothing;
   end if;
 
+  -- Un id repetido en la entrada (lote armado a mano, página corrida) se toma UNA vez
+  -- (la última aparición): dos filas del mismo lead harían fallar el upsert de `seen`
+  -- («ON CONFLICT DO UPDATE cannot affect row a second time») y el UPDATE elegiría una al azar.
   with src as (
-    select (e->>'id')::bigint as kommo_lead_id,
+    select distinct on ((e->>'id')::bigint)
+           (e->>'id')::bigint as kommo_lead_id,
            (e->>'pipeline_id')::bigint as pipeline_id,
            (e->>'status_id')::bigint as status_id
-      from jsonb_array_elements(p_leads) e
+      from jsonb_array_elements(p_leads) with ordinality as t(e, ord)
      where e->>'id' is not null and e->>'pipeline_id' is not null and e->>'status_id' is not null
+     order by (e->>'id')::bigint, ord desc
   ),
   upd as (
     update leads l
        set kommo_pipeline_id = s.pipeline_id,
            kommo_stage_id    = s.status_id,
-           kommo_position_at = p_read_at,
+           kommo_position_at = v_at,
            kommo_missing_at  = null
       from src s
      where l.kommo_lead_id = s.kommo_lead_id
-       and (l.kommo_position_at is null or l.kommo_position_at <= p_read_at)
-       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > p_read_at)
+       and (l.kommo_position_at is null or l.kommo_position_at <= v_at)
+       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > v_at)
        and (l.kommo_pipeline_id is distinct from s.pipeline_id
             or l.kommo_stage_id is distinct from s.status_id
             or l.kommo_missing_at is not null)
@@ -936,10 +972,10 @@ begin
   -- actualización más vieja llegada tarde ya no puede deshacerla.
   seen as (
     insert into lead_position_seen (lead_id, seen_at)
-    select l.id, p_read_at
+    select l.id, v_at
       from leads l join src s on s.kommo_lead_id = l.kommo_lead_id
-     where (l.kommo_position_at is null or l.kommo_position_at <= p_read_at)
-       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > p_read_at)
+     where (l.kommo_position_at is null or l.kommo_position_at <= v_at)
+       and not exists (select 1 from lead_position_seen x where x.lead_id = l.id and x.seen_at > v_at)
     on conflict (lead_id) do update set seen_at = greatest(lead_position_seen.seen_at, excluded.seen_at)
     returning 1
   )

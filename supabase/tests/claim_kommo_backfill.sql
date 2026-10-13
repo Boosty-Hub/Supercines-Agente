@@ -152,8 +152,18 @@ select pg_temp.expect('lectura en t=500: cambia solo 1 (302)',
   apply_kommo_lead_positions('[{"id":301,"pipeline_id":2,"status_id":99},{"id":302,"pipeline_id":2,"status_id":99}]'::jsonb, to_timestamp(500)) = 1);
 select pg_temp.expect('…no pisa la posición fijada en t=1000 (301) y sí la de 302',
   (select kommo_stage_id = 10 from leads where kommo_lead_id = 301)
-  and (select kommo_stage_id = 99 and kommo_position_at = to_timestamp(500) from leads where kommo_lead_id = 302));
+  and (select kommo_stage_id = 99 and kommo_position_at = to_timestamp(495) from leads where kommo_lead_id = 302));
 select pg_temp.expect('el backfill no escribe eventos', (select count(*) = 0 from lead_stage_events));
+-- A-S4: las filas de la pagina se bloquean en orden de id al empezar; una pagina en
+-- cualquier orden (y con ids repetidos o inexistentes) da el mismo resultado.
+insert into leads (kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values (303, 1, 10), (304, 1, 10);
+select pg_temp.expect('pagina desordenada con repetidos e inexistentes: cambian 303 y 304',
+  apply_kommo_lead_positions('[{"id":304,"pipeline_id":3,"status_id":30},{"id":999999,"pipeline_id":3,"status_id":30},{"id":303,"pipeline_id":3,"status_id":30},{"id":304,"pipeline_id":3,"status_id":30}]'::jsonb, to_timestamp(600)) = 2);
+select pg_temp.expect('…303 y 304 quedaron en 3/30, 301 intacto',
+  (select bool_and(kommo_pipeline_id = 3 and kommo_stage_id = 30) from leads where kommo_lead_id in (303, 304))
+  and (select kommo_stage_id = 10 from leads where kommo_lead_id = 301));
+select pg_temp.expect('apply_kommo_lead_positions bloquea las filas de la pagina en orden (select … order by id for update)',
+  (select pg_get_functiondef('apply_kommo_lead_positions(jsonb,timestamptz)'::regprocedure) ~ 'order by l\.id\s+for update'));
 
 -- 9) Recorrido completo: candidatos a inexistentes (W3). NO marca: solo propone.
 delete from leads where true;
@@ -345,10 +355,16 @@ select pg_temp.expect('mismo segundo con ms (panel) y Kommo en segundos: no se d
 
 -- backfill: una lectura posterior tambien avanza la marca y bloquea un evento viejo tardio
 select apply_kommo_lead_positions('[{"id":401,"pipeline_id":1,"status_id":11}]'::jsonb, to_timestamp(1000020));
-select pg_temp.expect('la lectura (T20) avanzo la marca aunque la posicion no cambio',
-  (select seen_at = to_timestamp(1000020) from lead_position_seen where lead_id = '00000000-0000-0000-0000-0000000000c1'));
+select pg_temp.expect('la lectura (T20) avanzo la marca (a T20 - 5 s de margen) aunque la posicion no cambio',
+  (select seen_at = to_timestamp(1000015) from lead_position_seen where lead_id = '00000000-0000-0000-0000-0000000000c1'));
 select pg_temp.expect('un webhook de T12 llegado despues de la lectura T20 es stale',
   (select outcome = 'stale' from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 12, 1, to_timestamp(1000012))));
+-- A-W5: un movimiento REAL hecho en Kommo justo despues de la lectura NO se descarta,
+-- aunque el reloj de Kommo atrase 2 s (last_modified = T19 para un movimiento a T21).
+select pg_temp.expect('movimiento real tras la lectura T20, con el reloj de Kommo 2 s atrasado (T19): applied',
+  (select outcome = 'applied' and moved from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 14, 1, to_timestamp(1000019))));
+select pg_temp.expect('…y uno a T20 + 1 s tambien',
+  (select outcome = 'applied' and moved from apply_lead_position('00000000-0000-0000-0000-0000000000c1', 11, 1, to_timestamp(1000021))));
 
 -- actor_user_id: queda en el evento y borrar al usuario no borra el historial
 insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000d1') on conflict do nothing;

@@ -1,4 +1,4 @@
--- Prueba de claim_message_batch (0064) y purge_retention (0066) contra un Postgres
+-- Prueba de claim_message_batch (0064) y purge_retention (0060) contra un Postgres
 -- con TODAS las migraciones aplicadas (descartable: borra leads).
 --   psql -v ON_ERROR_STOP=1 -f supabase/tests/claim_message_batch.sql
 begin;

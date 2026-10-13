@@ -8,6 +8,7 @@ import { timeAgo } from "@/lib/time-ago";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   initials,
+  INBOX_URL_PARAMS,
   normChannel,
   withinRange,
   type InboxListData,
@@ -32,6 +33,7 @@ import Board, { NO_EXISTE, pipelineCounts, SIN_UBICAR } from "./board";
 // leads.status/update ahora accionables (y el backfill) pueden llegar ráfagas:
 // una recarga cada 5 s como máximo, sin importar cuántos eventos entren.
 const LISTA_MS = 5000;
+
 
 type Aviso = { tone: "error" | "ok"; text: string };
 
@@ -110,7 +112,11 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   const [error, setError] = useState<string | null>(null);
   const cargando = useRef(false);
   const pendiente = useRef(false);
-  const pendingMoves = useRef(new Map<string, { pipeline: number; stage: number }>());
+  // Un movimiento en vuelo por lead, con un token: si el usuario vuelve a mover la
+  // misma tarjeta mientras el anterior sigue en curso, la respuesta (o el fallo) del
+  // viejo no puede deshacer ni limpiar el estado del nuevo.
+  const pendingMoves = useRef(new Map<string, { pipeline: number; stage: number; token: number }>());
+  const moveSeq = useRef(0);
 
   const load = useCallback(async () => {
     // Una recarga a la vez; si llega otro aviso en el medio, se hace una más al
@@ -186,8 +192,10 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
               }
             : d
         );
+      const token = ++moveSeq.current;
+      const esUltimo = () => pendingMoves.current.get(leadId)?.token === token;
       patch(toPipeline, toStage);
-      pendingMoves.current.set(leadId, { pipeline: toPipeline, stage: toStage });
+      pendingMoves.current.set(leadId, { pipeline: toPipeline, stage: toStage, token });
       setMovingIds((s) => new Set(s).add(leadId));
       const stageName =
         data?.pipelines.find((p) => p.id === toPipeline)?.stages.find((s) => s.id === toStage)?.name ?? `#${toStage}`;
@@ -202,15 +210,19 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
         if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
         setAviso({ tone: json.warning ? "error" : "ok", text: json.warning ?? `${nombre} → ${stageName}` });
       } catch (e) {
-        patch(before.kommo_pipeline_id, before.kommo_stage_id);
+        // Solo el ÚLTIMO movimiento de la tarjeta puede devolverla: si hay uno más
+        // nuevo en curso, su resultado manda.
+        if (esUltimo()) patch(before.kommo_pipeline_id, before.kommo_stage_id);
         setAviso({ tone: "error", text: `No se pudo mover a ${nombre}: ${e instanceof Error ? e.message : String(e)}` });
       } finally {
-        pendingMoves.current.delete(leadId);
-        setMovingIds((s) => {
-          const n = new Set(s);
-          n.delete(leadId);
-          return n;
-        });
+        if (esUltimo()) {
+          pendingMoves.current.delete(leadId);
+          setMovingIds((s) => {
+            const n = new Set(s);
+            n.delete(leadId);
+            return n;
+          });
+        }
       }
     },
     [data]
@@ -278,6 +290,8 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
         setAviso({ tone: "ok", text: `Se sincronizó hace poco: los leads se pueden volver a recorrer en ${mins} min. Pipelines y etapas ya se actualizaron.` });
       } else if (state === "idle") {
         setAviso({ tone: "ok", text: "Pipelines y etapas actualizados. No hay leads pendientes de recorrer." });
+      } else if (state === "kommo_not_configured") {
+        throw new Error("Kommo todavía no está conectado. Conectalo en Configuración → Kommo y volvé a sincronizar.");
       } else if (state === "unavailable") {
         throw new Error("El recorrido de leads no está disponible: aplicá las migraciones pendientes (0061).");
       } else {
@@ -330,9 +344,15 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
 
   // Querystring de filtros para conservarlos al abrir una conversación (incluye
   // vista y pipeline: al cerrar el panel se vuelve al mismo tablero).
+  // Lista blanca: solo lo que es estado del inbox. Otros parámetros de la URL
+  // (setup=open del asistente, ?lead= de enlaces viejos, utm_*) no se propagan a
+  // cada tarjeta ni a «Volver».
   const filterQS = useMemo(() => {
-    const p = new URLSearchParams(sp.toString());
-    p.delete("lead");
+    const p = new URLSearchParams();
+    for (const k of INBOX_URL_PARAMS) {
+      const v = sp.get(k);
+      if (v) p.set(k, v);
+    }
     return p.toString();
   }, [sp]);
 

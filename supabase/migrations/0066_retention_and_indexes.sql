@@ -1,5 +1,5 @@
 -- =============================================================
--- 0066_retention_and_indexes.sql
+-- 0060_retention_and_indexes.sql
 -- Retención de las tablas de alto volumen + los índices que faltaban.
 --
 -- TRES problemas MEDIDOS en producción, no supuestos:

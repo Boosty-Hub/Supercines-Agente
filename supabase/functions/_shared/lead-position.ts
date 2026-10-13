@@ -2,7 +2,7 @@
 // Lógica PURA (sin I/O) con que process-inbound interpreta lo que Kommo avisa de
 // un lead (`leads.update` / `leads.status`). La DECISIÓN de si se aplica (¿es más
 // nuevo que lo guardado?, ¿fue un movimiento?) la toma la base, atómicamente, en
-// apply_lead_position() (migración 0065): acá solo se extrae la posición y el
+// apply_lead_position() (migración 0061): acá solo se extrae la posición y el
 // instante del evento.
 //
 // Contexto de volumen: esos dos eventos son ~64% del tráfico del webhook y casi

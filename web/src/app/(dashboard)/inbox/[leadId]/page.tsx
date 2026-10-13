@@ -8,6 +8,7 @@ import { fetchLeadStage } from "@/lib/kommo";
 import { configValue } from "@/lib/runtime-config";
 import {
   initials,
+  INBOX_URL_PARAMS,
   fetchPublishCfg,
   fetchBoardPipelines,
   toAgentStatusCfg,
@@ -21,6 +22,7 @@ import { KommoLeadLink } from "../kommo-lead-link";
 import { computeAgentStatus, AgentStatusBadge } from "../agent-status";
 import ConversationRealtime from "../conversation-realtime";
 import MoveStageMenu from "../move-stage-menu";
+import LivePositionSync from "../live-position-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -124,10 +126,13 @@ export default async function ConversationPage({
   params: { leadId: string };
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  // Filtros de la lista, para que "← Volver" (móvil) los conserve.
-  const backQS = new URLSearchParams(
-    Object.entries(searchParams).filter((e): e is [string, string] => typeof e[1] === "string" && e[0] !== "lead")
-  ).toString();
+  // Estado del inbox (filtros, vista, pipeline), para que "← Volver" (móvil) lo conserve.
+  const backParams = new URLSearchParams();
+  for (const k of INBOX_URL_PARAMS) {
+    const v = searchParams[k];
+    if (typeof v === "string" && v) backParams.set(k, v);
+  }
+  const backQS = backParams.toString();
   const supabase = createSupabaseServerClient();
   const leadId = params.leadId;
   if (!/^[0-9a-f-]{36}$/i.test(leadId)) return <NotFound />;
@@ -241,7 +246,7 @@ export default async function ConversationPage({
                 />
               }
             >
-              <LiveStageAndStatus supabase={supabase} lead={lead} maps={stageMaps} agentCfg={agentCfg} />
+              <LiveStageAndStatus lead={lead} maps={stageMaps} agentCfg={agentCfg} />
             </Suspense>
             <MoveStageMenu
               leadId={lead.id}
@@ -321,53 +326,38 @@ function StageAndStatus({
 }
 
 // Etapa EN VIVO desde Kommo (la verdad), dentro de un Suspense para que la
-// conversación no la espere. Si difiere de lo guardado, se persiste (la base
-// queda fresca para la lista y el tablero).
+// conversación no la espere. SOLO LEE: renderizar la página no escribe en la base
+// ni registra eventos. Si lo de Kommo difiere de lo guardado, monta un componente
+// cliente que pide la escritura explícita (POST /api/leads/[id]/position) y
+// refresca (la lista y el tablero quedan al día).
 async function LiveStageAndStatus({
-  supabase,
   lead,
   maps,
   agentCfg,
 }: {
-  supabase: SupabaseClient;
   lead: LeadRow;
   maps: StageMaps;
   agentCfg: AgentStatusCfg;
 }) {
   let stageId = lead.kommo_stage_id;
   let pipelineId = lead.kommo_pipeline_id;
+  let desfasada = false;
   if (lead.kommo_lead_id) {
     const live = await fetchLeadStage(lead.kommo_lead_id);
     if (live) {
       stageId = live.statusId;
       pipelineId = live.pipelineId ?? pipelineId;
-      const changed =
+      desfasada =
         live.statusId !== lead.kommo_stage_id ||
         (live.pipelineId != null && live.pipelineId !== lead.kommo_pipeline_id);
-      if (changed) {
-        const patch: Record<string, unknown> = { kommo_stage_id: live.statusId };
-        if (live.pipelineId != null) patch.kommo_pipeline_id = live.pipelineId;
-        await supabase.from("leads").update(patch).eq("id", lead.id);
-        // Si había etapa previa fue un movimiento hecho en Kommo que el webhook
-        // todavía no trajo: se registra por la misma vía que el resto (la base lo
-        // une al eco cuando llegue, sin duplicarlo).
-        if (lead.kommo_stage_id != null) {
-          await supabase.rpc("record_lead_stage_event", {
-            p_lead_id: lead.id,
-            p_from_stage_id: lead.kommo_stage_id,
-            p_from_pipeline_id: lead.kommo_pipeline_id,
-            p_to_stage_id: live.statusId,
-            p_to_pipeline_id: live.pipelineId ?? lead.kommo_pipeline_id,
-            p_from_stage_name: null,
-            p_to_stage_name: null,
-            p_pipeline_name: null,
-            p_moved_by: "kommo",
-          });
-        }
-      }
     }
   }
-  return <StageAndStatus maps={maps} stageId={stageId} pipelineId={pipelineId} agentCfg={agentCfg} />;
+  return (
+    <>
+      {desfasada && <LivePositionSync leadId={lead.id} />}
+      <StageAndStatus maps={maps} stageId={stageId} pipelineId={pipelineId} agentCfg={agentCfg} />
+    </>
+  );
 }
 
 function Timeline({

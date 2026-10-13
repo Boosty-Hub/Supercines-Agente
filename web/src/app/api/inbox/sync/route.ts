@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createServiceClient } from "@/lib/supabase/service";
+import { callInternalFunction, InternalSecretMissingError } from "@/lib/internal-call";
+import { configValues } from "@/lib/runtime-config";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 // cambiar algo en Kommo (una etapa nueva, un pipeline renombrado).
 //
 // La función exige el secreto interno (x-internal-secret, _app_secrets 0061). Se
-// lee ACÁ, en el servidor, con la service key, y nunca llega al navegador. La
+// lee en el servidor (lib/internal-call.ts) y nunca llega al navegador. La
 // sesión se valida con getUser() y el alcance (operacion) lo exige el middleware
 // sobre el prefijo /api/inbox (roles.ts).
 //
@@ -70,26 +71,19 @@ export async function POST() {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  // Sin Kommo conectado no hay nada que sincronizar: no es un error del sistema ni
+  // de las migraciones, y la UI lo dice con su propio mensaje.
+  const { KOMMO_API_DOMAIN: domain, KOMMO_ACCESS_TOKEN: token } = await configValues([
+    "KOMMO_API_DOMAIN",
+    "KOMMO_ACCESS_TOKEN",
+  ]);
+  if (!domain || !token) {
+    return NextResponse.json({ ok: true, pipelines: null, backfill: { state: "kommo_not_configured", retry_after_seconds: null } });
+  }
+
   try {
-    const { data: secret } = await createServiceClient()
-      .from("_app_secrets")
-      .select("valor")
-      .eq("clave", "INTERNAL_FUNCTION_SECRET")
-      .maybeSingle();
-    if (!secret?.valor) {
-      return NextResponse.json(
-        { error: "Falta el secreto interno: aplicá las migraciones pendientes (0061)." },
-        { status: 503 }
-      );
-    }
-    const res = await fetch(`${supabaseUrl}/functions/v1/sync-pipelines`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-internal-secret": secret.valor as string },
-      body: JSON.stringify({ restart: true }), // pide reconciliar todos los leads; la base decide si corresponde
-      cache: "no-store",
-      signal: AbortSignal.timeout(20_000),
-    });
+    // pide reconciliar todos los leads; la base decide si corresponde (enfriamiento)
+    const res = await callInternalFunction("sync-pipelines", { restart: true });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       return NextResponse.json(
@@ -97,8 +91,8 @@ export async function POST() {
         { status: 502 }
       );
     }
-    // state: started | continuing | busy | cooldown | idle | unavailable (ver
-    // _shared/backfill-claim.ts). Nada de secretos: solo estado y segundos.
+    // state: started | continuing | busy | cooldown | idle | unavailable |
+    // kommo_not_configured (ver _shared/backfill-claim.ts). Solo estado y segundos.
     const state = typeof body?.backfill?.state === "string" ? (body.backfill.state as string) : "unavailable";
     const retry = Number(body?.backfill?.retry_after_seconds);
     return NextResponse.json({
@@ -107,6 +101,9 @@ export async function POST() {
       backfill: { state, retry_after_seconds: Number.isFinite(retry) && retry > 0 ? retry : null },
     });
   } catch (e) {
+    if (e instanceof InternalSecretMissingError) {
+      return NextResponse.json({ error: e.message }, { status: 503 });
+    }
     return NextResponse.json(
       { error: `No se pudo sincronizar: ${e instanceof Error ? e.message : String(e)}` },
       { status: 502 }

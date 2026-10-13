@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { moveLeadInKommo } from "@/lib/kommo";
+import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +13,7 @@ type PipelineRef = { name?: string };
 // no se toca nada acá y el tablero devuelve la tarjeta a su columna.
 //
 // Registro: leads.kommo_stage_id + kommo_pipeline_id y el evento de la línea de
-// tiempo se escriben en el mismo paso (record_lead_stage_event, 0061). Kommo
-// manda leads.status de vuelta por este movimiento: la base lo reconoce como el
-// mismo (misma etapa y pipeline) y NO crea un segundo evento, llegue antes o
-// después de este handler.
+// tiempo, en el mismo paso (apply_lead_position, 0061).
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const supabase = createSupabaseServerClient();
   const {
@@ -71,26 +69,23 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const meta = user.user_metadata as { full_name?: string; name?: string } | null;
   const who = meta?.full_name ?? meta?.name ?? user.email ?? "usuario";
 
-  const upd = await supabase
-    .from("leads")
-    .update({ kommo_stage_id: stageId, kommo_pipeline_id: pipelineId, kommo_missing_at: null }) // Kommo aceptó el PATCH: el lead existe
-    .eq("id", lead.id);
-  const ev = await supabase.rpc("record_lead_stage_event", {
+  // La posición se escribe por apply_lead_position (0061), que solo ejecuta
+  // service_role: este handler ya validó la sesión y el alcance. Fija etapa +
+  // pipeline y registra el evento en un solo paso; Kommo manda leads.status de
+  // vuelta por este movimiento y la base lo descarta como eco (llegue antes o
+  // después), sin duplicarlo ni retroceder la etapa.
+  const { error: posErr } = await createServiceClient().rpc("apply_lead_position", {
     p_lead_id: lead.id,
-    p_from_stage_id: prevStage,
-    p_from_pipeline_id: prevPipeline,
-    p_to_stage_id: stageId,
-    p_to_pipeline_id: pipelineId,
-    p_from_stage_name: null, // la línea de tiempo lo resuelve con kommo_stages
+    p_stage_id: stageId,
+    p_pipeline_id: pipelineId,
+    p_at: new Date().toISOString(),
+    p_moved_by: "kommo",
+    p_actor_name: `${who} (desde el panel)`,
     p_to_stage_name: stage.name,
     p_pipeline_name: pipelineName,
-    p_moved_by: "kommo",
-    p_draft_id: null,
-    p_actor_name: `${who} (desde el panel)`,
   });
-  const failure = upd.error ?? ev.error;
   return NextResponse.json({
     ok: true,
-    warning: failure ? `Movido en Kommo, pero no se pudo registrar acá: ${failure.message}` : undefined,
+    warning: posErr ? `Movido en Kommo, pero no se pudo registrar acá: ${posErr.message}` : undefined,
   });
 }

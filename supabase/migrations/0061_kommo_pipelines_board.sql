@@ -199,6 +199,8 @@ comment on column lead_stage_events.actor_name is
 -- con la fuente más informativa (el agente o la persona del panel ganan sobre
 -- el "movido en Kommo" anónimo del webhook). El advisory lock por lead
 -- serializa las dos fuentes para que el orden de llegada no importe.
+-- DROP: se agregó p_merge_only (cambia la firma).
+drop function if exists record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int);
 create or replace function record_lead_stage_event(
   p_lead_id          uuid,
   p_from_stage_id    bigint,
@@ -211,7 +213,12 @@ create or replace function record_lead_stage_event(
   p_moved_by         text,
   p_draft_id         uuid default null,
   p_actor_name       text default null,
-  p_window_seconds   int  default 120
+  p_window_seconds   int  default 120,
+  -- Solo completar un evento reciente que describa este mismo destino; si no hay
+  -- ninguno, NO insertar (devuelve NULL). Lo usa apply_lead_position cuando la
+  -- posición ya estaba aplicada (el eco llegó primero) pero quien movió el lead
+  -- (agente o persona del panel) tiene que quedar en la línea de tiempo.
+  p_merge_only       boolean default false
 )
 returns uuid language plpgsql set search_path = public, pg_temp as $$
 declare
@@ -260,6 +267,10 @@ begin
     return v_last.id;
   end if;
 
+  if p_merge_only then
+    return null;
+  end if;
+
   insert into lead_stage_events (
     lead_id, from_stage_id, from_pipeline_id, to_stage_id, pipeline_id,
     from_stage_name, to_stage_name, pipeline_name, moved_by, draft_id, actor_name
@@ -274,9 +285,9 @@ $$;
 
 -- Interno: lo llama apply_lead_position(). Sin grant a `authenticated` (un usuario
 -- no puede fabricar eventos con moved_by/actor_name a gusto).
-revoke execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int)
+revoke execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean)
   from public, anon, authenticated;
-grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int)
+grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, bigint, text, text, text, text, uuid, text, int, boolean)
   to service_role;
 
 -- ÚNICO camino que escribe la posición (etapa + pipeline) de un lead: webhook de
@@ -285,12 +296,14 @@ grant execute on function record_lead_stage_event(uuid, bigint, bigint, bigint, 
 -- guardado?» y la escritura son atómicas, no un select seguido de un update.
 --
 --   · 'stale'     p_at es ANTERIOR al instante ya guardado → no se toca la
---                 posición ni se registra nada (un leads.status viejo que llega
---                 tarde, por otro worker o por el reaper de la cola).
+--                 posición ni se crea ningún evento (un leads.status viejo que
+--                 llega tarde, por otro worker o por el reaper de la cola).
 --   · 'unchanged' misma etapa y pipeline → no se escribe NADA (la mayoría de los
 --                 leads.update son de otros campos y cada UPDATE a `leads` dispara
---                 un refresco en vivo en los inbox abiertos). Única excepción: si
---                 estaba marcado «no existe en Kommo», la señal de vida lo borra.
+--                 un refresco en vivo en los inbox abiertos). Excepciones: si estaba
+--                 marcado «no existe en Kommo», la señal de vida lo borra; y si
+--                 quien llama es el agente o una persona del panel, se COMPLETA el
+--                 evento reciente del mismo destino (el eco de Kommo llegó antes).
 --   · 'applied'   se escribió etapa + pipeline + kommo_position_at; `moved` indica
 --                 si fue un movimiento real (había etapa previa) y entonces se
 --                 registra el evento (record_lead_stage_event, que además une el
@@ -335,7 +348,14 @@ begin
     if l.kommo_missing_at is not null then
       update leads set kommo_missing_at = null where id = l.id;
     end if;
-    return query select 'stale'::text, false, null::uuid, l.kommo_stage_id, l.kommo_pipeline_id;
+    v_event := null;
+    if p_moved_by = 'agente' or p_actor_name is not null then
+      v_event := record_lead_stage_event(
+        l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, coalesce(p_pipeline_id, l.kommo_pipeline_id),
+        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true
+      );
+    end if;
+    return query select 'stale'::text, false, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
     return;
   end if;
 
@@ -347,7 +367,16 @@ begin
     if l.kommo_missing_at is not null then
       update leads set kommo_missing_at = null where id = l.id;
     end if;
-    return query select 'unchanged'::text, false, null::uuid, l.kommo_stage_id, l.kommo_pipeline_id;
+    -- El eco de Kommo pudo llegar ANTES que el agente/panel: el evento ya existe
+    -- (anónimo, «movido en Kommo»); se completa con quien lo movió.
+    v_event := null;
+    if p_moved_by = 'agente' or p_actor_name is not null then
+      v_event := record_lead_stage_event(
+        l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, v_pipeline,
+        p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, true
+      );
+    end if;
+    return query select 'unchanged'::text, false, v_event, l.kommo_stage_id, l.kommo_pipeline_id;
     return;
   end if;
 
@@ -367,7 +396,7 @@ begin
   if v_moved then
     v_event := record_lead_stage_event(
       l.id, l.kommo_stage_id, l.kommo_pipeline_id, p_stage_id, v_pipeline,
-      p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name
+      p_from_stage_name, p_to_stage_name, p_pipeline_name, p_moved_by, p_draft_id, p_actor_name, 120, false
     );
   end if;
   return query select 'applied'::text, v_moved, v_event, l.kommo_stage_id, l.kommo_pipeline_id;

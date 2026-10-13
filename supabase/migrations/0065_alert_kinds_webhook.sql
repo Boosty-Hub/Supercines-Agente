@@ -1,5 +1,5 @@
 -- =============================================================
--- 0065_alert_kinds_webhook.sql
+-- 0061_alert_kinds_webhook.sql
 -- Suma los kinds `inbound_dropped` y `kommo_webhook_disabled` a los avisos que se
 -- empujan al webhook de alertas (Slack/Discord).
 --

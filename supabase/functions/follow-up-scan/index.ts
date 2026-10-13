@@ -342,7 +342,7 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
 
   // Re-sincronizar el cache con el valor fresco (de paso, futuros barridos del gate
   // SQL ya verán la etapa correcta y no volverán a elegir este lead si no aplica).
-  // Va por apply_lead_position (0065): etapa + pipeline juntos, respetando el
+  // Va por apply_lead_position (0061): etapa + pipeline juntos, respetando el
   // orden de eventos, y registra el movimiento si lo fue. Fail-open: un error acá
   // no debe impedir el chequeo de gates de más abajo (se usa liveStatusId directo).
   if (

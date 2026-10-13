@@ -360,7 +360,7 @@ async function moverEtapaDeLead(ctx: CrmContext, stageName: string, pipelineName
   await moveLeadStage(ctx.kommoLeadId, target.id, target.pipelineId, ctx.domain, ctx.token);
 
   // Registrar el movimiento (fail-open: nunca romper el tool). Va por
-  // apply_lead_position (0065): fija etapa + pipeline JUNTOS (142/143 existen en
+  // apply_lead_position (0061): fija etapa + pipeline JUNTOS (142/143 existen en
   // todos los pipelines; sin kommo_pipeline_id el tablero no ubicaría al lead) y
   // registra el evento en el mismo paso. Kommo manda leads.status de vuelta por
   // este movimiento: la base lo reconoce como eco (llegue antes o después) y no

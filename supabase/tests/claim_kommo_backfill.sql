@@ -124,6 +124,24 @@ select * from apply_lead_position('00000000-0000-0000-0000-0000000000a3', 11, 1,
 select pg_temp.expect('panel + eco = UN evento, con el actor',
   (select count(*) = 1 and max(actor_name) = 'Pedro (desde el panel)' from lead_stage_events where lead_id = '00000000-0000-0000-0000-0000000000a3'));
 
+-- eco PRIMERO: el webhook llega antes que el panel → el evento anónimo se completa con el actor
+insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values ('00000000-0000-0000-0000-0000000000a4', 204, 1, 10);
+select * from apply_lead_position('00000000-0000-0000-0000-0000000000a4', 11, 1, now() + interval '1 second');
+select pg_temp.expect('eco primero: se registró 1 evento anónimo',
+  (select count(*) = 1 and max(actor_name) is null from lead_stage_events where lead_id = '00000000-0000-0000-0000-0000000000a4'));
+select pg_temp.expect('el panel llega después (stale o unchanged según los relojes): devuelve el evento completado',
+  (select outcome in ('stale', 'unchanged') and not moved and event_id is not null
+     from apply_lead_position('00000000-0000-0000-0000-0000000000a4', 11, 1, now(), 'kommo', null, 'Ana (desde el panel)')));
+select pg_temp.expect('…el evento quedó con el actor y NO se creó otro',
+  (select count(*) = 1 and max(actor_name) = 'Ana (desde el panel)' from lead_stage_events where lead_id = '00000000-0000-0000-0000-0000000000a4'));
+select pg_temp.expect('un unchanged SIN actor no inventa ni toca eventos',
+  (select event_id is null from apply_lead_position('00000000-0000-0000-0000-0000000000a4', 11, 1, now() + interval '2 seconds')));
+-- el agente tras un eco, sin evento reciente que completar (>120 s): merge_only no inserta
+update lead_stage_events set created_at = now() - interval '10 minutes' where lead_id = '00000000-0000-0000-0000-0000000000a4';
+select pg_temp.expect('sin evento reciente que completar, merge_only no inserta',
+  (select event_id is null from apply_lead_position('00000000-0000-0000-0000-0000000000a4', 11, 1, now() + interval '3 seconds', 'agente')));
+select pg_temp.expect('…y sigue habiendo 1 solo evento', (select count(*) = 1 from lead_stage_events where lead_id = '00000000-0000-0000-0000-0000000000a4'));
+
 -- 8) apply_kommo_lead_positions respeta kommo_position_at (W2 vs backfill)
 delete from lead_stage_events where true;
 delete from leads where true;
@@ -184,7 +202,7 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
       from unnest(array[
         'claim_kommo_backfill(text,int,boolean,int)',
         'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text)',
-        'record_lead_stage_event(uuid,bigint,bigint,bigint,bigint,text,text,text,text,uuid,text,int)',
+        'record_lead_stage_event(uuid,bigint,bigint,bigint,bigint,text,text,text,text,uuid,text,int,boolean)',
         'apply_kommo_lead_positions(jsonb,timestamptz)',
         'kommo_missing_candidates(text,int)',
         'kommo_gap_lead_ids(int)',

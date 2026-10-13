@@ -457,7 +457,7 @@ function extractMedia(m: KommoMessage): ExtractedMedia | null {
 }
 
 // ---- Posición del lead (etapa + pipeline) ----
-// TODA escritura de la posición pasa por apply_lead_position (0065): un UPDATE
+// TODA escritura de la posición pasa por apply_lead_position (0061): un UPDATE
 // condicional bajo bloqueo de fila que decide, atómicamente en la base, si el
 // evento es más nuevo que lo guardado. Dos process-inbound en paralelo (o el reaper
 // de la cola) pueden entregar un leads.status viejo DESPUÉS de uno nuevo; sin esa

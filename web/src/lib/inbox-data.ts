@@ -52,6 +52,16 @@ export type InboxListData = {
   pipelines: BoardPipeline[];
 };
 
+/**
+ * Parámetros de URL que son estado del inbox: modo embed, vista, pipeline y los
+ * filtros. Lista blanca para armar los enlaces entre lista y conversación: otros
+ * parámetros (setup=open del asistente, ?lead= de enlaces viejos, utm_*) no se
+ * propagan.
+ */
+export const INBOX_URL_PARAMS = [
+  "mode", "vista", "pipeline", "q", "channel", "vertical", "estado", "urgent", "rango", "sort",
+] as const;
+
 /** Etapas de sistema de Kommo, con el MISMO id en todos los pipelines. */
 export const STAGE_WON = 142;
 export const STAGE_LOST = 143;

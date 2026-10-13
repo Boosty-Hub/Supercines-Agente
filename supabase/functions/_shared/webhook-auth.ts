@@ -204,7 +204,9 @@ function derive(raw: RawState, legacyEnvSecret: string, nowMs: number): WebhookA
 
 type Opts = Required<LoadOptions>;
 
-function resolveOpts(o: LoadOptions = {}): Opts {
+function resolveOpts(raw: LoadOptions = {}): Opts {
+  // Solo propiedades propias (sin herencia de Object.prototype): ver parseFormBracketed.
+  const o: LoadOptions = Object.assign(Object.create(null), raw);
   return {
     now: o.now ?? Date.now,
     sleep: o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),

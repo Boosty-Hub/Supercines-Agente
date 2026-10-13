@@ -29,25 +29,49 @@ export const INSERT_TIMEOUT_MS = 5000;
 
 // Parse application/x-www-form-urlencoded con notación de brackets de Kommo
 // ("leads[add][0][id]=123" → { leads: { add: [{ id: "123" }] } })
+//
+// SEGURIDAD: corre ANTES de autorizar y las claves las pone el EMISOR. Con objetos {}
+// normales, `__proto__[x]=1` o `constructor[prototype][x]=1` contaminaban Object.prototype
+// de la instancia caliente (y con él cualquier lectura heredada, p. ej. opciones de
+// seguridad como legacySecret). Por eso:
+//  - todo se construye con Object.create(null) (sin cadena de prototipos);
+//  - una clave con un segmento __proto__ / constructor / prototype se descarta ENTERA;
+//  - se acota la profundidad, la cantidad de claves y el índice máximo de los arrays
+//    (un `a[999999999]=x` armaría un array disperso gigante: DoS al serializarlo);
+//  - nunca se lee una propiedad que no sea propia (Object.hasOwn).
+export const FORM_LIMITS = { maxDepth: 8, maxKeys: 5000, maxIndex: 1000 } as const;
+const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+const INDEX_RE = /^\d{1,6}$/;
+
 export function parseFormBracketed(body: string): Record<string, unknown> {
   const params = new URLSearchParams(body);
-  const result: Record<string, unknown> = {};
+  const result: Record<string, unknown> = Object.create(null);
+  let n = 0;
   for (const [key, value] of params.entries()) {
+    if (++n > FORM_LIMITS.maxKeys) break;
     const path = key.replace(/\]/g, "").split("[");
+    if (path.length > FORM_LIMITS.maxDepth) continue;
+    if (path.some((seg) => FORBIDDEN_SEGMENTS.has(seg))) continue;
+    // deno-lint-ignore no-explicit-any
     let cursor: any = result;
     for (let i = 0; i < path.length; i++) {
       const seg = path[i];
-      const last = i === path.length - 1;
-      if (last) {
+      // Un array solo admite índices numéricos acotados.
+      if (Array.isArray(cursor) && (!INDEX_RE.test(seg) || Number(seg) > FORM_LIMITS.maxIndex)) {
+        break;
+      }
+      if (i === path.length - 1) {
         cursor[seg] = value;
       } else {
-        const nextIsArray = /^\d+$/.test(path[i + 1]);
-        if (cursor[seg] == null) {
-          cursor[seg] = nextIsArray ? [] : {};
+        const nextIsArray = /^\d+$/.test(path[i + 1]); // todo-dígitos => array (el índice se valida arriba)
+        const existing = Object.hasOwn(cursor, seg) ? cursor[seg] : undefined;
+        if (existing === undefined || existing === null || typeof existing !== "object") {
+          cursor[seg] = nextIsArray ? [] : Object.create(null);
         }
         cursor = cursor[seg];
       }
     }
+
   }
   return result;
 }
@@ -150,7 +174,11 @@ async function dropAlert(supabase: SupabaseClient, description: string, metadata
   }
 }
 
-export function createKommoWebhookHandler(supabase: SupabaseClient, options: WebhookHandlerOptions = {}) {
+export function createKommoWebhookHandler(supabase: SupabaseClient, rawOptions: WebhookHandlerOptions = {}) {
+  // Las opciones de seguridad (legacySecret, auth…) se leen SOLO como propiedades propias:
+  // una copia con prototipo nulo no hereda nada de Object.prototype (defensa en profundidad
+  // ante una contaminación de prototipo en la instancia).
+  const options: WebhookHandlerOptions = Object.assign(Object.create(null), rawOptions);
   const insertTimeoutMs = options.insertTimeoutMs ?? INSERT_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? 1000;
 

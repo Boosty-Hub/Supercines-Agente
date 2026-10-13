@@ -47,10 +47,12 @@ async function loadConfigMap(supabase: SupabaseClient): Promise<Record<string, s
   if (error) {
     // On error (e.g. table not yet migrated) fall through to env-only mode.
     console.warn("runtime_config read error — falling back to env:", error.message);
-    configCache = { map: {}, loadedAt: Date.now() };
+    configCache = { map: Object.create(null), loadedAt: Date.now() };
     return configCache.map;
   }
-  const map: Record<string, string> = {};
+  // Prototipo nulo: una clave como "constructor" o "__proto__" (de una fila o de una
+  // plantilla {{...}}) no puede resolver a algo heredado de Object.prototype.
+  const map: Record<string, string> = Object.create(null);
   for (const row of (data ?? []) as Array<{ key: string; value: string | null }>) {
     // Only store non-null, non-empty values — absent/null means "use env".
     if (row.value !== null && row.value !== "") {

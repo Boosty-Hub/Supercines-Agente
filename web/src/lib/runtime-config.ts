@@ -31,7 +31,7 @@ export const getRuntimeConfig = cache(async (): Promise<Record<string, string>> 
     return {};
   }
 
-  const map: Record<string, string> = {};
+  const map: Record<string, string> = Object.create(null); // sin herencia de Object.prototype
   for (const row of (data ?? []) as ConfigRow[]) {
     if (row.value !== null && row.value !== "") {
       map[row.key] = row.value;

@@ -158,3 +158,116 @@ Deno.test("MEDICIÓN: 2000 leads.update seguidos = 2000 inserts, <= 2 cargas de 
   assertEquals(triggers(), 0);
   assert(respondMs / N < 5, `la respuesta cuesta ${(respondMs / N).toFixed(3)} ms por request`);
 });
+
+// ---- Prototype pollution: el parser corre ANTES de autorizar y las claves son del emisor ----
+import { FORM_LIMITS } from "./kommo-webhook-handler.ts";
+
+/** Vigila que Object.prototype y Array.prototype queden intactos tras el callback. */
+async function assertPrototypesIntact(fn: () => unknown | Promise<unknown>) {
+  const before = [Object.getOwnPropertyNames(Object.prototype).sort(), Object.getOwnPropertyNames(Array.prototype).sort()];
+  await fn();
+  assertEquals(Object.getOwnPropertyNames(Object.prototype).sort(), before[0]);
+  assertEquals(Object.getOwnPropertyNames(Array.prototype).sort(), before[1]);
+  assertEquals(({} as Record<string, unknown>).polluted, undefined);
+  assertEquals(([] as unknown as Record<string, unknown>).polluted, undefined);
+}
+
+const ATAQUES = [
+  "__proto__[polluted]=1",
+  "__proto__[legacySecret]=hack&__proto__[mode]=permissive",
+  "constructor[prototype][polluted]=1",
+  "constructor[polluted]=1",
+  "a[__proto__][polluted]=1",
+  "a[b][constructor][prototype][polluted]=1",
+  "prototype[polluted]=1",
+  "leads[add][0][__proto__][polluted]=1",
+  "[__proto__][polluted]=1",
+  "__proto__=x",
+];
+
+Deno.test("parseFormBracketed: ningún payload con __proto__ / constructor / prototype contamina los prototipos", async () => {
+  for (const atk of ATAQUES) {
+    await assertPrototypesIntact(() => {
+      const out = parseFormBracketed(`${atk}&ok=1`);
+      assertEquals(out.ok, "1"); // lo legítimo sigue entrando
+      assertEquals(Object.getPrototypeOf(out), null);
+    });
+  }
+});
+
+Deno.test("parseFormBracketed: la clave con un segmento prohibido se descarta ENTERA (no deja basura anidada)", () => {
+  const out = parseFormBracketed("a[__proto__][x]=1&a[ok]=2&constructor[prototype][y]=3");
+  assertEquals(JSON.stringify(out), '{"a":{"ok":"2"}}');
+});
+
+Deno.test("parseFormBracketed: el resultado y sus anidados no tienen prototipo (no heredan nada)", () => {
+  const out = parseFormBracketed("leads[add][0][id]=1&a[b][c]=2") as Record<string, any>;
+  assertEquals(Object.getPrototypeOf(out), null);
+  assertEquals(Object.getPrototypeOf(out.a), null);
+  assertEquals(Object.getPrototypeOf(out.a.b), null);
+  assert(Array.isArray(out.leads.add));
+  assertEquals(out.toString, undefined); // nada heredado
+  assertEquals((out as Record<string, unknown>).hasOwnProperty, undefined);
+});
+
+Deno.test("parseFormBracketed: profundidad excesiva se descarta, la permitida entra", () => {
+  const ok = Array.from({ length: FORM_LIMITS.maxDepth - 1 }, () => "[k]").join("");
+  const tooDeep = Array.from({ length: FORM_LIMITS.maxDepth + 1 }, () => "[k]").join("");
+  assertEquals(JSON.stringify(parseFormBracketed(`a${ok}=1`)).includes('"1"'), true);
+  assertEquals(JSON.stringify(parseFormBracketed(`a${tooDeep}=1&z=2`)), '{"z":"2"}');
+});
+
+Deno.test("parseFormBracketed: índices enormes no arman arrays dispersos (DoS) y se descartan", () => {
+  const out = parseFormBracketed(`a[999999999][x]=1&b[${FORM_LIMITS.maxIndex + 1}]=2&c[0]=ok`);
+  assertEquals(JSON.stringify(out).length < 200, true);
+  assertEquals(JSON.stringify(out), '{"a":[],"b":[],"c":["ok"]}');
+  // un índice en el límite sí entra
+  const edge = parseFormBracketed(`d[${FORM_LIMITS.maxIndex}]=x`) as Record<string, unknown[]>;
+  assertEquals(edge.d.length, FORM_LIMITS.maxIndex + 1);
+});
+
+Deno.test("parseFormBracketed: un array solo admite índices numéricos (no length ni claves de texto)", () => {
+  const out = parseFormBracketed("a[0]=x&a[length]=999999&a[foo]=y") as Record<string, unknown[]>;
+  assertEquals(out.a.length, 1);
+  assertEquals(JSON.stringify(out), '{"a":["x"]}');
+});
+
+Deno.test("parseFormBracketed: tope de claves por request", () => {
+  const body = Array.from({ length: FORM_LIMITS.maxKeys + 500 }, (_, i) => `k${i}=v`).join("&");
+  assertEquals(Object.keys(parseFormBracketed(body)).length, FORM_LIMITS.maxKeys);
+});
+
+Deno.test("HANDLER: un payload con __proto__[legacySecret] no contamina nada ni altera la autenticación", async () => {
+  await assertPrototypesIntact(async () => {
+    // estricto: sin token válido NO se persiste, aunque el payload intente inyectar un secreto/modo por herencia
+    const { c, handle, drain } = setup({ kind: "ok", tables: tablesWith(S, "strict") });
+    const evil = "__proto__[legacySecret]=hack&__proto__[secrets][0]=hack&__proto__[mode]=permissive&constructor[prototype][mode]=permissive&message[add][0][text]=hola";
+    const r1 = await handle(post(null, evil));
+    const r2 = await handle(post("hack", evil)); // intentar autenticarse con el «secreto» inyectado
+    assertEquals(r1.status, 200);
+    assertEquals(r2.status, 200);
+    await drain();
+    assertEquals(c.inserts("inbound_queue").length, 0, "nada sin token válido");
+    // y con el token real sigue funcionando, con la basura descartada
+    const r3 = await handle(post(S, evil));
+    assertEquals(r3.status, 200);
+    await drain();
+    const q = c.inserts("inbound_queue");
+    assertEquals(q.length, 1);
+    assertEquals(JSON.stringify(q[0].payload), '{"message":{"add":[{"text":"hola"}]}}');
+  });
+});
+
+Deno.test("HANDLER: con Object.prototype YA contaminado, las opciones de seguridad no se leen por herencia", async () => {
+  // Simula una contaminación previa (otra librería): el handler no debe adoptar legacySecret heredado.
+  (Object.prototype as Record<string, unknown>).legacySecret = "hack";
+  try {
+    const { c, handle, drain } = setup({ kind: "ok", tables: tablesWith(S, "strict") });
+    const r = await handle(post("hack"));
+    assertEquals(r.status, 200);
+    await drain();
+    assertEquals(c.inserts("inbound_queue").length, 0, "el secreto heredado NO autentica");
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).legacySecret;
+  }
+});

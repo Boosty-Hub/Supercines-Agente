@@ -152,10 +152,10 @@ function substituteBodyTemplate(
     const exactMatch = template.match(/^\{\{(\w+)\}\}$/);
     if (exactMatch) {
       const key = exactMatch[1];
-      return key in input ? input[key] : null;
+      return Object.hasOwn(input, key) ? input[key] : null;
     }
     return template.replace(/\{\{(\w+)\}\}/g, (_, k) =>
-      k in input ? String(input[k]) : ""
+      Object.hasOwn(input, k) ? String(input[k]) : ""
     );
   }
   if (Array.isArray(template)) {
@@ -183,14 +183,15 @@ async function runHttpTool(
   try {
     // (a) Validate required input fields.
     for (const k of tool.input_schema.required ?? []) {
-      if (!(k in input)) {
+      if (!Object.hasOwn(input, k)) {
         return `ERROR_VALIDACION: falta el parámetro requerido "${k}". Esquema requeridos: ${JSON.stringify(tool.input_schema.required)}`;
       }
     }
 
     // (b) Substitute {{param}} in url_template (URL-encode each value).
     const url = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
-      encodeURIComponent(String(input[p] ?? ""))
+      // solo propiedades propias: {{constructor}} / {{__proto__}} no resuelven a lo heredado
+      encodeURIComponent(String(Object.hasOwn(input, p) ? input[p] ?? "" : ""))
     );
 
     // (c) Resolve {{CONFIG_KEY}} in header values via cfg.get (not from input).

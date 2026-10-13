@@ -26,11 +26,11 @@ function substituteBody(
     const exactMatch = template.match(/^\{\{(\w+)\}\}$/);
     if (exactMatch) {
       const key = exactMatch[1];
-      return key in input ? input[key] : null;
+      return Object.hasOwn(input, key) ? input[key] : null;
     }
     // Embedded: replace each {{param}} with string representation
     return template.replace(/\{\{(\w+)\}\}/g, (_, k) =>
-      k in input ? String(input[k]) : ""
+      Object.hasOwn(input, k) ? String(input[k]) : ""
     );
   }
   if (Array.isArray(template)) {

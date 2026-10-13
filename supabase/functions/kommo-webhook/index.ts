@@ -1,20 +1,22 @@
 // Edge Function: kommo-webhook
-// Recibe webhooks de Kommo (mensajes, leads, etc), valida un secreto
-// opcional, y encola el payload completo en `inbound_queue` para que
+// Recibe webhooks de Kommo (mensajes, leads, etc), valida el secreto de la URL
+// (_shared/webhook-auth.ts) y encola el payload completo en `inbound_queue` para que
 // un worker lo procese asincrónicamente. Responde 200 lo más rápido
 // posible para que Kommo no reintente.
 //
 // URL pública (una vez deployada):
 //   https://<project-ref>.supabase.co/functions/v1/kommo-webhook
-//   (Kommo permite agregar ?secret=XXX como query param — si la env
-//    KOMMO_WEBHOOK_SECRET está configurada, exigimos que coincida.)
+//   ?token=<secreto>   (lo muestra el dashboard: Configuración → Kommo)
 //
 // POR QUÉ ESTA FUNCIÓN ES PÚBLICA (única excepción al gate interno): Kommo NO firma
 // sus webhooks (no hay HMAC ni header de autenticación que verificar) y no manda un
 // JWT de Supabase, así que no puede presentar el secreto interno que exigen las
 // demás funciones (_shared/auth.ts). Mitigaciones:
-//   - Secreto opcional en la URL (?secret=, env KOMMO_WEBHOOK_SECRET), comparado
-//     antes de leer el cuerpo. Es el único control que Kommo permite.
+//   - Secreto en la URL (?token=, tabla _app_secrets), comparado en tiempo constante
+//     ANTES de leer el cuerpo: 401 genérico y sin encolar. Es el único control que Kommo
+//     permite. Modo 'permissive' (transición de clientes vivos: acepta también sin
+//     secreto y alerta) o 'strict'; ver _shared/webhook-auth.ts. Sin él, cualquiera
+//     podía postear un leads.update con fecha futura y congelar a un lead.
 //   - Lo único que hace es ENCOLAR el payload (inbound_queue) y responder 200: no
 //     ejecuta nada del payload, no llama a modelos ni a Kommo. El procesamiento
 //     (process-inbound) es una función con gate interno y trata el payload como
@@ -28,10 +30,18 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { callInternal } from "../_shared/auth.ts";
+import {
+  decideWebhook,
+  extractToken,
+  FORBIDDEN,
+  loadWebhookAuthState,
+  noteWebhookRequest,
+} from "../_shared/webhook-auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const WEBHOOK_SECRET = Deno.env.get("KOMMO_WEBHOOK_SECRET") ?? "";
+// Secreto legado por env (aceptado como uno más; el vigente vive en _app_secrets).
+const LEGACY_ENV_SECRET = Deno.env.get("KOMMO_WEBHOOK_SECRET") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
@@ -182,13 +192,20 @@ Deno.serve(async (req: Request) => {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  // Validar secreto si está configurado
-  if (WEBHOOK_SECRET) {
-    const url = new URL(req.url);
-    const provided = url.searchParams.get("secret") ?? req.headers.get("x-webhook-secret");
-    if (provided !== WEBHOOK_SECRET) {
-      return new Response("forbidden", { status: 403 });
-    }
+  // Autenticidad: antes de leer el cuerpo. Rechazo rápido, genérico y sin encolar.
+  const decision = decideWebhook(
+    extractToken(new URL(req.url), req.headers),
+    await loadWebhookAuthState(supabase, LEGACY_ENV_SECRET),
+  );
+  if (!decision.allow) {
+    console.warn(`kommo-webhook: rechazado (${decision.reason})`);
+    return FORBIDDEN();
+  }
+  if (decision.reason === "ok" || decision.reason === "unsigned_permissive") {
+    // Estrangulado (1/min) y después de responder: no agrega latencia al webhook.
+    const note = noteWebhookRequest(supabase, decision.signed);
+    // @ts-ignore: EdgeRuntime existe en Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(note);
   }
 
   try {

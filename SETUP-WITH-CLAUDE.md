@@ -213,9 +213,9 @@ Todo se escribe en `runtime_config` (DB). El wizard es idempotente — podés re
 
 ### Configurar webhook en Kommo (en el panel de Kommo)
 
-Webhook URL:
+Webhook URL (con el secreto; la muestra el dashboard en Configuración → Kommo):
 ```
-https://<ref>.supabase.co/functions/v1/kommo-webhook
+https://<ref>.supabase.co/functions/v1/kommo-webhook?token=<secreto>
 ```
 
 Eventos a habilitar:

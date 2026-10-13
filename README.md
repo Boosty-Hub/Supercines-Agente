@@ -79,9 +79,20 @@ Todo se guarda en `runtime_config` (la base de datos), no en variables de entorn
 
 ### Paso 6 — Configurar Kommo (en el panel de Kommo)
 
-- Webhook URL: `https://<ref>.supabase.co/functions/v1/kommo-webhook`
+- Webhook URL: la que muestra **Configuración → Kommo** (o el paso Kommo de `/setup`), **ya con el secreto**: `https://<ref>.supabase.co/functions/v1/kommo-webhook?token=<secreto>`. Kommo no firma sus webhooks; sin el `?token=` cualquiera que conozca la URL podría falsificar eventos. El botón «Actualizar en Kommo automáticamente» deja la suscripción apuntando a esa URL por API.
 - Eventos: Mensaje agregado, Lead agregado, Lead actualizado
 - En `/settings` del dashboard: `response_custom_field_id` + `salesbot_id`
+
+#### Seguridad del webhook: transición sin downtime (clientes que ya estaban desplegados)
+
+La migración `0073` genera el secreto y deja el webhook en **modo transición**: sigue aceptando las requests SIN secreto (el webhook que hoy tiene Kommo no se corta) y deja una alerta `webhook_unsigned` mientras lleguen. Paso a paso:
+
+1. Desplegar migraciones → funciones (`kommo-webhook`) → web, en ese orden.
+2. En **Configuración → Kommo**, botón **«Actualizar en Kommo automáticamente»** (o pegar a mano la URL con `?token=` en Kommo → Integraciones → Webhooks).
+3. Esperar a que la alerta deje de repetirse y pulsar **«Ya lo actualicé: pasar a modo estricto»**. Si no lo pulsás, pasa solo a estricto cuando llegaron requests con secreto y pasaron 24 h sin requests sin secreto.
+4. Rotación: **«Rotar clave»** (la anterior sigue válida 24 h; actualiza Kommo por API si está conectado).
+
+Si el estado no se puede leer (base caída) la función acepta (fail-open): rechazar haría que Kommo deshabilite el webhook.
 
 ### Paso 7 — Activar el agente
 

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues } from "@/lib/runtime-config";
+import { createServiceClient } from "@/lib/supabase/service";
+import { SETTINGS_DEFAULT, WEBHOOK_PATH, webhookDestination } from "@/lib/kommo-webhook";
 
 /**
  * Re-suscribe el webhook de Kommo cuando Kommo lo deshabilitó.
@@ -15,7 +17,6 @@ import { configValues } from "@/lib/runtime-config";
  * Alcance `configuracion` — lo hace cumplir el middleware sobre el prefijo
  * `/api/kommo` (ya existente en `PATH_SCOPES`): toca la integración con el CRM.
  */
-const SETTINGS_DEFAULT = ["add_lead", "add_message", "update_lead"];
 
 export async function POST() {
   const supabase = await createSupabaseServerClient();
@@ -35,7 +36,13 @@ export async function POST() {
   if (!base) {
     return NextResponse.json({ error: "Falta NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
   }
-  const destination = `${base}/functions/v1/kommo-webhook`;
+  // El destino lleva el secreto (?token=): sin él, en modo estricto la función rechaza todo.
+  const { data: sec } = await createServiceClient()
+    .from("_app_secrets")
+    .select("valor")
+    .eq("clave", "KOMMO_WEBHOOK_SECRET")
+    .maybeSingle();
+  const destination = webhookDestination(base, (sec?.valor as string | undefined) ?? null);
 
   try {
     // Conservar los settings que ya tenía: si el operador sumó eventos a
@@ -48,7 +55,7 @@ export async function POST() {
     if (previo.ok) {
       const j = await previo.json();
       const mio = (j?._embedded?.webhooks ?? []).find(
-        (w: { destination?: string }) => w?.destination === destination,
+        (w: { destination?: string }) => (w?.destination ?? "").includes(WEBHOOK_PATH),
       );
       if (Array.isArray(mio?.settings) && mio.settings.length > 0) settings = mio.settings;
     }

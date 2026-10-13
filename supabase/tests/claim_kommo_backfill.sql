@@ -229,4 +229,56 @@ select pg_temp.expect('todas las funciones de 0061/0060 fijan search_path = publ
                          'trigger_sync_pipelines','gasto_mes_actual')
        and coalesce(p.proconfig, '{}'::text[]) <> array['search_path=public, pg_temp']));
 
+-- 14) Webhook autenticado (0073): instantes futuros recortados + estado/secretos/funciones.
+delete from lead_stage_events where true;
+delete from leads where true;
+insert into leads (id, kommo_lead_id, kommo_pipeline_id, kommo_stage_id) values
+  ('00000000-0000-0000-0000-0000000000b1', 301, 1, 10);
+-- un payload con last_modified en el AÑO 2100 NO puede congelar al lead
+select pg_temp.expect('instante de 2100: se aplica pero recortado a ~now()',
+  (select outcome = 'applied' from apply_lead_position('00000000-0000-0000-0000-0000000000b1', 11, 1, '2100-01-01'::timestamptz)));
+select pg_temp.expect('kommo_position_at quedó <= now() + 2 min (no 2100)',
+  (select kommo_position_at <= now() + interval '2 minutes' from leads where id = '00000000-0000-0000-0000-0000000000b1'));
+-- y el evento REAL posterior (ahora + 5 min) no se descarta como viejo
+select pg_temp.expect('el evento real siguiente se aplica (el lead no quedó congelado)',
+  (select outcome = 'applied' and moved from apply_lead_position('00000000-0000-0000-0000-0000000000b1', 12, 1, clock_timestamp() + interval '1 second')));
+select pg_temp.expect('un evento legítimo viejo sigue siendo stale (orden invertido)',
+  (select outcome = 'stale' from apply_lead_position('00000000-0000-0000-0000-0000000000b1', 10, 1, now() - interval '1 day')));
+
+select pg_temp.expect('existe el secreto del webhook y no es corto',
+  (select length(valor) >= 32 from _app_secrets where clave = 'KOMMO_WEBHOOK_SECRET'));
+select pg_temp.expect('el singleton arranca permisivo',
+  (select mode = 'permissive' from kommo_webhook_auth where singleton));
+select pg_temp.expect('anon/authenticated no leen _app_secrets ni escriben kommo_webhook_auth',
+  not has_table_privilege('anon', '_app_secrets', 'select') and not has_table_privilege('authenticated', '_app_secrets', 'select')
+  and not has_table_privilege('anon', 'kommo_webhook_auth', 'select')
+  and has_table_privilege('authenticated', 'kommo_webhook_auth', 'select')
+  and not has_table_privilege('authenticated', 'kommo_webhook_auth', 'update'));
+select pg_temp.expect('kommo_webhook_note: solo service_role',
+  has_function_privilege('service_role', 'kommo_webhook_note(boolean)', 'execute')
+  and not has_function_privilege('anon', 'kommo_webhook_note(boolean)', 'execute')
+  and not has_function_privilege('authenticated', 'kommo_webhook_note(boolean)', 'execute')
+  and not has_function_privilege('public', 'kommo_webhook_note(boolean)', 'execute'));
+
+-- sin secreto en modo permisivo: alerta (una sola en 6 h) y sigue permisivo
+delete from alerts where kind = 'webhook_unsigned';
+select pg_temp.expect('request sin secreto: devuelve permissive', (select kommo_webhook_note(false)) = 'permissive');
+select kommo_webhook_note(false);
+select pg_temp.expect('una sola alerta webhook_unsigned por ventana de 6 h',
+  (select count(*) = 1 from alerts where kind = 'webhook_unsigned'));
+-- una request firmada con unsigned reciente NO pasa a strict (transición)
+select kommo_webhook_note(true);
+select pg_temp.expect('firmada con unsigned reciente: sigue permisivo',
+  (select mode = 'permissive' from kommo_webhook_auth where singleton));
+-- pasadas strict_after_hours sin unsigned: pasa solo a strict
+update kommo_webhook_auth set last_unsigned_at = now() - interval '25 hours' where singleton;
+select pg_temp.expect('firmada + 25 h sin unsigned: strict automático', (select kommo_webhook_note(true)) = 'strict');
+select pg_temp.expect('quedó strict con motivo auto',
+  (select mode = 'strict' and strict_reason = 'auto' and strict_since is not null from kommo_webhook_auth where singleton));
+-- instalación nueva (nunca hubo unsigned) + primera request firmada = strict de entrada
+update kommo_webhook_auth set mode = 'permissive', strict_since = null, strict_reason = null, last_unsigned_at = null where singleton;
+select pg_temp.expect('nunca hubo unsigned: la primera firmada pasa a strict', (select kommo_webhook_note(true)) = 'strict');
+update kommo_webhook_auth set mode = 'permissive', strict_since = null, strict_reason = null, last_unsigned_at = null,
+       last_signed_at = null where singleton;
+
 rollback;

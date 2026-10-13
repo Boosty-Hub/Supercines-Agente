@@ -35,6 +35,12 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   outbound_blocked: { label: "Texto bloqueado antes de enviar", icon: "🛑" },
   webhook_unsigned: { label: "Webhook de Kommo sin clave", icon: "🔓" },
   webhook_rejected: { label: "Requests al webhook descartadas", icon: "🚫" },
+  salesbot_not_delivered: { label: "No se pudo confirmar un envío", icon: "❓" },
+  provider_credit_exhausted: { label: "Sin crédito del proveedor de IA", icon: "🪫" },
+  inbound_dropped: { label: "Se perdió un mensaje entrante", icon: "📭" },
+  inbound_silence: { label: "No entran mensajes", icon: "🔇" },
+  kommo_webhook_disabled: { label: "Kommo deshabilitó el webhook", icon: "🔌" },
+  dream_error: { label: "Aprendizaje con error del agente", icon: "💭" },
 };
 
 function kindLabel(kind: string): { label: string; icon: string } {

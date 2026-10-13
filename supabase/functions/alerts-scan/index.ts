@@ -19,6 +19,7 @@ import { authorizeInternal } from "../_shared/auth.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
 import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
+import { type PendingAlert, shouldPostAlert, shouldSweep } from "../_shared/alert-kinds.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { budgetAlertLevel, budgetAlertStillApplies, getBudgetGate, parseBudget } from "../_shared/budget.ts";
@@ -76,6 +77,8 @@ async function createAlert(a: AlertInput) {
       ref_table: a.ref_table ?? null,
       ref_id: a.ref_id ?? null,
       metadata: a.metadata ?? {},
+      // Se postea acá mismo (postWebhook): nace marcada para que el barrido no la duplique.
+      webhook_notified_at: new Date().toISOString(),
     })
     .select("id")
     .single();
@@ -107,6 +110,33 @@ async function postWebhook(config: AlertConfig, alert: AlertInput) {
   } catch (e) {
     console.warn("webhook post failed:", e);
   }
+}
+
+// Barrido de alertas que insertó OTRO (funciones Edge, SQL): todas las de un tipo notificable
+// llegan a Slack/Discord sin importar quién las creó (ver _shared/alert-kinds.ts y la
+// migración 0076). El reclamo es atómico, con rate limit (SWEEP_LIMIT por barrido), dedupe y
+// descarte de las viejas; el POST es mejor esfuerzo (una alerta ya reclamada no se reintenta:
+// preferimos perder un aviso a duplicar uno).
+const SWEEP_LIMIT = 10;
+async function notifyPendingAlerts(config: AlertConfig | null): Promise<number> {
+  if (!shouldSweep(config)) return 0;
+  const { data, error } = await supabase.rpc("claim_alerts_for_webhook", { p_limit: SWEEP_LIMIT });
+  if (error) {
+    console.warn("claim_alerts_for_webhook:", error.message);
+    return 0;
+  }
+  let posted = 0;
+  for (const a of (data ?? []) as PendingAlert[]) {
+    if (!shouldPostAlert(a, config)) continue; // tipo no notificable (p. ej. dream_error): queda marcada
+    await postWebhook(config!, {
+      kind: a.kind,
+      severity: (a.severity as AlertInput["severity"]) ?? "warning",
+      title: a.title,
+      description: a.description ?? "",
+    });
+    posted++;
+  }
+  return posted;
 }
 
 // ---------------- Detectores ----------------
@@ -576,10 +606,13 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    const swept = await notifyPendingAlerts(config);
+
     return new Response(
       JSON.stringify({
         ok: true,
         created: newAlerts.length,
+        webhook_swept: swept,
         breakdown: {
           draft_failed: failed.length,
           human_review_needed: review.length,

@@ -56,6 +56,7 @@ type FollowUpSendRow = {
   status: string;
   error: string | null;
   sent_at: string;
+  sending_at: string | null;
   leads: { display_name: string | null; kommo_lead_id: number | null } | { display_name: string | null; kommo_lead_id: number | null }[] | null;
   follow_up_templates: { name: string } | { name: string }[] | null;
 };
@@ -79,11 +80,11 @@ export default async function SeguimientoPage() {
       )
       .eq("is_active", true)
       .maybeSingle(),
-    // Log de envíos (tabla `follow_ups`, append-only) para la sección "Envíos
+    // Log de envíos (tabla `follow_ups`, una fila por intento) para la sección "Envíos
     // recientes" — 20 filas, no necesita fetchAllRows (no es un agregado).
     supabase
       .from("follow_ups")
-      .select("id, lead_id, step, status, error, sent_at, leads(display_name, kommo_lead_id), follow_up_templates(name)")
+      .select("id, lead_id, step, status, error, sent_at, sending_at, leads(display_name, kommo_lead_id), follow_up_templates(name)")
       .order("sent_at", { ascending: false })
       .limit(20),
   ]);
@@ -104,6 +105,8 @@ export default async function SeguimientoPage() {
       sentAt: s.sent_at,
       templateName: template?.name ?? null,
       error: s.error,
+      // failed CON marca de envío (0072): la plantilla pudo haber salido.
+      unconfirmed: s.status === "failed" && s.sending_at != null,
     };
   });
 

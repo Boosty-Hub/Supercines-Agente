@@ -19,6 +19,11 @@ export const maxDuration = 120;
 // una persona que está mirando la conversación, así que el horario deja de ser
 // una protección y pasa a ser un estorbo. Los demás gates (opt-out, estado
 // terminal, tope de envíos, etapa fuera del whitelist en vivo) NO se saltean.
+//
+// `confirmResend` lo manda la UI SOLO tras confirmar en un diálogo que el intento
+// anterior pudo haberle llegado («sin confirmar»). Sin él, la reserva por lead y paso
+// (0072) no deja reenviar ese paso. Nunca permite enviar un paso ya enviado ni
+// pisar un envío en curso del barrido.
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const {
@@ -26,7 +31,7 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  let body: { leadId?: unknown; force?: unknown };
+  let body: { leadId?: unknown; force?: unknown; confirmResend?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -42,7 +47,7 @@ export async function POST(request: Request) {
     // alcance ya se validaron arriba y por el middleware (/api/follow-up).
     const res = await callInternalFunction(
       "follow-up-scan",
-      { lead_id: leadId, force: body.force === true },
+      { lead_id: leadId, force: body.force === true, confirm_resend: body.confirmResend === true },
       { timeoutMs: 120_000 }
     );
     if (res.status === 401) return NextResponse.json({ ok: false, error: INTERNAL_401_HINT }, { status: 503 });
@@ -53,9 +58,9 @@ export async function POST(request: Request) {
         { status: 502 }
       );
     }
-    // La función devuelve { ok, processed } (sweep general) hoy; el día que
-    // soporte lead puntual, se espera { ok, skipped?, outsideHours?, status?,
-    // error? }. Se pasa tal cual para que la UI muestre el motivo real.
+    // En modo puntual la función devuelve { ok, skipped?, outsideHours?,
+    // unconfirmed?, status?, error? }. Se pasa tal cual para que la UI muestre el
+    // motivo real.
     return NextResponse.json(json ?? { ok: false, error: "respuesta vacía" });
   } catch (err) {
     return NextResponse.json(

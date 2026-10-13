@@ -14,17 +14,30 @@ export type RecentSend = {
   sentAt: string;
   templateName: string | null;
   error: string | null;
+  /** Falló DESPUÉS de disparar la plantilla: pudo haberle llegado (0072). */
+  unconfirmed: boolean;
 };
 
-const STATUS_COLOR: Record<string, "green" | "red"> = {
+// Estados de la fila del intento (follow_ups.status, 0072): `claimed` = reservado y en
+// curso; `duplicate` = envío duplicado del mismo paso registrado antes de la reserva.
+const STATUS_COLOR: Record<string, "green" | "red" | "amber" | "blue"> = {
   sent: "green",
   failed: "red",
+  claimed: "blue",
+  duplicate: "amber",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   sent: "Enviado",
   failed: "Falló",
+  claimed: "Enviando…",
+  duplicate: "Duplicado",
 };
+
+function statusOf(r: RecentSend): { color: "green" | "red" | "amber" | "blue" | "neutral"; label: string } {
+  if (r.unconfirmed) return { color: "amber", label: "Sin confirmar" };
+  return { color: STATUS_COLOR[r.status] ?? "neutral", label: STATUS_LABEL[r.status] ?? r.status };
+}
 
 // Errores del proveedor larguísimos (a veces un JSON entero) — se resumen a
 // algo legible; el detalle completo va en el title del elemento.
@@ -33,7 +46,8 @@ function shortError(err: string): string {
 }
 
 /**
- * Log de los últimos envíos de seguimiento (tabla `follow_ups`, append-only).
+ * Log de los últimos envíos de seguimiento (tabla `follow_ups`: una fila por intento;
+ * el panel solo la lee, la escriben las Edge Functions a través de la reserva de 0072).
  * Cada fila abre la conversación del lead; los fallidos ofrecen reintentar
  * a mano sin esperar al próximo barrido de follow-up-scan.
  */
@@ -65,9 +79,7 @@ export function RecentSends({ rows }: { rows: RecentSend[] }) {
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   <Badge color="neutral">Paso {r.step}</Badge>
-                  <Badge color={STATUS_COLOR[r.status] ?? "neutral"}>
-                    {STATUS_LABEL[r.status] ?? r.status}
-                  </Badge>
+                  <Badge color={statusOf(r).color}>{statusOf(r).label}</Badge>
                   {r.templateName && (
                     <span className="truncate text-[11px] text-neutral-400">{r.templateName}</span>
                   )}
@@ -79,7 +91,7 @@ export function RecentSends({ rows }: { rows: RecentSend[] }) {
                 )}
               </Link>
               {/* Reintentar: FUERA del Link — ver nota en follow-up-retry-button.tsx */}
-              {r.status === "failed" && <FollowUpRetryButton leadId={r.leadId} />}
+              {r.status === "failed" && <FollowUpRetryButton leadId={r.leadId} unconfirmed={r.unconfirmed} />}
             </li>
           ))}
         </ul>

@@ -1,14 +1,15 @@
 // _shared/dreams-digest-fingerprint.ts
 //
-// rebuildDigest (dreams-run) consolida TODOS los dreams activos en el digest
-// rodante con una llamada al modelo. Corría en CADA ejecución, aunque el set de
+// rebuildDigest (dreams-run) consolida el resumen de lo archivado + TODOS los
+// dreams activos en el digest con una llamada al modelo. Corría en CADA ejecución, aunque el set de
 // dreams activos y el digest previo fueran exactamente los mismos que en la
 // corrida anterior (cron diario sin learnings nuevos, triggers del dashboard
 // repetidos): gasto sin ningún cambio posible en el resultado.
 //
 // El fingerprint resume todo lo que determina la salida de esa llamada: cada
 // dream activo (path + hash del contenido, así una EDICIÓN con el mismo path
-// también cuenta), el digest previo (si alguien lo editó a mano, hay que
+// también cuenta), el resumen de lo archivado, el digest VIGENTE (no es entrada
+// del modelo en este diseño, pero si alguien lo editó o lo vació a mano hay que
 // reconstruir), el modelo, la versión del prompt y el tope de palabras. Se
 // guarda en runtime_config.DREAMS_DIGEST_FINGERPRINT junto al digest que produjo;
 // si en la corrida siguiente coincide, la llamada se salta.
@@ -28,11 +29,13 @@ export type DigestContext = {
   maxWords: number;
   /** OPERATOR_NAME: se interpola en el prompt de consolidación. */
   operator: string;
+  /** DREAMS_ARCHIVE_DIGEST: entra al prompt de consolidación junto a los activos. */
+  archived: string;
 };
 
 export async function digestFingerprint(
   dreams: ReadonlyArray<{ path: string; content: string }>,
-  prevDigest: string,
+  currentDigest: string,
   ctx: DigestContext,
 ): Promise<string> {
   const entries = await Promise.all(
@@ -40,7 +43,12 @@ export async function digestFingerprint(
   );
   entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   // JSON (no concatenación): cada campo queda delimitado y no hay colisiones.
-  return sha256Hex(JSON.stringify({ entries, prev: await sha256Hex(prevDigest), ...ctx }));
+  return sha256Hex(JSON.stringify({
+    entries,
+    digest: await sha256Hex(currentDigest),
+    ...ctx,
+    archived: await sha256Hex(ctx.archived),
+  }));
 }
 
 /**

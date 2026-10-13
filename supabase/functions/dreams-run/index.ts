@@ -16,6 +16,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
+import { enforceDigestWordCap } from "../_shared/dreams-digest-cap.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { jsonOf, LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { modelFor } from "../_shared/models.ts";
@@ -389,6 +390,15 @@ Reglas del digest:
       metadata: { digest: true, dreams: dreams.length },
       pricingOverrideRaw: cfg.get("AI_PRICING_OVERRIDES"),
     });
+  }
+
+  // CORTE DURO antes de persistir: DIGEST_MAX_WORDS de arriba es solo una
+  // instrucción que el modelo puede (y en producción, llegó a) incumplir. Ver
+  // _shared/dreams-digest-cap.ts para el porqué completo.
+  const beforeCap = digest.length;
+  digest = enforceDigestWordCap(digest, DIGEST_MAX_WORDS);
+  if (digest.length !== beforeCap) {
+    console.log(`digest recortado al tope duro: ${beforeCap} -> ${digest.length} chars`);
   }
 
   const { error: upsertErr } = await supabase.from("runtime_config").upsert(

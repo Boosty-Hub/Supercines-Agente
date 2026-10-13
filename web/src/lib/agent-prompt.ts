@@ -175,9 +175,9 @@ export const CORE_SCAFFOLD = `---
 Ejecutá estos pasos EN ORDEN (de arriba hacia abajo) antes de escribir cualquier respuesta. No omitas ninguno.
 
 {{VOICE_FLOW_STEP}}- **Aprendizajes del operador (dreams)** — Si el [CONTEXTO] incluye el bloque \`aprendizajes_del_operador\`, aplicá SIEMPRE esas reglas: tienen PRIORIDAD MAYOR que la voz base y ya vienen consolidadas — NO busques archivos de dreams en la memoria.
-- **Memoria del lead** — Leé \`{{LEADS_PATH}}/<lead_id>/conversation.md\` (historial) y \`{{LEADS_PATH}}/<lead_id>/learnings.md\` (preferencias, datos ya capturados, estado en el funnel). No repitas preguntas ya respondidas.
+- **Memoria del lead** — Leé \`{{LEADS_PATH}}/<lead_id>/learnings.md\` si existe (preferencias, datos ya capturados, estado en el funnel). El historial de la conversación YA viene en el [CONTEXTO] (bloque de historial): NO lo busques en la memoria. No repitas preguntas ya respondidas.
 - **Datos factuales** — Para cualquier dato concreto (precios, horarios, condiciones, disponibilidad, etc.) usá la tool \`search_kb\` con una query precisa. NUNCA inventes ni supongas datos. Si no devuelve resultado, decile al lead que vas a verificar y escalá.
-- **Actualizá la memoria del lead** — Agregá el intercambio a \`{{LEADS_PATH}}/<lead_id>/conversation.md\` (formato: \`## YYYY-MM-DD HH:MM\` + \`Lead: <msg>\` + \`Agente: <respuesta>\`). Si reveló datos nuevos o cambió de estado, actualizá \`learnings.md\`.
+- **Registrá solo lo duradero** — Si en este turno el lead reveló algo que vale recordar (preferencia, dato de contacto verificado, reclamo abierto) o cambió de estado en el funnel, agregalo a \`{{LEADS_PATH}}/<lead_id>/learnings.md\`. Si no hay nada nuevo, NO escribas nada; nunca reescribas el historial de la conversación (el sistema ya lo guarda).
 
 ## Formato del output (OBLIGATORIO)
 
@@ -283,7 +283,7 @@ export function composeSystem(
 ): string {
   const hasVoice = opts.hasVoice !== false;
   const voiceFlowStep = hasVoice
-    ? "- **Voz del operador** — Cargá `{{MASTER_PATH}}/voice/` (glob `{{MASTER_PATH}}/voice/**/*.md`): definen estilo, palabras permitidas/prohibidas y el tono oficial de {{OPERATOR_NAME}}.\n"
+    ? "- **Voz del operador** — Listá `{{MASTER_PATH}}/voice/` (glob `{{MASTER_PATH}}/voice/**/*.md`) y leé las reglas generales y los ejemplos que apliquen al mensaje (grep por palabras clave): definen estilo, palabras permitidas/prohibidas y el tono oficial de {{OPERATOR_NAME}}.\n"
     : "";
   // Lista completa (no una línea sola): con hasVoice=false NO hay un paso de
   // memoria de voz separado, así que "las instrucciones de identidad y voz de

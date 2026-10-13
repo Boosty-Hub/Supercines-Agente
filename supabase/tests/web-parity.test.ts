@@ -61,3 +61,18 @@ Deno.test("agentModelMatches: compara contra el agente VIVO (string u objeto, ef
   // Haiku 4.5 no soporta effort: solo importa el id.
   assertEquals(agentModelMatches({ id: "claude-haiku-4-5", effort: null }, agentModelParam("claude-haiku-4-5")), true);
 });
+
+// El scaffold que se sincroniza al agente y el ejemplo de system prompt deben
+// ser coherentes con el [CONTEXTO] (historial + digest de dreams ya vienen en el
+// mensaje): pedirle al agente leer conversation.md o /dreams/ reintroduce el
+// costo de tokens por respuesta que se eliminó.
+Deno.test("CORE_SCAFFOLD y system-prompt.example no piden conversation.md ni leer /dreams/", async () => {
+  const src = await Deno.readTextFile(new URL("../../web/src/lib/agent-prompt.ts", import.meta.url));
+  const scaffold = src.slice(src.indexOf("export const CORE_SCAFFOLD"), src.indexOf("// Phrase per CRM tool"));
+  assert(scaffold.length > 500, "no se encontró el scaffold");
+  assert(!/conversation\.md/.test(scaffold));
+  assert(!/dreams\//.test(scaffold));
+  const example = await Deno.readTextFile(new URL("../../agent/system-prompt.example.md", import.meta.url));
+  assert(!/conversation\.md/.test(example));
+  assert(!/glob .*dreams/.test(example));
+});

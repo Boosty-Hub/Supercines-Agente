@@ -16,13 +16,13 @@ export const runtime = "nodejs";
 // in-container filesystem guidance is the same whether provisioned from CLI or
 // the wizard.
 const MASTER_DESCRIPTION =
-  "Memoria global del operador: voz (reglas, chats reales, transcripciones, respuestas ejemplares), KB destilada y aprendizajes destilados por el job de Dreams. " +
+  "Memoria global del operador (solo lectura): voz (reglas, chats reales, transcripciones, respuestas ejemplares), KB destilada y aprendizajes destilados por el job de Dreams. " +
   "Estructura del filesystem: /voice/rule/<sample_id>_<chunk>.md, /voice/chat_export/<id>_<chunk>.md, /voice/transcript/<id>_<chunk>.md, /voice/example_response/<id>_<chunk>.md, /kb/<doc>/<chunk>.md, /dreams/<date>_<topic>.md. " +
-  "ANTES de redactar cualquier respuesta a un lead: grep por palabras clave del mensaje del lead en /voice/ para reglas y ejemplos aplicables; consultá /kb/ para info factual; mirá /dreams/ para aprendizajes recientes que tienen prioridad sobre la voz base.";
+  "Al redactar: en /voice/ leé las reglas generales y, con grep por palabras clave del mensaje, los ejemplos aplicables; para info factual usá la tool search_kb en vez de leer /kb/. NO leas /dreams/: los aprendizajes consolidados llegan en el [CONTEXTO] (aprendizajes_del_operador) y tienen prioridad sobre la voz base.";
 
 const LEADS_DESCRIPTION =
-  "Memoria persistente por lead. Estructura: /<lead_id>/conversation.md (timeline de mensajes inbound/outbound), /<lead_id>/learnings.md (observaciones del agente: objeciones recurrentes, contexto, preferencias, vertical asignada). " +
-  "El lead_id es el ID nativo del lead en el CRM. ANTES de responder a un mensaje entrante: leer /<lead_id>/conversation.md y /<lead_id>/learnings.md si existen, para contexto histórico. DESPUÉS de responder: actualizar conversation.md con el nuevo turno y agregar a learnings.md si aprendiste algo nuevo sobre el lead.";
+  "Memoria persistente por lead. Estructura: /<lead_id>/learnings.md (datos duraderos del lead: objeciones recurrentes, contexto, preferencias, estado en el funnel). " +
+  "El lead_id es el ID nativo del lead en el CRM. El historial de la conversación NO vive acá: llega en el [CONTEXTO] de cada sesión. ANTES de responder: leer /<lead_id>/learnings.md si existe. DESPUÉS: agregar a learnings.md solo si aprendiste algo DURADERO sobre el lead; si no hay nada nuevo, no escribir.";
 
 // Step 2: create/reconcile the two Memory Stores. Idempotent — finds existing
 // stores by name (reuses their IDs) and only creates the missing ones.

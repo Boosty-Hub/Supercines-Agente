@@ -29,6 +29,7 @@ import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
+import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -132,6 +133,8 @@ type Deps = {
   timezone: string;
   anthropicKey: string;
   agentModel: string;
+  /** runtime_config.DREAMS_DIGEST: aprendizajes consolidados (mismo bloque que recibe generate-response). */
+  dreamsDigest: string | null;
   pricingOverrideRaw: string | null;
 };
 
@@ -215,8 +218,8 @@ async function runFollowUpAgent(opts: {
 
 Fecha y hora actual: ${formatNow(deps.timezone)} (zona horaria ${deps.timezone}).
 
-Lead: ${lead.id}. Revisá ${masterPath}/voice/ y ${masterPath}/dreams/, y la memoria del lead en ${leadsPath}/${lead.id}/ si existe.
-
+Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. Los últimos mensajes están abajo: no los busques en la memoria.
+${deps.dreamsDigest ? `\naprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${deps.dreamsDigest}\n` : ""}
 Últimos mensajes del lead:
 """
 ${messagesBlock}
@@ -250,13 +253,13 @@ Respondé EXACTAMENTE en este formato y nada más:
         type: "memory_store",
         memory_store_id: memstoreMaster,
         access: "read_only",
-        instructions: `Voz del operador (reglas + ejemplos) en /voice/. Knowledge base destilada en /kb/. Aprendizajes de Dreams en /dreams/. Consultá antes de decidir.`,
+        instructions: MASTER_STORE_INSTRUCTIONS,
       },
       {
         type: "memory_store",
         memory_store_id: memstoreLeads,
         access: "read_write",
-        instructions: `Memoria por lead. El lead actual es ${lead.id}. Leé /${lead.id}/conversation.md y /${lead.id}/learnings.md si existen.`,
+        instructions: leadsStoreInstructions(lead.id),
       },
     ],
   });
@@ -655,6 +658,7 @@ Deno.serve(async (req: Request) => {
       timezone,
       anthropicKey,
       agentModel: modelFor(runtimeCfg, "AGENT_MODEL"),
+      dreamsDigest: (runtimeCfg.get("DREAMS_DIGEST") ?? "").trim() || null,
       pricingOverrideRaw: runtimeCfg.get("AI_PRICING_OVERRIDES") ?? null,
     };
 

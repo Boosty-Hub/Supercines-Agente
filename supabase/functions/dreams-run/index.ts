@@ -1,8 +1,9 @@
 // Edge Function: dreams-run
 //
 // Destila aprendizajes y los escribe como archivos en el master Memory Store
-// bajo /dreams/. El agente al servir un mensaje hace grep sobre
-// /mnt/memory/<master>/dreams/ y los toma como reglas implícitas.
+// bajo /dreams/ (gestión desde el dashboard) y los consolida en el digest
+// rodante runtime_config.DREAMS_DIGEST, que generate-response / follow-up-scan
+// inyectan al contexto de cada sesión. El agente NO lee /dreams/ por filesystem.
 //
 // Inputs:
 //   POST { period: "daily" }   → últimas 24h (conversations del día)

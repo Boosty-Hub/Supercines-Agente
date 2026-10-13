@@ -31,6 +31,7 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { modelFor } from "../_shared/models.ts";
+import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -889,7 +890,8 @@ function buildContext(opts: {
     ? `[MENSAJES DEL LEAD — ${opts.messages.length} mensajes seguidos, trátalos como UNA sola conversación y responde de forma unificada, no uno por uno]`
     : `[MENSAJE DEL LEAD]`;
 
-  // Historial determinístico leído de la DB (no depende de conversation.md).
+  // Historial determinístico leído de la DB (el agente ya no lee ni escribe
+  // conversation.md en el Memory Store: este bloque ES la conversación previa).
   // Es contexto VERIFICADO de los turnos previos: el agente lo usa para no
   // repetir preguntas ni perder el hilo. Va antes del/los mensaje(s) nuevo(s).
   const historyBlock = opts.history
@@ -924,7 +926,7 @@ ${historyBlock}${header}
 ${block}
 """
 
-Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
+Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee ${opts.leadsPath}/${opts.lead.id}/learnings.md si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt. La conversación previa ya está en el historial de arriba: no la busques en la memoria. Solo escribí en learnings.md si aprendiste algo DURADERO de este lead; si no hay nada nuevo, no escribas nada. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
 
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }
@@ -968,13 +970,15 @@ async function runAgent(opts: {
         type: "memory_store",
         memory_store_id: opts.memstoreMaster,
         access: "read_only",
-        instructions: `Voz del operador (reglas + ejemplos) en /voice/. Knowledge base destilada en /kb/. Aprendizajes de Dreams en /dreams/. Consultá antes de redactar.`,
+        instructions: MASTER_STORE_INSTRUCTIONS,
       },
       {
         type: "memory_store",
         memory_store_id: opts.memstoreLeads,
         access: "read_write",
-        instructions: `Memoria por lead. El lead actual es ${opts.leadId}. Leé /${opts.leadId}/conversation.md y /${opts.leadId}/learnings.md si existen. Después de responder, escribí turn nuevo a conversation.md (formato: '## YYYY-MM-DD HH:MM\\nLead: <msg>\\nAgente: <respuesta>\\n').`,
+        // El historial viaja en el [CONTEXTO] (fetchLeadHistory): el agente no lee ni
+        // reescribe conversation.md; solo learnings.md, y solo si hay algo duradero.
+        instructions: leadsStoreInstructions(opts.leadId),
       },
     ],
   });
@@ -1342,8 +1346,8 @@ Deno.serve(async (req: Request) => {
       }
 
       // Historial determinístico del lead, leído de la DB (excluimos el batch
-      // actual: ya viaja en [MENSAJES DEL LEAD]). Hace que el agente no dependa
-      // de que el modelo haya escrito conversation.md en el Memory Store.
+      // actual: ya viaja en [MENSAJES DEL LEAD]). Es la ÚNICA fuente del historial:
+      // el agente ya no lee ni reescribe conversation.md en el Memory Store.
       const history = await fetchLeadHistory(supabase, batch.leadId, {
         excludeMessageIds: batchIds,
         maxMessages: 24,

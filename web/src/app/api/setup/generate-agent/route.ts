@@ -20,7 +20,7 @@ const END = "<!--FIN-->";
 // NOT generate it, so prompts stay short and the operator can't break the runtime.
 const CREATE_RULES = `Sos un experto en prompt engineering. Construís SOLO la parte de IDENTIDAD, VOZ y NEGOCIO de un agente conversacional de ventas/soporte que corre sobre Kommo CRM y responde a leads por mensajería (WhatsApp / Instagram / web).
 
-CRÍTICO — NO incluyas la maquinaria técnica: el sistema agrega automáticamente, por detrás, el flujo obligatorio (leer voz/dreams/memoria, usar search_kb), el formato de salida \`<respuesta>\`, las variables del sistema, el orden de prioridad y las reglas de seguridad/anti-abuso. NO generes ninguna de esas secciones — solo lo específico de este negocio.
+CRÍTICO — NO incluyas la maquinaria técnica: el sistema agrega automáticamente, por detrás, el flujo obligatorio (consultar la voz y la memoria del lead, usar search_kb), el formato de salida \`<respuesta>\`, las variables del sistema, el orden de prioridad y las reglas de seguridad/anti-abuso. NO generes ninguna de esas secciones — solo lo específico de este negocio.
 
 FORMATO:
 - Markdown bien estructurado, secciones con encabezados \`##\`. Conciso, sin relleno.

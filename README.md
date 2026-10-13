@@ -117,6 +117,14 @@ Panel **"Actualizaciones del sistema"**:
 >
 > Como `_shared/*` se bundlea en **todas** las funciones, un cambio en un archivo compartido marca las 9 como `cambió` y se redespliegan todas — es esperado y seguro (las que no usan ese archivo quedan idénticas).
 
+### Inbox tipo kanban (pipelines de Kommo)
+
+El Inbox es un **tablero** con una pestaña por pipeline de Kommo (en SuperCines, una por sede) y una columna por etapa; las tarjetas se **arrastran** para mover el lead de etapa (se escribe primero en Kommo; en móvil o para cambiar de pipeline se usa «Mover a…»). La vista **Lista** (`?vista=lista`) conserva las pestañas «Con agente / Apagadas / Todas».
+
+- Al aplicar la migración `0061` se agenda `sync-pipelines` cada 10 minutos: copia pipelines/etapas y rellena el pipeline y la etapa de los leads existentes, por páginas y respetando el límite de Kommo. Mientras tanto aparecen en «Sin pipeline». El botón **Sincronizar** lo hace al instante.
+- Estado del recorrido: `select * from kommo_backfill;` (`pending` → `running` → `done`).
+
+
 ### Tabs de `/settings` (título: **Ajustes**)
 
 Ajustes es el único módulo de configuración: absorbió las páginas sueltas

@@ -2,8 +2,12 @@
 //
 // Cada 5 min escanea el estado del sistema y crea filas en `alerts`:
 //   - draft_failed:        drafts con status='failed' sin alerta previa
-//   - human_review_needed: mensajes inbound requires_human_review sin alerta y sin draft enviado
+//   - human_review_needed: mensajes inbound requires_human_review sin alerta y sin draft enviado,
+//                          EXCLUYENDO los que el pipeline ignoró a propósito (ver _shared/alerts-human-review.ts)
 //   - outcomes_regression: graders con score promedio últimas 24h < 70% del de la semana previa
+//   - inbound_silence:     cero webhooks de Kommo en 90 min de horario laboral
+//   - kommo_webhook_disabled: Kommo confirma por API que el webhook está deshabilitado
+//                          (ver _shared/alerts-kommo-webhook.ts)
 //   - budget_exceeded:     el gasto del mes alcanzó el 100% (deja de generar) o el 110%
 //                          (deja de clasificar) de MONTHLY_BUDGET_USD — una alerta por
 //                          (mes, nivel); ver _shared/budget.ts
@@ -11,7 +15,9 @@
 // Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { isBusinessHours, type BusinessHoursConfig } from "../_shared/business-hours.ts";
+import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
+import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
+import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { budgetAlertLevel, budgetAlertStillApplies, getBudgetGate, parseBudget } from "../_shared/budget.ts";
 
@@ -145,7 +151,7 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
   const { data } = await supabase
     .from("messages")
     .select(
-      "id, content, classification, created_at, leads(display_name, kommo_lead_id)"
+      "id, content, classification, created_at, ignored, leads(display_name, kommo_lead_id)"
     )
     .eq("direction", "inbound")
     .eq("requires_human_review", true)
@@ -161,13 +167,17 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
     content: string;
     // deno-lint-ignore no-explicit-any
     classification: any;
+    ignored: boolean | null;
     // deno-lint-ignore no-explicit-any
     leads: any;
   }>;
   const ids = rows.map((r) => r.id);
   const existing = await existingAlerts("human_review_needed", ids);
   return rows
-    .filter((r) => !existing.has(r.id))
+    // Defensa en profundidad: la decisión real vive en shouldAlertHumanReview
+    // (testeada), no en la forma del query: cambiar el `.eq("ignored", false)` de
+    // arriba no puede reabrir el falso positivo sin que el test lo note.
+    .filter((r) => shouldAlertHumanReview(r) && !existing.has(r.id))
     .map((r) => {
       const leadName = r.leads?.display_name ?? `lead ${r.leads?.kommo_lead_id ?? "?"}`;
       const tox = r.classification?.toxicity ?? 0;
@@ -334,7 +344,7 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
     .eq("is_active", true)
     .maybeSingle();
   const hours: BusinessHoursConfig = {
-    timezone: (fu?.timezone as string) || "America/Caracas",
+    timezone: (fu?.timezone as string) || DEFAULT_TIMEZONE,
     business_hours: (fu?.business_hours as BusinessHoursConfig["business_hours"]) ?? null,
     business_hours_start: Number(fu?.business_hours_start ?? 9),
     business_hours_end: Number(fu?.business_hours_end ?? 20),
@@ -387,6 +397,67 @@ async function detectInboundSilence(): Promise<AlertInput[]> {
       metadata: { silence_minutes: SILENCE_MINUTES, events_last_7d: weekCount ?? 0 },
     },
   ];
+}
+
+// ---- Webhook de Kommo deshabilitado (detección DIRECTA) ----
+// `inbound_silence` (arriba) infiere el apagón por AUSENCIA de tráfico:
+// espera 90 min, solo mira en horario laboral y —lo peor— consulta la propia
+// DB, así que cuando la caída es total (Postgres abajo) no puede ni consultar
+// ni escribir la alerta: el vigilante se apaga junto con lo vigilado. En
+// producción (KIA-Agente) fue exactamente lo que pasó: el sistema estuvo mudo
+// 6 días seguidos (jul 30–ago 4) y otros 4 (ago 7–ago 10) sin que saltara
+// nada, porque además de la caída de DB, Kommo había deshabilitado el hook.
+//
+// Esto pregunta a KOMMO, que es la fuente de verdad y vive fuera de nuestra
+// infraestructura: si el hook figura `disabled`, el sistema está mudo AHORA,
+// sin esperar 90 minutos y sin importar la hora ni el estado de nuestra DB.
+const WEBHOOK_PATH = "/functions/v1/kommo-webhook";
+const WEBHOOK_REALERT_HOURS = 3;
+
+async function detectKommoWebhookDisabled(): Promise<AlertInput[]> {
+  try {
+    const cfg = await loadConfig(supabase);
+    const domain = cfg.get("KOMMO_API_DOMAIN");
+    const token = cfg.get("KOMMO_ACCESS_TOKEN");
+    if (!domain || !token) return []; // Kommo no conectado todavía
+
+    const res = await fetch(`https://${domain}/api/v4/webhooks`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return []; // fail-open: no inventamos un apagón por un 5xx/timeout de Kommo
+    const body = await res.json();
+    const hooks = (body?._embedded?.webhooks ?? []) as Array<
+      { destination?: string; disabled?: boolean }
+    >;
+    if (!shouldAlertKommoWebhookDisabled(hooks, WEBHOOK_PATH)) return [];
+
+    // Dedupe: un aviso cada WEBHOOK_REALERT_HOURS mientras dure el apagón.
+    const { data: recent } = await supabase
+      .from("alerts")
+      .select("id")
+      .eq("kind", "kommo_webhook_disabled")
+      .gte("created_at", new Date(Date.now() - WEBHOOK_REALERT_HOURS * 3600 * 1000).toISOString())
+      .limit(1);
+    if (recent && recent.length > 0) return [];
+
+    return [
+      {
+        kind: "kommo_webhook_disabled",
+        severity: "critical",
+        title: "Kommo deshabilitó el webhook: el agente está MUDO",
+        description:
+          "Kommo marcó el webhook como deshabilitado. NO está entrando ningún mensaje y el agente no puede responder. " +
+          "Kommo lo apaga cuando el endpoint le falla de forma sostenida (típicamente porque la base de datos estuvo lenta o caída). " +
+          "Reactivalo en Kommo → Ajustes → Integraciones, o re-suscribiendo el hook por API (POST /api/v4/webhooks con el mismo destination).",
+        ref_table: "inbound_queue",
+        metadata: { destination_path: WEBHOOK_PATH, hooks_checked: filterOurWebhooks(hooks, WEBHOOK_PATH).length },
+      },
+    ];
+  } catch (err) {
+    // Fail-open a propósito: un fallo de red hacia Kommo no es un apagón nuestro.
+    console.warn("detectKommoWebhookDisabled:", err instanceof Error ? err.message : String(err));
+    return [];
+  }
 }
 
 // ---- Techo de gasto mensual ----
@@ -477,16 +548,17 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, silence, budgetAlerts, budgetResolved, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, hookDisabled, budgetAlerts, budgetResolved, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
+      detectKommoWebhookDisabled(),
       detectBudgetExceeded(),
       resolveRecoveredBudget(),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression, ...silence, ...budgetAlerts];
+    const newAlerts = [...failed, ...review, ...regression, ...silence, ...hookDisabled, ...budgetAlerts];
 
     for (const a of newAlerts) {
       try {
@@ -506,6 +578,7 @@ Deno.serve(async (req: Request) => {
           human_review_needed: review.length,
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
+          kommo_webhook_disabled: hookDisabled.length,
           budget_exceeded: budgetAlerts.length,
           budget_resolved: budgetResolved,
           provider_credit_resolved: providerCreditResolved,

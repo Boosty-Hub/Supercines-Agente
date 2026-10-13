@@ -119,6 +119,20 @@ function triggerProcessInbound(): void {
   }
 }
 
+// Techo duro para el insert. Sin esto, una conexión colgada a PostgREST
+// retiene el worker indefinidamente y agota el pool de la función.
+const INSERT_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
+    Promise.resolve(p).then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
+    );
+  });
+}
+
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
   const raw = await req.text();
@@ -162,27 +176,74 @@ Deno.serve(async (req: Request) => {
   try {
     const payload = await readBody(req);
 
-    const { error } = await supabase
-      .from("inbound_queue")
-      .insert({
-        source: "kommo_webhook",
-        payload,
-        status: "pending",
-      });
+    // RESPONDER PRIMERO, PERSISTIR DESPUÉS (invariante 6 del CLAUDE.md). Este es
+    // el único endpoint que Kommo juzga: si no le contestamos rápido, DESHABILITA
+    // el webhook y el sistema queda mudo durante días (le pasó a KIA: 6 y 4 días
+    // seguidos, 219 mensajes perdidos, porque el insert se awaiteaba antes de
+    // responder y la salud del webhook quedaba atada a la de Postgres/PostgREST).
+    //
+    // Tradeoff aceptado: si la DB está caída se pierde ESE payload (Kommo ya
+    // recibió su 200 y no reintenta). Perder un payload puntual es
+    // infinitamente más barato que perder TODO el tráfico por días. Los
+    // reintentos cubren los hipos cortos, y `inbound_silence` es la red final.
+    const persist = (async () => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { error } = await withTimeout(
+            supabase.from("inbound_queue").insert({
+              source: "kommo_webhook",
+              payload,
+              status: "pending",
+            }),
+            INSERT_TIMEOUT_MS
+          );
+          if (!error) {
+            // Solo si el payload trae trabajo real, y como mucho una vez cada
+            // TRIGGER_COALESCE_MS. Lo demás lo levanta el sweep de pg_cron.
+            if (isActionable(payload)) triggerProcessInbound();
+            return;
+          }
+          console.error(`inbound_queue insert (intento ${attempt}):`, error.message);
+        } catch (e) {
+          console.error(`inbound_queue insert timeout/error (intento ${attempt}):`, e);
+        }
+        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1000));
+      }
+      // Agotados los reintentos, ese payload se perdió: Kommo ya recibió su 200
+      // y no lo va a reintentar. Un console.error NO alcanza — los logs de una
+      // Edge Function no son consultables y se borran, así que el mensaje de un
+      // cliente desaparecería sin dejar rastro que alguien pueda mirar después.
+      // Se deja una alerta, que es lo único que convierte esto en visible.
+      //
+      // Mejor esfuerzo a propósito: si Postgres está caído del todo, este insert
+      // también falla, y está bien — ese caso lo cubre `inbound_silence`. Lo que
+      // esta alerta atrapa es el caso COMÚN y silencioso: un hipo de PostgREST
+      // que se come un payload suelto mientras todo lo demás sigue andando.
+      console.error("inbound_queue insert: agotados los reintentos, payload perdido");
+      try {
+        await supabase.from("alerts").insert({
+          kind: "inbound_dropped",
+          severity: "critical",
+          title: "Se perdió un webhook de Kommo",
+          description:
+            "El insert a inbound_queue falló 3 veces seguidas (timeout o error de la base). " +
+            "Kommo ya recibió 200 y NO lo reintenta, así que ese mensaje del cliente no entró al sistema. " +
+            "Si se repite, revisá la salud de la base y de PostgREST.",
+          ref_table: "inbound_queue",
+          metadata: { intentos: 3, timeout_ms: INSERT_TIMEOUT_MS },
+        });
+      } catch (e) {
+        console.error("no se pudo ni dejar la alerta de payload perdido:", e);
+      }
+    })();
 
-    if (error) {
-      console.error("inbound_queue insert error:", error);
-      return new Response(JSON.stringify({ ok: false, error: error.message }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+    // @ts-ignore: EdgeRuntime existe en Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(persist);
+    } else {
+      await persist; // fallback local/test: sin waitUntil, mantener el comportamiento
     }
-
-    // Disparar process-inbound solo si el payload trae trabajo real, y como
-    // mucho una vez cada TRIGGER_COALESCE_MS. Lo demás lo levanta el sweep de
-    // pg_cron. Mantener el endpoint liviano es lo que evita que Kommo lo
-    // deshabilite bajo ráfaga.
-    if (isActionable(payload)) triggerProcessInbound();
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,

@@ -13,6 +13,7 @@ import { AgentPromptConflict } from "@/components/agent-prompt-conflict";
 import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
 import { retrieveAgent } from "@/lib/anthropic-managed";
 import { onceRetriever } from "@/lib/once-retriever";
+import { formKey } from "@/lib/form-key";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
@@ -352,7 +353,11 @@ export default async function SettingsPage(props: {
                 </div>
               </SectionCard>
 
+              {/* key = valores iniciales: tras «Importar el vivo» el prompt de la DB cambia y el
+                  formulario DEBE re-montarse; si no, su estado local viejo pisaría lo importado
+                  en el próximo «Guardar y sincronizar» sin ningún conflicto. */}
               <AgentForm
+                key={formKey(cfg.OPERATOR_NAME, cfg.AGENT_NAME, cfg.NEXT_PUBLIC_AGENT_LABEL, cfg.SYSTEM_PROMPT)}
                 initial={{
                   operatorName: cfg.OPERATOR_NAME ?? "",
                   agentName: cfg.AGENT_NAME ?? "",

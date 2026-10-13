@@ -2,6 +2,9 @@
   "name": "kommo-claude-agent-template",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "test": "deno test --node-modules-dir=auto --allow-read --allow-net --allow-env supabase/tests supabase/functions/_shared/",
     "check": "deno check --node-modules-dir=auto supabase/functions/*/index.ts supabase/functions/_shared/*.ts",

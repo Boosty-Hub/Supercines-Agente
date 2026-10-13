@@ -17,6 +17,7 @@ import {
 import ChannelIcon from "./channel-icon";
 import InboxFilters from "./filters";
 import { computeAgentStatus, AgentStatusDot } from "./agent-status";
+import { leadMoves } from "@/lib/move-client";
 import Board, { NO_EXISTE, pipelineCounts, SIN_UBICAR } from "./board";
 
 // La lista/tablero del inbox vive en el LAYOUT (este componente) y la
@@ -112,11 +113,9 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   const [error, setError] = useState<string | null>(null);
   const cargando = useRef(false);
   const pendiente = useRef(false);
-  // Un movimiento en vuelo por lead, con un token: si el usuario vuelve a mover la
-  // misma tarjeta mientras el anterior sigue en curso, la respuesta (o el fallo) del
-  // viejo no puede deshacer ni limpiar el estado del nuevo.
-  const pendingMoves = useRef(new Map<string, { pipeline: number; stage: number; token: number }>());
-  const moveSeq = useRef(0);
+  // Destino pedido por lead mientras su movimiento sigue en la cola (lib/move-queue.ts):
+  // una recarga que llega en el medio trae la etapa vieja y se pisa con esto.
+  const pendingMoves = useRef(new Map<string, { pipeline: number; stage: number }>());
 
   const load = useCallback(async () => {
     // Una recarga a la vez; si llega otro aviso en el medio, se hace una más al
@@ -192,37 +191,35 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
               }
             : d
         );
-      const token = ++moveSeq.current;
-      const esUltimo = () => pendingMoves.current.get(leadId)?.token === token;
       patch(toPipeline, toStage);
-      pendingMoves.current.set(leadId, { pipeline: toPipeline, stage: toStage, token });
+      pendingMoves.current.set(leadId, { pipeline: toPipeline, stage: toStage });
       setMovingIds((s) => new Set(s).add(leadId));
       const stageName =
         data?.pipelines.find((p) => p.id === toPipeline)?.stages.find((s) => s.id === toStage)?.name ?? `#${toStage}`;
       const nombre = before.display_name ?? `Lead ${before.kommo_lead_id ?? ""}`;
-      try {
-        const res = await fetch(`/api/leads/${leadId}/stage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pipeline_id: toPipeline, stage_id: toStage }),
+      // Cola por lead (lib/move-queue.ts): un envío a la vez, gana el ÚLTIMO destino.
+      const out = await leadMoves.enqueue(
+        leadId,
+        { pipeline: toPipeline, stage: toStage },
+        { pipeline: before.kommo_pipeline_id, stage: before.kommo_stage_id }
+      );
+      // Reemplazado por un movimiento más nuevo: ese es el que pinta y avisa.
+      if (out.kind === "superseded") return;
+      if (out.kind === "failed") {
+        // revertTo es null si hay un movimiento más nuevo en cola: la tarjeta ya
+        // muestra ESE destino y no debe saltar hacia atrás.
+        if (out.revertTo) patch(out.revertTo.pipeline, out.revertTo.stage);
+        setAviso({ tone: "error", text: `No se pudo mover a ${nombre}: ${out.message}` });
+      } else if (out.kind === "done") {
+        setAviso({ tone: out.warning ? "error" : "ok", text: out.warning ?? `${nombre} → ${stageName}` });
+      }
+      if (!leadMoves.isBusy(leadId)) {
+        pendingMoves.current.delete(leadId);
+        setMovingIds((s) => {
+          const n = new Set(s);
+          n.delete(leadId);
+          return n;
         });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-        setAviso({ tone: json.warning ? "error" : "ok", text: json.warning ?? `${nombre} → ${stageName}` });
-      } catch (e) {
-        // Solo el ÚLTIMO movimiento de la tarjeta puede devolverla: si hay uno más
-        // nuevo en curso, su resultado manda.
-        if (esUltimo()) patch(before.kommo_pipeline_id, before.kommo_stage_id);
-        setAviso({ tone: "error", text: `No se pudo mover a ${nombre}: ${e instanceof Error ? e.message : String(e)}` });
-      } finally {
-        if (esUltimo()) {
-          pendingMoves.current.delete(leadId);
-          setMovingIds((s) => {
-            const n = new Set(s);
-            n.delete(leadId);
-            return n;
-          });
-        }
       }
     },
     [data]

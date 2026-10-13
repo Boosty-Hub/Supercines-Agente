@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { BoardPipeline } from "@/lib/inbox-data";
+import { leadMoves } from "@/lib/move-client";
 
 // "Mover a…" en la cabecera de la conversación: la alternativa al arrastre en
 // móvil (el drag & drop nativo no existe con el dedo) y la única forma de
@@ -30,23 +31,19 @@ export default function MoveStageMenu({
     const [p, s] = value.split(":").map(Number);
     setBusy(true);
     setError(null);
-    try {
-      const res = await fetch(`/api/leads/${leadId}/stage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pipeline_id: p, stage_id: s }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-      if (json.warning) setError(json.warning);
+    // Misma cola que el tablero: si la tarjeta se está moviendo desde ahí, este
+    // movimiento espera su turno y gana el último destino.
+    const out = await leadMoves.enqueue(leadId, { pipeline: p, stage: s }, { pipeline: pipelineId, stage: stageId });
+    if (out.kind === "failed") {
+      setError(out.message);
+      setValue(current);
+    } else {
+      // done / noop / superseded (otro movimiento posterior manda): recargar la posición real.
+      if (out.kind === "done" && out.warning) setError(out.warning);
       window.dispatchEvent(new Event("inbox:reload"));
       router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setValue(current);
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   }
 
   if (pipelines.length === 0) return null;

@@ -290,15 +290,15 @@ function Card({
       prefetch={false}
       scroll={false}
       data-lead-name={name}
-      draggable={!!onDragStart && !moving}
+      draggable={!!onDragStart}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       aria-busy={moving || undefined}
-      title={moving ? "Moviendo en Kommo…" : undefined}
+      title={moving ? "Moviendo en Kommo… (podés elegir otro destino: gana el último)" : undefined}
       className={
         "block rounded-lg border bg-white p-2.5 shadow-sm transition " +
         (onDragStart ? "cursor-grab active:cursor-grabbing " : "") +
-        (moving ? "pointer-events-none opacity-50 " : "") +
+        (moving ? "opacity-50 " : "") +
         (active ? "border-brand ring-1 ring-brand" : "border-neutral-200 hover:border-neutral-300")
       }
     >

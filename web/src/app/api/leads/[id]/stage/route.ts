@@ -3,6 +3,7 @@ import { trustedActorName } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { moveLeadInKommo } from "@/lib/kommo";
 import { createServiceClient } from "@/lib/supabase/service";
+import { matchesExpected, parseExpected, type ExpectedPosition } from "@/lib/move-position";
 
 export const dynamic = "force-dynamic";
 
@@ -25,10 +26,14 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
 
   let stageId: number;
   let pipelineId: number;
+  let expected: ExpectedPosition | undefined;
   try {
     const body = await request.json();
     stageId = Number(body?.stage_id);
     pipelineId = Number(body?.pipeline_id);
+    const parsed = parseExpected(body?.expected);
+    if (parsed === null) return NextResponse.json({ error: "expected inválido." }, { status: 400 });
+    expected = parsed;
   } catch {
     return NextResponse.json({ error: "Cuerpo inválido." }, { status: 400 });
   }
@@ -59,6 +64,22 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   const prevPipeline = lead.kommo_pipeline_id as number | null;
   if (prevStage === stageId && prevPipeline === pipelineId) {
     return NextResponse.json({ ok: true, unchanged: true });
+  }
+
+  // Serialización optimista: el cliente dice desde qué posición mueve. Si la real es otra,
+  // otro movimiento (de este panel o de Kommo) llegó en el medio y este es obsoleto:
+  // 409 con la posición vigente para que el cliente reencole sobre ella (ver
+  // lib/move-queue.ts). Va DESPUÉS del "sin cambios" para que reintentar un movimiento
+  // que ya se aplicó siga siendo idempotente.
+  if (!matchesExpected(expected, { pipeline_id: prevPipeline, stage_id: prevStage })) {
+    return NextResponse.json(
+      {
+        error: "El lead cambió de etapa mientras tanto.",
+        code: "position_changed",
+        current: { pipeline_id: prevPipeline, stage_id: prevStage },
+      },
+      { status: 409 }
+    );
   }
 
   const moved = await moveLeadInKommo(Number(lead.kommo_lead_id), stageId, pipelineId);

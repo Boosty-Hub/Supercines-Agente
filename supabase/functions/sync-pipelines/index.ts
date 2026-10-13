@@ -176,7 +176,7 @@ async function runBackfill(domain: string, token: string, from: NonNullable<Clai
           batchSize: KOMMO_IDS_PER_REQUEST,
           pauseMs: PAUSE_MS,
         });
-        if (r.suspicious) console.warn(`sync-pipelines: Kommo no devolvió ninguno de ${r.checked} candidatos: no se marca nada`);
+        if (r.suspicious) console.warn(`sync-pipelines: un lote completo de candidatos volvió vacío de Kommo (de ${r.checked}): sus ids no se marcan`);
         return r.marked;
       },
       save: async (p) => {

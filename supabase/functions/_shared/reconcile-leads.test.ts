@@ -67,6 +67,44 @@ Deno.test("sin ids no llama a Kommo", async () => {
   assertEquals(f.batches.length, 0);
 });
 
+Deno.test("si un LOTE grande vuelve vacio, es sospechoso aunque otro lote haya vuelto bien: solo ese lote no se marca", async () => {
+  const ids = Array.from({ length: 150 }, (_, i) => i + 1);
+  // vivos: 1..100 (lote 1 ok); el lote 2 (101..150, 50 ids) vuelve vacío
+  const f = fake(Array.from({ length: 100 }, (_, i) => i + 1));
+  const r = await reconcileLeadIds(ids, f.deps, OPTS);
+  assertEquals(r.suspicious, true);
+  assertEquals(r.marked, 0);
+  assertEquals(f.marked.length, 0);
+});
+
+Deno.test("un lote chico vacio no es sospechoso, pero se confirma con una SEGUNDA lectura antes de marcar", async () => {
+  const f = fake([]);
+  const r = await reconcileLeadIds([7, 8], f.deps, OPTS);
+  assertEquals(f.batches, [[7, 8], [7, 8]]); // lectura + confirmación
+  assertEquals(r, { checked: 2, found: 0, marked: 2, suspicious: false });
+});
+
+Deno.test("una respuesta vacia PUNTUAL (la segunda lectura sí lo devuelve) no marca y aplica el lead", async () => {
+  const batches: number[][] = [];
+  const applied: number[] = [];
+  const marked: number[][] = [];
+  const deps: ReconcileDeps = {
+    fetchByIds: (ids) => {
+      batches.push(ids);
+      // primera lectura vacía (glitch); segunda devuelve el lead 7
+      return Promise.resolve({ leads: batches.length === 1 ? [] : [lead(7)], hasMore: false, readAtMs: 1 });
+    },
+    apply: (ls) => { applied.push(...ls.map((l) => l.id)); return Promise.resolve(ls.length); },
+    markMissing: (ids) => { marked.push(ids); return Promise.resolve(ids.length); },
+    sleep: () => Promise.resolve(),
+  };
+  const r = await reconcileLeadIds([7], deps, OPTS);
+  assertEquals(applied, [7]);
+  assertEquals(marked.length, 0);
+  assertEquals(r.found, 1);
+  assertEquals(r.marked, 0);
+});
+
 Deno.test("si Kommo no devuelve NINGUNO de muchos ids, es sospechoso: no marca nada", async () => {
   const ids = Array.from({ length: 30 }, (_, i) => i + 1);
   const f = fake([]);

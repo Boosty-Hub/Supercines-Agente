@@ -662,7 +662,8 @@ type Throttle = { cooldownSeconds: number; maxPerLead: number; windowHours: numb
 // Cuenta las respuestas del agente realmente enviadas/aprobadas a un lead dentro
 // de la ventana, y decide si hay que silenciar este turno. Fail-open ante error
 // (nunca bloquea por una falla de lectura). Una respuesta = un draft del lead en
-// estado approved/sent/auto_sent (los pending no cuentan: todavía no salieron).
+// estado approved/publishing/sent/auto_sent (los pending no cuentan: todavía no
+// salieron; `publishing` = reservado por publish-to-kommo, en pleno envío).
 async function checkLeadThrottle(
   leadId: string,
   t: Throttle
@@ -677,7 +678,7 @@ async function checkLeadThrottle(
     // PGRST201. Acá queremos el mensaje que ORIGINÓ el draft.
     .select("created_at, status, messages!drafts_message_id_fkey!inner(lead_id)")
     .eq("messages.lead_id", leadId)
-    .in("status", ["approved", "sent", "auto_sent"])
+    .in("status", ["approved", "publishing", "sent", "auto_sent"])
     .gte("created_at", windowStart)
     .order("created_at", { ascending: false });
   if (error) {

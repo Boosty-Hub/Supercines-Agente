@@ -84,7 +84,7 @@ export default async function StatusPage() {
   // --- Respuestas ---
   const statusCounts = new Map<string, number>();
   for (const d of drafts) statusCounts.set(d.status, (statusCounts.get(d.status) ?? 0) + 1);
-  const sent = (statusCounts.get("auto_sent") ?? 0) + (statusCounts.get("sent") ?? 0) + (statusCounts.get("approved") ?? 0);
+  const sent = (statusCounts.get("auto_sent") ?? 0) + (statusCounts.get("sent") ?? 0) + (statusCounts.get("approved") ?? 0) + (statusCounts.get("publishing") ?? 0);
   const failed = statusCounts.get("failed") ?? 0;
   const pending = statusCounts.get("pending") ?? 0;
   const totalDrafts = sent + failed + pending;

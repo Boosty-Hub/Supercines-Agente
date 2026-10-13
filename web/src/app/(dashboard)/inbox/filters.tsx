@@ -19,6 +19,7 @@ export default function InboxFilters({
   searchPlaceholder = "Buscar nombre o mensaje…",
   collapsible = false,
   inline = false,
+  shallow = false,
 }: {
   channels: string[];
   verticals: string[];
@@ -26,10 +27,22 @@ export default function InboxFilters({
   collapsible?: boolean;
   /** Todos los filtros en una sola fila horizontal a lo ancho (inbox). */
   inline?: boolean;
+  /**
+   * Cambiar la URL sin pedirle nada al servidor. Para el inbox, que filtra en el
+   * cliente: con router.replace cada tecla del buscador re-renderizaba en el
+   * servidor la conversación abierta.
+   */
+  shallow?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
+
+  // Next 14.1+ sincroniza useSearchParams con history.replaceState.
+  const replace = (url: string) => {
+    if (shallow) window.history.replaceState(null, "", url);
+    else router.replace(url, { scroll: false });
+  };
 
   const [q, setQ] = useState(sp.get("q") ?? "");
   const [open, setOpen] = useState(false);
@@ -47,17 +60,18 @@ export default function InboxFilters({
     const params = new URLSearchParams(sp.toString());
     if (value) params.set(key, value);
     else params.delete(key);
-    const lead = sp.get("lead");
-    if (lead) params.set("lead", lead);
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    replace(`${pathname}?${params.toString()}`);
   }
 
   function clearAll() {
+    // Limpiar filtros NO cambia de vista ni de pipeline ni cierra la conversación.
     const params = new URLSearchParams();
-    const lead = sp.get("lead");
-    if (lead) params.set("lead", lead);
+    for (const keep of ["lead", "vista", "pipeline"]) {
+      const v = sp.get(keep);
+      if (v) params.set(keep, v);
+    }
     setQ("");
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    replace(`${pathname}?${params.toString()}`);
   }
 
   const activeCount =
@@ -179,7 +193,18 @@ export default function InboxFilters({
     return (
       <div className="flex flex-wrap items-center gap-2">
         {searchEl}
-        {controls}
+        {/* En móvil los filtros se pliegan detrás de un botón: el tablero necesita la pantalla. */}
+        {collapsible && (
+          <Button type="button" variant="secondary" size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+            <span>Filtros</span>
+            {activeCount > 0 && (
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-neutral-900 px-1 text-[10px] font-semibold text-white">
+                {activeCount}
+              </span>
+            )}
+          </Button>
+        )}
+        {show && controls}
       </div>
     );
   }

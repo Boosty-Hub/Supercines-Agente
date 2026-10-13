@@ -41,7 +41,7 @@ function kindLabel(kind: string): { label: string; icon: string } {
 
 function linkFor(alert: Alert, leadByAlert: Map<string, string>): string | null {
   const leadId = leadByAlert.get(alert.id);
-  if (leadId) return `/inbox?lead=${leadId}`;
+  if (leadId) return `/inbox/${leadId}`;
   if (alert.ref_table === "messages" || alert.ref_table === "drafts") return `/inbox`;
   return null;
 }

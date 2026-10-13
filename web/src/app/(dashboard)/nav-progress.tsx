@@ -2,7 +2,7 @@
 
 // Indicador global de navegación. Cubre dos casos que el usuario no ve claros:
 //   1) Cambio de módulo (/inbox → /leads, etc.).
-//   2) Abrir una conversación (/inbox?lead=X) — que es un cambio de searchParam
+//   2) Abrir una conversación (/inbox/<id>) — navegación dentro del layout del inbox
 //      y NO dispara los loading.tsx de App Router.
 // Estrategia: escuchamos clicks en links internos para PRENDER el indicador y lo
 // APAGAMOS cuando cambia la ruta o los searchParams (navegación terminada).
@@ -74,7 +74,8 @@ export function NavProgress() {
 // Etiqueta legible de a dónde se va, tomada del propio link: para los módulos
 // alcanza con su texto; para una conversación se muestra el nombre del lead.
 function describeTarget(href: string, a: Element): { label: string; hint?: string } {
-  if (href.includes("lead=")) {
+  // Conversación: /inbox/<uuid> (los links viejos /inbox?lead=<uuid> redirigen ahí).
+  if (/^\/inbox\/[0-9a-f-]{36}/i.test(href) || href.includes("lead=")) {
     // El texto del link trae iniciales del avatar + nombre + "hace 3 min" todo
     // pegado, así que el nombre limpio viaja en un data-attribute.
     const nombre = (a.getAttribute("data-lead-name") ?? "").trim().slice(0, 40);

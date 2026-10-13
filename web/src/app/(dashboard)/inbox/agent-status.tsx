@@ -97,6 +97,18 @@ const DOT_CLS: Record<AgentStatusTone, string> = {
   red: "bg-red-500",
 };
 
+/** Puntito para listas/tarjetas: solo aparece cuando el agente NO responde con normalidad. */
+export function AgentStatusDot({ status }: { status: AgentStatus }) {
+  if (status.tone === "green") return null; // sin ruido cuando todo está OK
+  return (
+    <span
+      className={`inline-flex h-2 w-2 shrink-0 rounded-full ${DOT_CLS[status.tone]}`}
+      title={`${status.label} — ${status.detail}`}
+      aria-label={status.label}
+    />
+  );
+}
+
 export function AgentStatusBadge({ status }: { status: AgentStatus }) {
   return (
     <div className="mt-1.5 space-y-1">

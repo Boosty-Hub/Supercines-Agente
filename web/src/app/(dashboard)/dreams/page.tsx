@@ -79,7 +79,7 @@ function BodyWithLeadLinks({ body, leadRefs }: { body: string; leadRefs: Record<
         leadRefs[p] ? (
           <a
             key={i}
-            href={`/inbox?lead=${leadRefs[p]}`}
+            href={`/inbox/${leadRefs[p]}`}
             className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
             title="Ver la conversación de este lead"
           >

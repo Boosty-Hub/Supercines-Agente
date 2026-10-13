@@ -212,6 +212,9 @@ export async function fetchLeadStage(
     const res = await fetch(`https://${domain}/api/v4/leads/${kommoLeadId}`, {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      // Una conversación no puede quedarse esperando a Kommo: pasado esto se
+      // muestra lo guardado en la base.
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
     const j = (await res.json()) as { status_id?: number; pipeline_id?: number };
@@ -221,4 +224,50 @@ export async function fetchLeadStage(
   } catch {
     return null;
   }
+}
+
+export type MoveResult = { ok: true } | { ok: false; status: number; error: string };
+
+/**
+ * Mueve un lead de etapa en Kommo (PATCH /leads/{id} con status_id + pipeline_id).
+ * El pipeline va SIEMPRE: 142/143 existen en todos los pipelines y sin él Kommo lo
+ * deja en el pipeline actual. Un 429 (Kommo permite ~7 req/s por cuenta,
+ * compartidos con las Edge Functions) se reintenta una vez; el resto vuelve al
+ * caller con un mensaje para mostrar.
+ */
+export async function moveLeadInKommo(
+  kommoLeadId: number,
+  statusId: number,
+  pipelineId: number
+): Promise<MoveResult> {
+  const { KOMMO_API_DOMAIN: domain, KOMMO_ACCESS_TOKEN: token } = await configValues([
+    "KOMMO_API_DOMAIN",
+    "KOMMO_ACCESS_TOKEN",
+  ]);
+  if (!domain || !token) return { ok: false, status: 503, error: "Kommo no está configurado." };
+  for (let intento = 0; intento < 2; intento++) {
+    let res: Response;
+    try {
+      res = await fetch(`https://${domain}/api/v4/leads/${kommoLeadId}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status_id: statusId, pipeline_id: pipelineId }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (e) {
+      return { ok: false, status: 504, error: `Kommo no respondió: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (res.ok) return { ok: true };
+    if (res.status === 429 && intento === 0) {
+      await new Promise((r) => setTimeout(r, 1200));
+      continue;
+    }
+    const body = (await res.text()).slice(0, 300);
+    if (res.status === 401) {
+      return { ok: false, status: 502, error: "Kommo rechazó el token (401): hay que reconectar Kommo." };
+    }
+    return { ok: false, status: 502, error: `Kommo respondió ${res.status}: ${body}` };
+  }
+  return { ok: false, status: 429, error: "Kommo está limitando pedidos (429). Probá de nuevo en unos segundos." };
 }

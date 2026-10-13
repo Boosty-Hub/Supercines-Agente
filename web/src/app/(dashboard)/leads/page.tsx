@@ -272,7 +272,7 @@ export default async function LeadsPage({
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Link
-                        href={`/inbox?lead=${r.id}`}
+                        href={`/inbox/${r.id}`}
                         className="text-xs font-medium text-brand hover:text-brand-strong transition-colors"
                       >
                         Ver →

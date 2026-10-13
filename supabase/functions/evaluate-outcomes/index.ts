@@ -19,6 +19,7 @@ import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { buildGraderContext } from "../_shared/grader-prompt.ts";
+import { draftText } from "../_shared/draft-text.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
@@ -106,7 +107,7 @@ async function runLlmJudge(
   const msg = draft.messages;
   const verticalSlug = msg?.verticals?.slug ?? "(desconocida)";
   const channel = msg?.source ?? "(desconocido)";
-  const responseText = draft.edited_body ?? draft.body;
+  const responseText = draftText(draft);
 
   // El texto del lead (y la respuesta del agente, que puede repetirlo) entra al
   // juez como turnos saneados + UNTRUSTED_NOTICE: ver _shared/grader-prompt.ts.
@@ -250,7 +251,7 @@ async function runAutomatic(
   draft: DraftWithContext
 ): Promise<{ score: number | null; passed: boolean | null; reasoning: string }> {
   const msg = draft.messages;
-  const text = draft.edited_body ?? draft.body;
+  const text = draftText(draft);
   switch (grader.slug) {
     case "length_appropriate":
       return lengthAppropriate(msg?.source ?? "unknown", text);

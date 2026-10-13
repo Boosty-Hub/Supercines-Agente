@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { draftText } from "./draft-text.ts";
 import { turn } from "./untrusted.ts";
 
 // Reconstrucción DETERMINÍSTICA del historial de un lead, leída de la DB.
@@ -96,7 +97,7 @@ export async function fetchLeadHistory(
     const sentBodies = new Set<string>();
     for (const m of rows) {
       const d = m.draft;
-      if (d && (d.status === "sent" || d.status === "auto_sent")) sentBodies.add(norm(d.edited_body ?? d.body));
+      if (d && (d.status === "sent" || d.status === "auto_sent")) sentBodies.add(norm(draftText(d)));
     }
     // Un draft cubre TODO el batch del lead (varios inbound consecutivos apuntan
     // al mismo draft). La respuesta del agente, cronológicamente, va DESPUÉS del
@@ -138,7 +139,7 @@ export async function fetchLeadHistory(
       }
       // Diferimos la respuesta del agente hasta cerrar su batch.
       if (sentDraft) {
-        const body = sentDraft.edited_body ?? sentDraft.body;
+        const body = draftText(sentDraft);
         if (body && body.trim()) {
           pendingBody = body;
           pendingDraftId = sentDraft.id;

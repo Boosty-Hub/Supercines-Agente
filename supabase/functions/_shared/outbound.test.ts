@@ -1,117 +1,155 @@
 // _shared/outbound.test.ts
-// 1) Comportamiento de writeClientText / draftText.
-// 2) PARIDAD: fallan si aparece un camino de salida de texto al cliente que no
-//    pase por el verificador. Leen el código fuente de las Edge Functions.
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert@^1.0.0";
-import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "./outbound.ts";
+// Tests del verificador único de texto saliente y de PARIDAD: si aparece un camino
+// de salida de texto hacia Kommo que no pase por _shared/outbound.ts, o un consumidor
+// de «lo enviado» que no use draftText, estos tests fallan.
+//
+// Correr con: deno test --allow-read --allow-env supabase/functions/_shared/outbound.test.ts
 
-function withFetchMock<T>(mock: typeof fetch, run: () => Promise<T>): Promise<T> {
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@^1.0.0";
+import { draftText, OutboundBlockedError, outboundLeak, writeClientText, writeCrmField } from "./outbound.ts";
+
+const LEAK = 'Claro <parameter name="respuesta">te ayudo</parameter>';
+
+// ---- draftText: lo que realmente se envía ----
+
+Deno.test("draftText: el texto editado a mano (edited_body) gana sobre el del agente", () => {
+  assertEquals(draftText({ body: "borrador del agente", edited_body: "  corregido por el operador  " }), "corregido por el operador");
+});
+
+Deno.test("draftText: sin edición (null, undefined, vacío o solo espacios) se envía el del agente", () => {
+  assertEquals(draftText({ body: "del agente", edited_body: null }), "del agente");
+  assertEquals(draftText({ body: "del agente" }), "del agente");
+  assertEquals(draftText({ body: "del agente", edited_body: "" }), "del agente");
+  assertEquals(draftText({ body: "del agente", edited_body: "   " }), "del agente");
+});
+
+// ---- el verificador ----
+
+Deno.test("outboundLeak: vacío y residuo interno se rechazan; texto limpio pasa", () => {
+  assertEquals(outboundLeak(""), "texto vacío");
+  assertEquals(outboundLeak("   "), "texto vacío");
+  assertEquals(outboundLeak(null), "texto vacío");
+  assert(outboundLeak(LEAK) !== null);
+  assertEquals(outboundLeak("Hola Ana, te paso el detalle por aquí 😊"), null);
+});
+
+// fetch simulado: registra las llamadas a Kommo
+function withFetchMock<T>(run: (calls: Array<{ url: string; method: string; body: string }>) => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
-  globalThis.fetch = mock;
-  return run().finally(() => {
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), method: init?.method ?? "GET", body: String(init?.body ?? "") });
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  }) as typeof fetch;
+  return run(calls).finally(() => {
     globalThis.fetch = original;
   });
 }
 
 const base = { kommoLeadId: 1, fieldId: 2, kommoDomain: "x.kommo.com", kommoToken: "t" };
 
-Deno.test("draftText: gana el texto editado a mano; sin edición, el del agente", () => {
-  assertEquals(draftText({ body: "agente", edited_body: "  editado  " }), "editado");
-  assertEquals(draftText({ body: "agente", edited_body: "   " }), "agente");
-  assertEquals(draftText({ body: "agente", edited_body: null }), "agente");
-  assertEquals(draftText({ body: "agente" }), "agente");
+Deno.test("writeClientText: con residuo interno lanza y NO toca Kommo (DM, pública y seguimiento)", async () => {
+  await withFetchMock(async (calls) => {
+    for (const kind of ["dm", "public_reply", "follow_up"] as const) {
+      const err = await assertRejects(() => writeClientText({ ...base, kind, text: LEAK }), OutboundBlockedError);
+      assertEquals((err as OutboundBlockedError).kind, kind);
+    }
+    assertEquals(calls.length, 0);
+  });
 });
 
-Deno.test("outboundLeak: vacío y residuo interno se bloquean; un mensaje normal pasa", () => {
-  assertEquals(outboundLeak("  "), "texto vacío");
-  assert(outboundLeak('<parameter name="respuesta">hola') !== null);
-  assert(outboundLeak("Revisé /mnt/memory/leads/123/learnings.md") !== null);
-  assertEquals(outboundLeak("¡Hola! Tu función es hoy a las 7:00 pm."), null);
+Deno.test("writeClientText: texto limpio escribe el campo", async () => {
+  await withFetchMock(async (calls) => {
+    await writeClientText({ ...base, kind: "dm", text: "Hola, ¿cómo estás?" });
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0].method, "PATCH");
+    assertEquals(calls[0].body.includes("Hola"), true);
+  });
 });
 
-Deno.test("writeClientText: con fuga NO toca la API de Kommo", async () => {
-  let llamadas = 0;
-  await withFetchMock(
-    () => {
-      llamadas++;
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    },
-    async () => {
-      const e = await assertRejects(
-        () => writeClientText({ ...base, kind: "public_reply", text: "uso search_kb para buscar" }),
+Deno.test("writeCrmField: el valor que eligió el modelo también se verifica (lead y contacto); vacío es legítimo", async () => {
+  await withFetchMock(async (calls) => {
+    for (const entity of ["lead", "contact"] as const) {
+      await assertRejects(
+        () => writeCrmField({ entity, entityId: 1, fieldId: 2, value: LEAK, kommoDomain: "x", kommoToken: "t" }),
         OutboundBlockedError,
       );
-      assertEquals(e.kind, "public_reply");
-    },
-  );
-  assertEquals(llamadas, 0);
+    }
+    assertEquals(calls.length, 0);
+    await writeCrmField({ entity: "lead", entityId: 1, fieldId: 2, value: "", kommoDomain: "x", kommoToken: "t" });
+    assertEquals(calls.length, 1);
+  });
 });
 
-Deno.test("writeClientText: texto limpio se escribe en el campo", async () => {
-  const bodies: string[] = [];
-  await withFetchMock(
-    (_u, init) => {
-      bodies.push(String(init?.body));
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    },
-    () => writeClientText({ ...base, kind: "dm", text: "Hola, te confirmo la función." }),
-  );
-  assertEquals(bodies.length, 1);
-  assert(bodies[0].includes("Hola, te confirmo la función."));
-});
+// ---- PARIDAD ESTRUCTURAL ----
 
-// ---------------------------------------------------------------------------
-// PARIDAD de caminos de salida
-// ---------------------------------------------------------------------------
-const FN_DIR = new URL("../", import.meta.url);
+const SHARED_OK = new Set(["outbound.ts", "kommo.ts"]); // outbound.ts es el camino; kommo.ts define las primitivas
+const sinComentarios = (s: string) => s.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
-async function sources(): Promise<Array<{ path: string; src: string }>> {
-  const out: Array<{ path: string; src: string }> = [];
-  for await (const d of Deno.readDir(FN_DIR)) {
-    if (!d.isDirectory || d.name === "_shared") continue;
-    const path = `${d.name}/index.ts`;
-    try {
-      out.push({ path, src: await Deno.readTextFile(new URL(path, FN_DIR)) });
-    } catch {
-      // función sin index.ts
+async function archivosFuente(): Promise<Array<{ name: string; code: string }>> {
+  const out: Array<{ name: string; code: string }> = [];
+  const root = new URL("../", import.meta.url);
+  for await (const dir of Deno.readDir(root)) {
+    if (!dir.isDirectory) continue;
+    if (dir.name === "_shared") {
+      for await (const f of Deno.readDir(new URL("../_shared/", import.meta.url))) {
+        if (f.isFile && f.name.endsWith(".ts") && !f.name.endsWith(".test.ts") && !SHARED_OK.has(f.name)) {
+          out.push({ name: `_shared/${f.name}`, code: sinComentarios(await Deno.readTextFile(new URL(`../_shared/${f.name}`, import.meta.url))) });
+        }
+      }
+    } else {
+      out.push({ name: `${dir.name}/index.ts`, code: sinComentarios(await Deno.readTextFile(new URL(`../${dir.name}/index.ts`, import.meta.url))) });
     }
   }
   return out;
 }
 
-// Quita comentarios y strings de línea para no contar menciones en prosa.
-function code(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-}
-
-Deno.test("PARIDAD: ninguna Edge Function llama a patchLeadField (solo _shared/outbound.ts)", async () => {
-  for (const { path, src } of await sources()) {
-    const llamadas = code(src).split(/\bpatchLeadField\s*\(/).length - 1;
-    assertEquals(llamadas, 0, `${path} llama a patchLeadField directo: usar writeClientText (_shared/outbound.ts)`);
+Deno.test("PARIDAD: ningún camino escribe texto a Kommo sin pasar por outbound.ts (patchLeadField/patchContactField)", async () => {
+  for (const f of await archivosFuente()) {
+    assert(!/\bpatch(Lead|Contact)Field\s*\(/.test(f.code), `${f.name}: llama a patchLeadField/patchContactField directo (usar writeClientText o writeCrmField de _shared/outbound.ts)`);
   }
 });
 
-Deno.test("PARIDAD: toda función que dispara un salesbot escribe el texto con writeClientText", async () => {
-  const conSalesbot = (await sources()).filter(({ src }) => /\brunSalesbot\s*\(/.test(code(src)));
-  assert(conSalesbot.length > 0, "se esperaba al menos un llamador de runSalesbot");
-  for (const { path, src } of conSalesbot) {
-    assert(/\bwriteClientText\s*\(/.test(code(src)), `${path} dispara un salesbot sin pasar el texto por writeClientText`);
+Deno.test("PARIDAD: quien dispara un salesbot de texto al cliente verifica antes con writeClientText", async () => {
+  for (const f of await archivosFuente()) {
+    if (/\brunSalesbot\s*\(/.test(f.code)) {
+      assert(/\bwriteClientText\s*\(/.test(f.code), `${f.name}: dispara runSalesbot sin writeClientText`);
+    }
   }
 });
 
-Deno.test("PARIDAD: publish-to-kommo publica el texto editado y verifica cada canal", async () => {
-  const src = code(await Deno.readTextFile(new URL("publish-to-kommo/index.ts", FN_DIR)));
-  assert(/\bdraftText\s*\(/.test(src), "publish-to-kommo debe publicar draftText (edited_body ?? body)");
-  assert(/kind:\s*"dm"/.test(src) && /kind:\s*"public_reply"/.test(src), "DM y respuesta pública pasan por writeClientText");
-  assert(/OutboundBlockedError/.test(src), "publish-to-kommo debe tratar OutboundBlockedError");
+Deno.test("PARIDAD: publish-to-kommo / follow-up-scan / generate-response verifican cada canal que sacan", async () => {
+  const por = Object.fromEntries((await archivosFuente()).map((f) => [f.name, f.code]));
+  const pub = por["publish-to-kommo/index.ts"];
+  assert(/kind:\s*"dm"/.test(pub), "publish-to-kommo: el DM no pasa por writeClientText");
+  assert(/kind:\s*"public_reply"/.test(pub), "publish-to-kommo: la respuesta pública no pasa por writeClientText");
+  assert(/draftText\(/.test(pub), "publish-to-kommo: no usa draftText (publicaría draft.body ignorando la edición)");
+  assert(!/\bd(raft)?\.body\b/.test(pub), "publish-to-kommo: usa draft.body / d.body directo (la edición humana nunca saldría)");
+  assert(/edited_body/.test(pub), "publish-to-kommo: el select no trae edited_body");
+  assert(/kind:\s*"follow_up"/.test(por["follow-up-scan/index.ts"]), "follow-up-scan: las variables no pasan por writeClientText");
+  const gen = por["generate-response/index.ts"];
+  assert(/outboundLeak\(publicReply\)/.test(gen), "generate-response: la respuesta pública no se verifica al generarla");
+  // SuperCines: generate-response escribe los campos select/enum con su propio
+  // escritor tipado (writeEntityField → patchEntityFieldTyped, resuelve el enum_id de
+  // Kommo), así que el verificador entra por crmValueLeak ANTES de escribir.
+  assert(/crmValueLeak\(value\)/.test(gen), "generate-response: las tools de CRM no verifican el valor con crmValueLeak");
+  assert(
+    gen.indexOf("crmValueLeak(value)") < gen.indexOf("patchEntityFieldTyped(entity"),
+    "generate-response: patchEntityFieldTyped se llama antes de verificar el valor",
+  );
 });
 
-Deno.test("PARIDAD: follow-up-scan verifica las variables que salen al cliente", async () => {
-  const src = code(await Deno.readTextFile(new URL("follow-up-scan/index.ts", FN_DIR)));
-  assert(/kind:\s*"follow_up"/.test(src) && /OutboundBlockedError/.test(src));
+Deno.test("PARIDAD: los consumidores de «lo enviado» usan draftText, no edited_body ?? body ni body a secas", async () => {
+  const por = Object.fromEntries((await archivosFuente()).map((f) => [f.name, f.code]));
+  for (const f of ["dreams-run/index.ts", "evaluate-outcomes/index.ts", "_shared/history.ts"]) {
+    assert(/\bdraftText\(/.test(por[f]), `${f}: no usa draftText`);
+    assert(!/edited_body\s*\?\?/.test(por[f]), `${f}: usa edited_body ?? … (un edited_body vacío devolvería vacío): usar draftText`);
+  }
 });
 
-Deno.test("PARIDAD: generate-response verifica la respuesta pública al generarla", async () => {
-  const src = code(await Deno.readTextFile(new URL("generate-response/index.ts", FN_DIR)));
-  assert(/\boutboundLeak\s*\(\s*rawReply|\boutboundLeak\s*\(\s*publicReply/.test(src), "la public_reply generada debe pasar por outboundLeak");
+Deno.test("PARIDAD: la copia web de draftText es idéntica a la de las Edge Functions", async () => {
+  const fn = (s: string) => s.slice(s.indexOf("export function draftText")).replace(/\s+/g, " ").trim();
+  const edge = await Deno.readTextFile(new URL("./draft-text.ts", import.meta.url));
+  const web = await Deno.readTextFile(new URL("../../../web/src/lib/draft-text.ts", import.meta.url));
+  assertEquals(fn(web), fn(edge));
 });

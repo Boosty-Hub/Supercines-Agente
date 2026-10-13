@@ -31,6 +31,14 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
 
+// Flags del guard de un bloqueo ANTERIOR (agent_metadata.guard_*): al volver a decidir
+// sobre el texto actual se descartan, o un draft ya enviado seguiría mostrando
+// «bloqueado» en el inbox.
+function stripGuard(meta: Record<string, unknown>): Record<string, unknown> {
+  const { guard_blocked: _a, guard_kind: _b, guard_reason: _c, guard_stage: _d, guard_part: _e, ...rest } = meta;
+  return rest;
+}
+
 type KommoConfig = {
   id: string;
   response_custom_field_id: number | null;
@@ -73,7 +81,7 @@ async function pickPending(publishFrom: string | null, limit = 10) {
   let q = supabase
     .from("drafts")
     .select(
-      "id, message_id, body, edited_body, status, created_at, reviewer_id, agent_metadata, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
+      "id, message_id, body, edited_body, status, agent_metadata, reviewer_id, created_at, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))"
     )
     .eq("status", "approved")
     .is("sent_at", null);
@@ -170,10 +178,11 @@ async function publishOne(
   // ---- Respuesta pública IA (comentario de Instagram) — fail-open ----
   // Usa meta.public_reply generado por Haiku en generate-response.
   // Corre ANTES del flujo normal; si falla, el DM normal sigue igual.
+  //
   // El DM se verifica ANTES de publicar la parte pública: si el DM va a quedar
-  // bloqueado, no puede haber salido ya un comentario público (al aprobar de
-  // nuevo se publicaría dos veces). writeClientText lo vuelve a verificar al
-  // escribir — este chequeo solo fija el ORDEN.
+  // bloqueado, no puede haber salido ya un comentario público (al aprobar de nuevo
+  // se publicaría dos veces). writeClientText lo vuelve a verificar al escribir —
+  // este chequeo solo fija el ORDEN. Y es el texto REAL (edited_body ?? body).
   const dmLeak = outboundLeak(draftText(draft));
   if (dmLeak) throw new OutboundBlockedError("dm", dmLeak);
 
@@ -231,11 +240,29 @@ async function publishOne(
     ? await fetchOutgoingEventIds(leadId, kommoDomain, kommoToken)
     : new Set<string>();
 
+  // El texto que realmente sale es el editado a mano en el inbox si lo hay.
+  // writeClientText lo verifica; si trae residuo interno lanza OutboundBlockedError
+  // (el caller manda el draft a revisión) y NO se toca Kommo.
+  await writeClientText({
+    kind: "dm",
+    kommoLeadId: leadId,
+    fieldId: config.response_custom_field_id,
+    text: draftText(draft),
+    kommoDomain,
+    kommoToken,
+  });
   await runSalesbot(config.salesbot_id, leadId, kommoDomain, kommoToken);
 
   // El 202 success:true de salesbot/run NO prueba la entrega (ver _shared/kommo.ts).
+  // Verificamos que haya aparecido un outgoing_chat_message nuevo del lead.
   if (!verify.enabled) return { delivered: true, verified: false, publicBlocked };
-  const delivered = await verifyOutgoingDelivery(leadId, baseline, kommoDomain, kommoToken, verify.timeoutMs);
+  const delivered = await verifyOutgoingDelivery(
+    leadId,
+    baseline,
+    kommoDomain,
+    kommoToken,
+    verify.timeoutMs
+  );
   return { delivered, verified: true, publicBlocked };
 }
 
@@ -314,8 +341,8 @@ Deno.serve(async (req: Request) => {
 
       try {
         const result = await publishOne(d, config, kommoDomain, kommoToken, verify);
-        // Respuesta pública bloqueada por el verificador: el DM salió (estaba
-        // limpio) pero la parte pública NO. Se deja marcado y se alerta.
+        // Respuesta pública bloqueada por el verificador: el DM salió (estaba limpio)
+        // pero la parte pública NO. Se deja marcado y se alerta.
         const publicMeta = result.publicBlocked
           ? {
               guard_blocked: true,
@@ -326,7 +353,7 @@ Deno.serve(async (req: Request) => {
             }
           : {};
         if (result.publicBlocked) {
-          await supabase.from("alerts").insert({
+          const { error: blockAlertErr } = await supabase.from("alerts").insert({
             kind: "outbound_blocked",
             severity: "warning",
             title: "Se bloqueó la respuesta pública a un comentario",
@@ -337,14 +364,16 @@ Deno.serve(async (req: Request) => {
             ref_id: d.id,
             metadata: { part: "public_reply", reason: result.publicBlocked },
           });
+          if (blockAlertErr) console.warn("alert outbound_blocked:", blockAlertErr.message);
         }
+
         if (result.delivered) {
           await supabase
             .from("drafts")
             .update({
               status: "auto_sent",
               sent_at: new Date().toISOString(),
-              agent_metadata: { ...baseMeta, ...(result.verified ? { delivery_verified: true } : {}), ...publicMeta },
+              agent_metadata: { ...stripGuard(baseMeta), ...(result.verified ? { delivery_verified: true } : {}), ...publicMeta },
             })
             .eq("id", d.id);
           published++;
@@ -378,15 +407,16 @@ Deno.serve(async (req: Request) => {
           failed++;
         }
       } catch (err) {
-        // DM con residuo interno: NO se envía. Vuelve a revisión humana (el texto
-        // suele ser recuperable con una edición) en vez de quedar failed.
+        // DM con residuo interno: NO se envía. Vuelve a revisión humana (el texto suele
+        // ser recuperable con una edición) en vez de quedar failed. Los flags de un
+        // bloqueo anterior se pisan: el guard vuelve a decidir sobre el texto actual.
         if (err instanceof OutboundBlockedError && err.kind === "dm") {
           await supabase
             .from("drafts")
             .update({
               status: "pending",
               agent_metadata: {
-                ...baseMeta,
+                ...stripGuard(baseMeta),
                 guard_blocked: true,
                 guard_kind: "internal_leak",
                 guard_reason: err.reason,

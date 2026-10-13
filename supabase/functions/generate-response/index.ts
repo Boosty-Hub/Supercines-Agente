@@ -39,7 +39,7 @@ import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { evaluateClaim } from "../_shared/claim-batch.ts";
-import { outboundLeak } from "../_shared/outbound.ts";
+import { crmValueLeak, outboundLeak } from "../_shared/outbound.ts";
 import { extractResponseBlock, detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
@@ -332,6 +332,13 @@ async function writeEntityField(
   token: string
 ): Promise<string> {
   const etiqueta = entity === "leads" ? "lead" : "contacto";
+  // Mismo verificador que el resto de la salida a Kommo (_shared/outbound.ts): un
+  // residuo de tool-calling no entra a un campo del CRM, que luego puede terminar
+  // en un salesbot o en la pantalla de una asesora.
+  const fuga = crmValueLeak(value);
+  if (fuga) {
+    return `No guardé el campo "${def.name}": el valor trae residuo interno (${fuga}). Escribí solo el dato, sin sintaxis de herramientas ni rutas.`;
+  }
   if (def.enums.length > 0 && !resolveFieldValue(def, value)) {
     const opciones = def.enums.map((e) => `"${e.value}"`).join(", ");
     return `El campo "${def.name}" solo admite opciones predefinidas y "${value}" no es una de ellas. Opciones válidas: ${opciones}. Reintentá con una de esas exactamente, o no escribas el campo.`;
@@ -1644,7 +1651,6 @@ Deno.serve(async (req: Request) => {
       // generamos una respuesta pública corta (COMMENT_REPLY_MODEL) gobernada por sus reglas.
       // CAP DURO: 280 chars. Falla → sin public_reply (el DM sigue igual).
       let publicReply: string | undefined;
-      let publicReplyBlocked: string | null = null;
       if (
         batchHasComment &&
         (cfg as Record<string, unknown> | null)?.comment_reply_enabled === true
@@ -1681,14 +1687,7 @@ Deno.serve(async (req: Request) => {
           // bloque de texto y tira ante refusal / max_tokens → cae al catch
           // fail-open de abajo (el DM sale igual, sin respuesta pública).
           const rawReply = textOf(replyRes, "comment_reply").trim();
-          // La respuesta PÚBLICA la lee todo el mundo: pasa por el mismo verificador
-          // de fuga interna que el DM (_shared/outbound.ts). Con residuo no se
-          // genera pública (el DM sigue su camino) y queda registrado el motivo.
-          const publicLeak = rawReply ? outboundLeak(rawReply) : null;
-          if (publicLeak) {
-            publicReplyBlocked = publicLeak;
-            console.error(`generate-response: respuesta pública descartada por el guard (${publicLeak}) draft ${draft.id}`);
-          } else if (rawReply) {
+          if (rawReply) {
             // Cap duro 280 chars: cortar en el último espacio antes del límite.
             if (rawReply.length <= 280) {
               publicReply = rawReply;
@@ -1726,10 +1725,38 @@ Deno.serve(async (req: Request) => {
       const contestPhoneGuard =
         batchHasContestMarker(batchMsgs) && VE_PHONE_RE.test(outcome.responseText);
 
-      // GUARD DE FUGA INTERNA (_shared/response-guard.ts): bloque malformado o
-      // residuo de razonamiento/tool-calling => NUNCA se auto-aprueba. Gana sobre
-      // forceReview, bypass y vertical: ninguna combinación autoriza enviar lo
-      // que puede ser el andamiaje interno en vez de una respuesta al cliente.
+      // La respuesta PÚBLICA (el canal más expuesto: la lee cualquiera) pasa por el
+      // MISMO verificador que el DM, ya al generarla (_shared/outbound.ts). Con
+      // residuo interno se OMITE la pública (el DM sigue si está limpio), queda
+      // marcada en el draft y se alerta. publish-to-kommo la vuelve a verificar al
+      // escribirla.
+      let publicReplyBlocked: string | null = null;
+      if (publicReply) {
+        publicReplyBlocked = outboundLeak(publicReply);
+        if (publicReplyBlocked) {
+          console.error(`generate-response: respuesta pública del draft ${draft.id} bloqueada — ${publicReplyBlocked}`);
+          publicReply = undefined;
+          const { error: blockAlertErr } = await supabase.from("alerts").insert({
+            kind: "outbound_blocked",
+            severity: "warning",
+            title: "Se bloqueó la respuesta pública a un comentario",
+            description:
+              `El texto de la respuesta pública traía residuo interno del agente (${publicReplyBlocked}) y se descartó. ` +
+              "El mensaje privado (DM) sigue su curso. Revisá el comentario y respondé a mano si corresponde.",
+            ref_table: "drafts",
+            ref_id: draft.id,
+            metadata: { part: "public_reply", reason: publicReplyBlocked, stage: "generate" },
+          });
+          if (blockAlertErr) console.warn("alert outbound_blocked:", blockAlertErr.message);
+        }
+      }
+
+      // GUARD DE FUGA INTERNA (_shared/response-guard.ts) — si el bloque de
+      // respuesta vino malformado o el texto trae residuo de razonamiento/
+      // tool-calling interno, el draft NUNCA se auto-aprueba. Esto gana sobre
+      // forceReview/bypass/vertical: no hay combinación de esos tres flags
+      // que autorice enviar un mensaje que puede ser el scaffolding interno
+      // del sistema en vez de una respuesta real para el cliente.
       const guardBlocked = outcome.leak.reason != null || !outcome.leak.wellFormed;
       if (guardBlocked) {
         console.error(
@@ -1766,7 +1793,7 @@ Deno.serve(async (req: Request) => {
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
             ...(publicReplyBlocked
-              ? { public_reply_blocked: publicReplyBlocked, guard_part: "public_reply" }
+              ? { public_reply_blocked: true, guard_part: "public_reply", guard_reason: publicReplyBlocked, guard_stage: "generate" }
               : {}),
             ...(contestPhoneGuard ? { forced_review_reason: "contest_marker_with_phone" } : {}),
             ...(guardBlocked

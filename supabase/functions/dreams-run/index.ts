@@ -19,6 +19,7 @@ import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { enforceDigestWordCap } from "../_shared/dreams-digest-cap.ts";
 import { buildConsolidationPrompt } from "../_shared/dreams-consolidation.ts";
+import { draftText } from "../_shared/draft-text.ts";
 import { canSkipDigestRebuild, digestFingerprint } from "../_shared/dreams-digest-fingerprint.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -84,7 +85,7 @@ async function gatherDaily(sinceIso?: string): Promise<Gathered> {
     if (m.direction === "inbound" && draft) {
       // Un draft cubre todo el batch del lead: no repetir la misma respuesta
       // por cada mensaje del batch.
-      const line = `[respuesta • ${draft.status}] ${turn("agente", draft.edited_body ?? draft.body)}`;
+      const line = `[respuesta • ${draft.status}] ${turn("agente", draftText(draft))}`;
       if (lastDraftLine.get(label) !== line) {
         byLead.get(label)!.push(line);
         lastDraftLine.set(label, line);
@@ -137,7 +138,7 @@ async function gatherWeekly(): Promise<Gathered> {
     // deno-lint-ignore no-explicit-any
     const draft = (m as any).draft as { body: string; edited_body: string | null; status: string } | null;
     if (m.direction === "inbound" && draft) {
-      const line = turn("agente", draft.edited_body ?? draft.body);
+      const line = turn("agente", draftText(draft));
       if (lastDraftLine.get(label) !== line) {
         entry.turns.push(line);
         lastDraftLine.set(label, line);

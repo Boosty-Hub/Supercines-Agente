@@ -508,7 +508,7 @@ returns table (
        limit 1
     ) li on true
     left join lateral (
-      select d.sent_at, coalesce(d.edited_body, d.body) as body
+      select d.sent_at, coalesce(nullif(btrim(d.edited_body), ''), d.body) as body
         from drafts d
         join messages m on m.id = d.message_id
        where m.lead_id = l.id and d.sent_at is not null and d.status in ('sent', 'auto_sent')

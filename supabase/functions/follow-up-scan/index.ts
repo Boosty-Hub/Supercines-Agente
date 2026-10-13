@@ -29,11 +29,12 @@ import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { modelFor } from "../_shared/models.ts";
-import { DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
-import { OutboundBlockedError, writeClientText } from "../_shared/outbound.ts";
+import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
+import { evaluateRetryGate, interpretRetryOutcome } from "../_shared/followup-retry.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
+import { OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import { UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -525,6 +526,19 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
     }
   }
 
+  // Verificador de texto saliente (_shared/outbound.ts): las variables que el
+  // modelo completó son texto que el cliente va a leer en la plantilla. Se verifican
+  // TODAS antes de escribir la primera, para no dejar campos a medio escribir en
+  // Kommo. Con residuo interno: failed con el motivo, alerta y cooldown (la salida
+  // del modelo se repetiría igual en el próximo barrido).
+  for (const variable of template.variables) {
+    const fuga = outboundLeak(resolvedVars[variable.name]);
+    if (fuga) {
+      await blockFollowUp(leadId, template.id, row.step_number, resolvedVars, variable.name, fuga);
+      return;
+    }
+  }
+
   // Enviar: PATCH Kommo fields + run salesbot
   try {
     for (const variable of template.variables) {
@@ -532,7 +546,6 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
       if (kommoFieldId == null) {
         throw new Error(`variable "${variable.name}" sin campo de Kommo resoluble`);
       }
-      // Texto al cliente: pasa por el verificador de fuga interna (outbound.ts).
       await writeClientText({
         kind: "follow_up",
         kommoLeadId: lead.kommo_lead_id,
@@ -544,29 +557,8 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
     }
     await runSalesbot(template.salesbot_id, lead.kommo_lead_id, deps.kommoDomain, deps.kommoToken);
   } catch (err) {
-    // Una variable con residuo interno NO sale: se registra el seguimiento como
-    // fallido con el motivo, se alerta y se sella el cooldown (reintentar de
-    // inmediato volvería a quemar una sesión CMA con el mismo resultado).
     if (err instanceof OutboundBlockedError) {
-      console.error(`follow-up-scan: texto bloqueado para lead ${leadId}: ${err.reason}`);
-      await supabase.from("follow_ups").insert({
-        lead_id: leadId,
-        template_id: template.id,
-        step: row.step_number,
-        status: "failed",
-        variables: resolvedVars,
-        error: `bloqueado por guard: ${err.reason}`,
-      });
-      await supabase.from("alerts").insert({
-        kind: "outbound_blocked",
-        severity: "warning",
-        title: "Se bloqueó un seguimiento automático",
-        description: `Una variable del seguimiento traía residuo interno del agente (${err.reason}) y no se envió.`,
-        ref_table: "leads",
-        ref_id: leadId,
-        metadata: { part: "follow_up", reason: err.reason, step: row.step_number },
-      });
-      await stampSkipCooldown(leadId);
+      await blockFollowUp(leadId, template.id, row.step_number, resolvedVars, "(variable)", err.reason);
       return;
     }
     const msg = err instanceof Error ? err.message : String(err);
@@ -602,6 +594,135 @@ async function processLead(row: DueLeadRow, deps: Deps): Promise<void> {
       follow_up_last_sent_at: new Date().toISOString(),
     })
     .eq("id", leadId);
+}
+
+// Seguimiento bloqueado por el verificador de texto saliente: nada se escribió en
+// Kommo. Queda `failed` con el motivo (visible en /seguimiento), con alerta, y sella
+// el cooldown de skip (0049) para no re-quemar una sesión del agente por barrido.
+async function blockFollowUp(
+  leadId: string,
+  templateId: string,
+  step: number,
+  vars: Record<string, string>,
+  variableName: string,
+  reason: string
+): Promise<void> {
+  console.error(`follow-up-scan: seguimiento de lead ${leadId} bloqueado (${variableName}): ${reason}`);
+  await supabase.from("follow_ups").insert({
+    lead_id: leadId,
+    template_id: templateId,
+    step,
+    status: "failed",
+    variables: vars,
+    error: `bloqueado por guard: ${reason} (variable ${variableName})`,
+  });
+  const { error: alertErr } = await supabase.from("alerts").insert({
+    kind: "outbound_blocked",
+    severity: "warning",
+    title: "Se bloqueó un seguimiento automático",
+    description:
+      `El texto que el agente armó para la plantilla traía residuo interno (${reason}) y no se envió. ` +
+      "No se escribió nada en Kommo. Revisá la plantilla y las instrucciones del seguimiento.",
+    ref_table: "leads",
+    ref_id: leadId,
+    metadata: { part: "follow_up", reason, variable: variableName },
+  });
+  if (alertErr) console.warn("alert outbound_blocked:", alertErr.message);
+  await stampSkipCooldown(leadId);
+}
+
+// ---- Reintento MANUAL de un lead puntual ----
+// Lo dispara el botón "Reintentar" de la pestaña Seguimientos del inbox, sobre un
+// seguimiento que quedó en `failed`. Ningún camino de fallo avanza el estado del
+// lead, así que el paso NO se consumió: reintentar es volver a correr el mismo
+// paso, sin tocar nada.
+//
+// Es una decisión humana explícita (mismo criterio que el envío manual de
+// publish-to-kommo), así que saltea la rotación del barrido automático y el
+// piso `min_gap_hours`. Lo que NO saltea son los gates que protegen al
+// cliente: opt-out, estados terminales, tope de seguimientos, y — dentro de
+// processLead — la verificación EN VIVO de etapa y responsable contra Kommo.
+// El horario laboral se respeta salvo `force: true`, que la UI pide confirmando.
+//
+// El gate en sí (`evaluateRetryGate` / `interpretRetryOutcome`) vive en
+// `_shared/followup-retry.ts`, puro y probado sin tocar Supabase ni Kommo.
+type RetryResult = {
+  ok: boolean;
+  skipped?: string;
+  outsideHours?: boolean;
+  status?: string;
+  error?: string | null;
+};
+
+async function retryOne(leadId: string, force: boolean, deps: Deps): Promise<RetryResult> {
+  const { data: lead } = await supabase
+    .from("leads")
+    .select("id, follow_up_step, follow_up_status, opted_out, kommo_lead_id")
+    .eq("id", leadId)
+    .maybeSingle();
+
+  const { data: cfg } = await supabase
+    .from("follow_up_config")
+    .select(
+      "enabled, max_follow_ups, timezone, business_hours, business_hours_start, business_hours_end, active_days"
+    )
+    .eq("is_active", true)
+    .maybeSingle();
+
+  const gate = evaluateRetryGate(lead, cfg);
+  if (!gate.ok) return { ok: false, skipped: gate.reason };
+
+  if (!force) {
+    const bh: BusinessHoursConfig = {
+      timezone: (cfg?.timezone as string) || DEFAULT_TIMEZONE,
+      business_hours: (cfg?.business_hours as BusinessHoursConfig["business_hours"]) ?? null,
+      business_hours_start: Number(cfg?.business_hours_start ?? 9),
+      business_hours_end: Number(cfg?.business_hours_end ?? 20),
+      active_days: ((cfg?.active_days as number[] | null) ?? [1, 2, 3, 4, 5, 6]).map(Number),
+    };
+    if (!isBusinessHours(bh)) {
+      return {
+        ok: false,
+        outsideHours: true,
+        skipped: "fuera del horario laboral configurado",
+      };
+    }
+  }
+
+  const { data: stepCfg } = await supabase
+    .from("follow_up_steps")
+    .select("step_number, delay_hours, template_id")
+    .eq("step_number", gate.step)
+    .eq("enabled", true)
+    .maybeSingle();
+  if (!stepCfg) {
+    return { ok: false, skipped: `no hay un paso ${gate.step} habilitado en la secuencia` };
+  }
+
+  await processLead(
+    {
+      lead_id: leadId,
+      step_number: Number(stepCfg.step_number),
+      delay_hours: Number(stepCfg.delay_hours),
+      template_id: (stepCfg.template_id as string | null) ?? null,
+    },
+    deps
+  );
+
+  // processLead no devuelve nada: inserta la fila del intento. Leemos la más
+  // nueva para poder decirle al operador qué pasó de verdad, en vez de un "listo"
+  // que igual pudo haber fallado. Si no insertó nada, fue un skip silencioso de
+  // los de adentro (etapa/responsable fuera del whitelist, o el agente decidió
+  // no escribir).
+  const { data: last } = await supabase
+    .from("follow_ups")
+    .select("status, error, step")
+    .eq("lead_id", leadId)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return interpretRetryOutcome(last, stepCfg.step_number);
 }
 
 // ---- Entry point ----

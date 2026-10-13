@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Badge, EmptyState, MessageSquare } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
+import { draftText } from "@/lib/draft-text";
 import { fetchLeadStage } from "@/lib/kommo";
 import { configValue } from "@/lib/runtime-config";
 import {
@@ -505,13 +506,16 @@ function Timeline({
                 con el botón "Aprobar y enviar" activo: se podía aprobar una
                 respuesta vacía. */}
             {draft && (() => {
-              const draftBody = draft.edited_body ?? draft.body ?? "";
+              const draftBody = draftText(draft);
               const generating = draft.status === "pending" && draftBody.trim() === "";
               return (
                 <div className="flex justify-end">
                   <div className="max-w-[85%] rounded-2xl rounded-tr-md border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
                     <div className="mb-1.5 flex flex-wrap items-center gap-1">
                       <Badge color="green">draft</Badge>
+                      {draft.edited_body && draft.edited_body.trim() && draft.edited_body.trim() !== draft.body.trim() && (
+                        <Badge color="violet">editado</Badge>
+                      )}
                       <Badge
                         color={
                           draft.status === "auto_sent" || draft.status === "sent"
@@ -554,11 +558,11 @@ function Timeline({
                         <DraftActions draftId={draft.id} body={draftBody} status={draft.status} />
                       </div>
                     )}
-                    {draft.agent_metadata?.guard_blocked === true && (
+                    {(draft.agent_metadata?.guard_blocked === true || draft.agent_metadata?.public_reply_blocked === true) && (
                       <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
                         ⚠️{" "}
                         {draft.agent_metadata.guard_part === "public_reply"
-                          ? "La respuesta pública se bloqueó (el mensaje privado sí salió)"
+                          ? "La respuesta pública se bloqueó (el mensaje privado sí sale)"
                           : "El verificador bloqueó este mensaje: no se envía sin revisión"}
                         {typeof draft.agent_metadata.guard_reason === "string" ? ` — ${draft.agent_metadata.guard_reason}` : ""}.
                       </p>

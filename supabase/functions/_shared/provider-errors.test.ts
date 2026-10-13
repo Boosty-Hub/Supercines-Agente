@@ -2,7 +2,7 @@
 // Deno test para isCreditError(). Correr con: deno test supabase/functions/_shared/provider-errors.test.ts
 
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
-import { isCreditError } from "./provider-errors.ts";
+import { isCreditError, isTransientProviderError } from "./provider-errors.ts";
 
 Deno.test("anthropic 400 + 'credit balance' → true", () => {
   assertEquals(
@@ -40,4 +40,26 @@ Deno.test("openai 400 → false, aunque el mensaje mencione insufficient_quota",
     isCreditError("openai", 400, JSON.stringify({ error: { message: "insufficient_quota" } })),
     false,
   );
+});
+
+Deno.test("isTransientProviderError: 429, 5xx (incluido 529) y red son transitorios", () => {
+  assertEquals(isTransientProviderError({ status: 429, message: "rate limit" }), true);
+  assertEquals(isTransientProviderError({ status: 500, message: "boom" }), true);
+  assertEquals(isTransientProviderError({ status: 529, message: "overloaded" }), true);
+  assertEquals(isTransientProviderError({ name: "APIConnectionError", message: "Connection error." }), true);
+  assertEquals(isTransientProviderError({ name: "APIConnectionTimeoutError", message: "Request timed out." }), true);
+  assertEquals(isTransientProviderError(new Error("fetch failed")), true);
+});
+
+Deno.test("isTransientProviderError: la falta de crédito es transitoria (se arregla recargando)", () => {
+  assertEquals(isTransientProviderError({ status: 400, message: "Your credit balance is too low" }), true);
+});
+
+Deno.test("isTransientProviderError: 4xx propios y errores de parseo NO lo son", () => {
+  assertEquals(isTransientProviderError({ status: 400, message: "invalid_request_error: bad schema" }), false);
+  assertEquals(isTransientProviderError({ status: 401, message: "invalid x-api-key" }), false);
+  assertEquals(isTransientProviderError(new Error("no text in response")), false);
+  assertEquals(isTransientProviderError(new SyntaxError("Unexpected token")), false);
+  assertEquals(isTransientProviderError(null), false);
+  assertEquals(isTransientProviderError("boom"), false);
 });

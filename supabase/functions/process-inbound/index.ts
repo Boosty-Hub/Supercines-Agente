@@ -15,7 +15,7 @@ import { loadConfig } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
-import { isCreditError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
+import { isCreditError, isTransientProviderError, recordProviderCreditAlert, resolveProviderCreditAlert } from "../_shared/provider-errors.ts";
 import { routeLead } from "../_shared/routing.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { isStaleBacklog } from "../_shared/backlog.ts";
@@ -1514,8 +1514,15 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 // reintentaba cada minuto PARA SIEMPRE — hasta 14.400 llamadas Haiku/día por
 // hasta 10 mensajes atascados. Tras RECOVER_MAX_ATTEMPTS el mensaje pasa a
 // revisión humana y el prefijo "recover:" lo saca de la cola de reintentos.
+// Solo cuentan los fallos NO transitorios (ver isTransientProviderError): una caída
+// del proveedor (529, 5xx, red, sin crédito) no es culpa del mensaje, y contarla
+// mandaba a revisión humana —para siempre— todo lo que le tocara a un incidente de
+// ~5 minutos. Los transitorios no se cuentan; los acota la ventana de edad.
 const RECOVER_BATCH = 10;
 const RECOVER_MAX_ATTEMPTS = 5;
+// Edad máxima de un mensaje a recuperar cuando answer_max_age_hours = 0 (sin límite
+// de frescura): sin esto, un fallo transitorio sostenido reintentaba para siempre.
+const RECOVER_FALLBACK_MAX_AGE_HOURS = 24;
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
   try {
@@ -1539,15 +1546,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
       .is("vertical_id", null)
       .not("classification->error", "is", null)
       .not("classification->>error", "like", "recover:%");
-    // Ventana de frescura (0040/misma que isStaleBacklog): si el mensaje ya
-    // es más viejo que answer_max_age_hours, generate-response de todas
-    // formas no lo va a contestar — reclasificarlo (Haiku) tras una pausa
-    // larga solo quema tokens en un backlog que ya está vencido. 0 = sin
-    // límite, se conserva el comportamiento legacy (reintenta todo).
-    if (filters.answerMaxAgeHours > 0) {
-      const cutoffIso = new Date(Date.now() - filters.answerMaxAgeHours * 3600_000).toISOString();
-      recoverQuery = recoverQuery.gte("created_at", cutoffIso);
-    }
+    // Ventana de frescura (0040/misma que isStaleBacklog): un mensaje más viejo que
+    // answer_max_age_hours no lo va a contestar generate-response, así que
+    // reclasificarlo solo quema tokens. Con 0 (sin límite) rige un tope de
+    // RECOVER_FALLBACK_MAX_AGE_HOURS: las caídas transitorias del proveedor ya no
+    // cuentan como intento (isTransientProviderError) y sin tope se reintentaría
+    // para siempre un backlog muerto.
+    const recoverWindowHours = filters.answerMaxAgeHours > 0 ? filters.answerMaxAgeHours : RECOVER_FALLBACK_MAX_AGE_HOURS;
+    recoverQuery = recoverQuery.gte("created_at", new Date(Date.now() - recoverWindowHours * 3600_000).toISOString());
     const { data: rows } = await recoverQuery
       .order("created_at", { ascending: true })
       .limit(RECOVER_BATCH);
@@ -1660,9 +1666,14 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
           console.warn("recover classify: clasificación sin salida (rechazo/corte) → revisión humana:", e.message);
           continue;
         }
-        // Falla al reintentar: contar el intento. Transitoria → vuelve al
-        // próximo ciclo del cron; al llegar a RECOVER_MAX_ATTEMPTS se marca
-        // con prefijo "recover:" (sale del select) + revisión humana, para
+        // Falla transitoria del proveedor: no es un intento del mensaje; vuelve al
+        // próximo ciclo del cron (acotado por la ventana de edad de arriba).
+        if (isTransientProviderError(e)) {
+          console.warn("recover classify retry (transitorio, no cuenta):", e instanceof Error ? e.message : String(e));
+          continue;
+        }
+        // Falla persistente: contar el intento; al llegar a RECOVER_MAX_ATTEMPTS se
+        // marca con prefijo "recover:" (sale del select) + revisión humana, para
         // que un error persistente no queme Haiku cada minuto para siempre.
         const prevCls = (msg.classification ?? {}) as Record<string, unknown>;
         const attempts = (Number(prevCls.recover_attempts) || 0) + 1;

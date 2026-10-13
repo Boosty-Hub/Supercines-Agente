@@ -133,3 +133,29 @@ export async function resolveProviderCreditAlert(
     );
   }
 }
+
+/**
+ * ¿Este error de una llamada al LLM es TRANSITORIO (vale la pena reintentar sin
+ * contarlo como intento fallido)? Lo son: rate limit (429), cualquier 5xx (incluido
+ * 529 "overloaded"), fallas de red/timeout (el SDK no trae `status`) y la falta de
+ * crédito (400 "credit balance": se resuelve recargando, no reintentando). NO lo son:
+ * el resto de los 4xx (request inválido, auth) ni los errores propios (respuesta sin
+ * texto, JSON roto): esos se repetirían igual.
+ *
+ * Existe para el tope de reintentos de recoverFailedClassifications: contar una caída
+ * del proveedor como "intento" mandaba a revisión humana, para siempre, todo mensaje
+ * que le tocara a esa ventana (basta un incidente de ~5 minutos).
+ */
+export function isTransientProviderError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { status?: unknown; name?: unknown; message?: unknown };
+  const message = typeof e.message === "string" ? e.message : "";
+  if (typeof e.status === "number") {
+    if (e.status === 429 || e.status >= 500) return true;
+    return isCreditError("anthropic", e.status, message);
+  }
+  // Sin status: los errores de conexión/timeout del SDK (APIConnectionError,
+  // APIConnectionTimeoutError) y los fallos de red de fetch.
+  const name = typeof e.name === "string" ? e.name : "";
+  return /APIConnection|Timeout|AbortError/i.test(name) || /fetch failed|network|ECONN|ETIMEDOUT|socket/i.test(message);
+}

@@ -306,10 +306,10 @@ select pg_temp.expect('anon/authenticated no leen _app_secrets ni escriben kommo
   and has_table_privilege('authenticated', 'kommo_webhook_auth', 'select')
   and not has_table_privilege('authenticated', 'kommo_webhook_auth', 'update'));
 select pg_temp.expect('kommo_webhook_note: solo service_role',
-  has_function_privilege('service_role', 'kommo_webhook_note(boolean)', 'execute')
-  and not has_function_privilege('anon', 'kommo_webhook_note(boolean)', 'execute')
-  and not has_function_privilege('authenticated', 'kommo_webhook_note(boolean)', 'execute')
-  and not has_function_privilege('public', 'kommo_webhook_note(boolean)', 'execute'));
+  has_function_privilege('service_role', 'kommo_webhook_note(boolean, boolean, text)', 'execute')
+  and not has_function_privilege('anon', 'kommo_webhook_note(boolean, boolean, text)', 'execute')
+  and not has_function_privilege('authenticated', 'kommo_webhook_note(boolean, boolean, text)', 'execute')
+  and not has_function_privilege('public', 'kommo_webhook_note(boolean, boolean, text)', 'execute'));
 
 -- sin secreto en modo permisivo: alerta (una sola en 6 h) y sigue permisivo
 delete from alerts where kind = 'webhook_unsigned';

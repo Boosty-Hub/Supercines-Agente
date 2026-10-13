@@ -23,12 +23,16 @@
 //
 // Respuesta rápida (invariante 2 del CLAUDE.md): el refresco de pipelines es
 // una sola llamada y se responde con su resultado; el recorrido de leads, que
-// puede tardar, va en EdgeRuntime.waitUntil. verify_jwt = false (config.toml),
-// sin gate interno: mismo criterio que alerts-scan/health-scan (cron-only). Lo
-// único que cuesta invocarla es 1 llamada a Kommo cada 30 s como máximo y, si
-// hay backfill pendiente, retomar el que ya está en curso.
+// puede tardar, va en EdgeRuntime.waitUntil.
+//
+// verify_jwt = false (config.toml; el cron y el panel no mandan JWT de usuario)
+// pero con GATE: exige el header x-internal-secret (_shared/auth.ts), el secreto
+// interno de bajo privilegio guardado en `_app_secrets` (0065). pg_cron lo manda
+// desde trigger_sync_pipelines() y POST /api/inbox/sync lo manda desde el
+// servidor tras validar la sesión. Sin él: 401 genérico.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorizeInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { fetchLeadsPositionsPage, fetchPipelinesFull } from "../_shared/kommo.ts";
 import { runPositionsBackfill, type BackfillProgress } from "../_shared/backfill-positions.ts";
@@ -117,8 +121,9 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return new Response("sync-pipelines OK", { status: 200 });
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  const denied = await authorizeInternal(req, supabase);
+  if (denied) return denied;
 
   try {
     const cfg = await loadConfig(supabase);
@@ -151,6 +156,6 @@ Deno.serve(async (req: Request) => {
     return json({ ok: pipelines.ok, pipelines, backfill: "scheduled" }, 202);
   } catch (err) {
     console.error("sync-pipelines error:", err);
-    return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return json({ ok: false, error: "internal_error" }, 500);
   }
 });

@@ -435,15 +435,40 @@ $$;
 revoke execute on function apply_kommo_lead_positions(jsonb) from public, anon, authenticated;
 grant execute on function apply_kommo_lead_positions(jsonb) to service_role;
 
--- Cron: refresca pipelines y avanza el backfill. La Edge Function está
--- deployada con verify_jwt = false (como el resto): no requiere auth header.
+-- Secreto interno de bajo privilegio para las Edge Functions verify_jwt=false que
+-- no son webhooks externos (estándar de seguridad de Boosty: nada de service_role
+-- en cron, nada hardcodeado). Se GENERA acá, por despliegue, y nunca viaja en el
+-- repo: ON CONFLICT DO NOTHING hace que re-aplicar no lo rote. Sin policies y con
+-- REVOKE a anon/authenticated: solo lo leen service_role (la Edge Function, que lo
+-- compara con el header x-internal-secret) y las funciones SECURITY DEFINER que
+-- arman la llamada (trigger_sync_pipelines, abajo). Rotarlo = UPDATE de esta fila.
+create table if not exists _app_secrets (
+  clave text primary key,
+  valor text not null
+);
+alter table _app_secrets enable row level security;
+revoke all on _app_secrets from anon, authenticated, public;
+
+insert into _app_secrets (clave, valor)
+values ('INTERNAL_FUNCTION_SECRET', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''))
+on conflict (clave) do nothing;
+
+-- Cron: refresca pipelines y avanza el backfill. La Edge Function tiene
+-- verify_jwt = false pero exige x-internal-secret (gate en _shared/auth.ts).
 -- Sin Kommo configurado responde 200 "skipped" y vuelve a intentar en 10 min.
 create or replace function trigger_sync_pipelines()
-returns void language plpgsql as $$
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_secret text;
 begin
+  select valor into v_secret from _app_secrets where clave = 'INTERNAL_FUNCTION_SECRET';
+  if v_secret is null then
+    raise warning 'trigger_sync_pipelines: falta INTERNAL_FUNCTION_SECRET en _app_secrets';
+    return;
+  end if;
   perform net.http_post(
     url := '${SUPABASE_URL}/functions/v1/sync-pipelines',
-    headers := '{"Content-Type":"application/json"}'::jsonb,
+    headers := jsonb_build_object('Content-Type', 'application/json', 'x-internal-secret', v_secret),
     body := '{}'::jsonb,
     timeout_milliseconds := 30000
   );

@@ -126,6 +126,10 @@ const PATH_SCOPES: ReadonlyArray<{ readonly prefix: string; readonly scope: Scop
   { prefix: "/inbox", scope: "operacion" },
   { prefix: "/leads", scope: "operacion" },
   { prefix: "/alerts", scope: "operacion" },
+  { prefix: "/api/inbox", scope: "operacion" }, // lista/tablero y sincronización con Kommo
+  // Mover un lead de etapa desde el tablero. Operación: es lo mismo que la persona
+  // ya hace a mano en Kommo. Subirlo a "contenido" si se quiere restringir.
+  { prefix: "/api/leads", scope: "operacion" },
   { prefix: "/api/messages", scope: "operacion" },
   { prefix: "/api/drafts", scope: "operacion" },
   { prefix: "/api/alerts", scope: "operacion" },

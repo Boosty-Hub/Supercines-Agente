@@ -16,7 +16,9 @@
 // código promete y el texto guardado no tiene es peor que no tener prefijo.
 const MAX_NOTA_CHARS = 2000;
 
+import { truncateGraphemes } from "./text-safe.ts";
+
 export function construirNotaTransferencia(motivo: string): string {
-  const limpio = motivo.trim().slice(0, MAX_NOTA_CHARS);
+  const limpio = truncateGraphemes(motivo.trim(), MAX_NOTA_CHARS);
   return `[Agente] Derivó esta conversación a un asesor humano.\n\nMotivo: ${limpio}`;
 }

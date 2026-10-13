@@ -9,6 +9,8 @@
 //   headers: x-api-key · anthropic-version: 2023-06-01 · anthropic-beta: managed-agents-2026-04-01
 //   methods: create = POST /v1/<resource>; update = POST /v1/<resource>/<id>; list = GET /v1/<resource>
 
+import { truncateGraphemes } from "@/lib/text-safe";
+
 const BASE = "https://api.anthropic.com";
 const BETA = "managed-agents-2026-04-01";
 
@@ -45,7 +47,7 @@ async function call(
   const text = await res.text();
   if (!res.ok) {
     throw new AnthropicHttpError(
-      `Anthropic ${method} ${path} → ${res.status}: ${text.slice(0, 400)}`,
+      `Anthropic ${method} ${path} → ${res.status}: ${truncateGraphemes(text, 400)}`,
       res.status
     );
   }
@@ -225,5 +227,5 @@ export async function deleteMemory(
     { method: "DELETE", headers: authHeaders(apiKey) }
   );
   if (res.ok || res.status === 404) return true;
-  throw new Error(`Anthropic DELETE memory → ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  throw new Error(`Anthropic DELETE memory → ${res.status}: ${truncateGraphemes(await res.text(), 300)}`);
 }

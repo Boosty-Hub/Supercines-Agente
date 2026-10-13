@@ -13,12 +13,16 @@
 //    otra línea.
 //  - Sin caracteres invisibles / de control / bidi (ocultar texto o invertir el
 //    render): se eliminan.
+//  - Sin surrogates UTF-16 sueltos y con el corte por largo en frontera de grafema
+//    (text-safe.ts): ni un emoji partido ni un 400 del proveedor.
 //  - NFKC primero: los "<" fullwidth, small, angle brackets, etc. colapsan al
 //    "<" ASCII y recién ahí se escapan; no hay variante que evada el escape.
 //  - & < > " escapados como entidades: dentro de un turno es imposible cerrar el
 //    elemento o abrir otro.
 // No es un filtro de contenido: el texto sigue siendo DATO. Por eso, además, el
 // prompt que lo consume debe incluir UNTRUSTED_NOTICE.
+
+import { stripLoneSurrogates, truncateGraphemes } from "./text-safe.ts";
 
 export type Rol = "lead" | "agente";
 const ROLES: ReadonlySet<string> = new Set(["lead", "agente"]);
@@ -29,11 +33,14 @@ const INVISIBLES = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-‏‪-\u202e
 const SALTOS = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/g;
 
 export function sanitizeUntrusted(input: string, opts: { maxChars?: number } = {}): string {
-  let s = String(input ?? "").normalize("NFKC");
+  // Un surrogate UTF-16 suelto (de un lead o de un corte previo) hace que Anthropic
+  // responda 400 «no low surrogate»: se descarta ANTES de normalizar.
+  let s = stripLoneSurrogates(String(input ?? "")).normalize("NFKC");
   s = s.replace(SALTOS, "\n").replace(INVISIBLES, "");
   s = s.split("\n").map((l) => l.trim()).filter(Boolean).join(" ⏎ ");
   const max = opts.maxChars;
-  if (max !== undefined && s.length > max) s = `${s.slice(0, max).trimEnd()}…`;
+  // Corte por GRAFEMA (no parte emojis, banderas ni secuencias ZWJ) y sin surrogates sueltos.
+  if (max !== undefined && s.length > max) s = truncateGraphemes(s, max, { ellipsis: "…" });
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 

@@ -2,6 +2,7 @@
 // (/inbox/[leadId]) y la lista/tablero del cliente. Sin imports de servidor: las
 // funciones que consultan reciben el cliente de Supabase por parámetro.
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { firstGrapheme } from "@/lib/text-safe";
 
 /** Una fila de `inbox_lead_summaries()` (migración 0061). */
 export type LeadSummary = {
@@ -200,12 +201,13 @@ export function withinRange(iso: string | null, rango: string): boolean {
 // Ojo con los emojis: hay display_names de WhatsApp que son puro emoji. Cortar con
 // slice()/[0] va por UNIDADES de código UTF-16 y parte un par suplente al medio,
 // dejando un surrogate suelto: al serializar el HTML el servidor lo descarta y el
-// cliente no → "Text content did not match". Por eso se corta por PUNTOS DE CÓDIGO.
+// cliente no → "Text content did not match". Por eso se corta por GRAFEMA (text-safe.ts): ni un par suplente ni un emoji compuesto a medias.
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
-  if (parts.length === 1) return Array.from(parts[0]).slice(0, 2).join("").toUpperCase();
-  const first = Array.from(parts[0])[0] ?? "";
-  const last = Array.from(parts[parts.length - 1])[0] ?? "";
-  return (first + last).toUpperCase();
+  if (parts.length === 1) {
+    const first = firstGrapheme(parts[0]);
+    return (first + firstGrapheme(parts[0].slice(first.length))).toUpperCase();
+  }
+  return (firstGrapheme(parts[0]) + firstGrapheme(parts[parts.length - 1])).toUpperCase();
 }

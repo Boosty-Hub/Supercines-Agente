@@ -3,6 +3,7 @@ import { SectionCard, EmptyState, Badge } from "@/components/ui";
 import { Repeat } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
 import { FollowUpRetryButton } from "./follow-up-retry-button";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 export type RecentSend = {
   id: string;
@@ -28,7 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
 // Errores del proveedor larguísimos (a veces un JSON entero) — se resumen a
 // algo legible; el detalle completo va en el title del elemento.
 function shortError(err: string): string {
-  return err.length > 90 ? err.slice(0, 90) + "…" : err;
+  return truncateGraphemes(err, 90, { ellipsis: "…" });
 }
 
 /**

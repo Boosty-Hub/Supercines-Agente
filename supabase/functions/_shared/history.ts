@@ -1,3 +1,4 @@
+import { truncateGraphemes } from "./text-safe.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { draftText } from "./draft-text.ts";
 import { turn } from "./untrusted.ts";
@@ -54,6 +55,10 @@ export type LeadHistoryOptions = {
 // mensaje distinto).
 function norm(s: string | null | undefined): string {
   return (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function truncate(s: string, n: number): string {
+  return truncateGraphemes((s ?? "").trim(), n, { ellipsis: "…" });
 }
 
 // Devuelve un transcript cronológico, UN TURNO POR LÍNEA, listo para inyectar en

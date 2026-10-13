@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Spinner } from "@/components/ui";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 export function BackfillBanner() {
   const [state, setState] = useState<"idle" | "running" | "done">("idle");
@@ -33,7 +34,7 @@ export function BackfillBanner() {
 
         if (!r.ok) {
           const t = await r.text().catch(() => "error desconocido");
-          throw new Error(`${r.status}: ${t.slice(0, 200)}`);
+          throw new Error(`${r.status}: ${truncateGraphemes(t, 200)}`);
         }
 
         const data = (await r.json()) as { done: boolean; cursor: string | null; inserted: number };

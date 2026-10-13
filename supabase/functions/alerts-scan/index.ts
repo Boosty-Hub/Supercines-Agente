@@ -17,6 +17,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal } from "../_shared/auth.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
+import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
@@ -139,7 +140,7 @@ async function detectFailedDrafts(): Promise<AlertInput[]> {
         kind: "draft_failed",
         severity: "critical" as const,
         title: `Draft falló: ${leadName}`,
-        description: String(err).slice(0, 500),
+        description: truncateGraphemes(String(err), 500),
         ref_table: "drafts",
         ref_id: r.id,
         metadata: { lead_name: leadName },
@@ -187,7 +188,7 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
         kind: "human_review_needed",
         severity: sev,
         title: `Revisión humana: ${leadName}`,
-        description: `"${r.content.slice(0, 200)}" — tox ${Number(tox).toFixed(2)}, ${r.classification?.reasoning ?? ""}`.slice(0, 500),
+        description: truncateGraphemes(`"${truncateGraphemes(r.content ?? "", 200)}" — tox ${Number(tox).toFixed(2)}, ${r.classification?.reasoning ?? ""}`, 500),
         ref_table: "messages",
         ref_id: r.id,
         metadata: { lead_name: leadName, classification: r.classification },

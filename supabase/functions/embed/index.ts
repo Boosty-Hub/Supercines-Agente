@@ -8,6 +8,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal } from "../_shared/auth.ts";
+import { truncateGraphemes } from "../_shared/text-safe.ts";
 
 // `Supabase.ai` es un global que inyecta el Edge Runtime de Supabase; no está
 // en los tipos de Deno, así que sin esta declaración `deno check` falla. Es
@@ -61,7 +62,7 @@ Deno.serve(async (req: Request) => {
 
   const embeddings: number[][] = [];
   for (const text of inputs) {
-    const truncated = String(text).slice(0, 8000);
+    const truncated = truncateGraphemes(String(text), 8000);
     const emb = (await session.run(truncated, {
       mean_pool: true,
       normalize: true,

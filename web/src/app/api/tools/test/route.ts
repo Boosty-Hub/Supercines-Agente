@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { internalHeadersForUrl } from "@/lib/internal-call";
 import { createServiceClient } from "@/lib/supabase/service";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 // nodejs runtime — runs the HTTP tool executor server-side (resolves secrets
 // from runtime_config, never exposes resolved values back to the client).
@@ -156,7 +157,7 @@ export async function POST(request: Request) {
     const text = await res.text();
     const capped =
       text.length > MAX_RESPONSE_CHARS
-        ? text.slice(0, MAX_RESPONSE_CHARS) + "…[truncado]"
+        ? truncateGraphemes(text, MAX_RESPONSE_CHARS) + "…[truncado]"
         : text;
 
     // IMPORTANT: never echo resolved header values in the response.

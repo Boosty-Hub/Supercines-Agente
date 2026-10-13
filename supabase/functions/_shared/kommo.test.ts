@@ -303,3 +303,11 @@ Deno.test("addLeadTags: GET no-OK throwea", async () => {
   );
   assertEquals(threw, true);
 });
+
+Deno.test("sanitizeKommoFieldValue: saca surrogates sueltos (alto/bajo, medio y final) y no revienta el JSON", () => {
+  for (const roto of ["\uD83Dhola", "ho\uDE0Ala", "hola\uD83D", "\uDE0Ahola\uD83D"]) {
+    const out = sanitizeKommoFieldValue(roto);
+    assertEquals(out, "hola");
+    assertEquals(JSON.parse(JSON.stringify({ v: out })).v, "hola");
+  }
+});

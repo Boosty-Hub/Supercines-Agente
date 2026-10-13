@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { fromReviewMode, asReviewMode } from "@/lib/review-mode";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 // Los interruptores críticos del Panel de control (Ajustes → arriba de las
 // pestañas), cada uno se guarda al toque desde el cliente — sin formulario
@@ -43,6 +44,8 @@ export async function POST(request: Request) {
     if (value) {
       update.halted_at = new Date().toISOString();
       update.halted_by = user.id;
+      const reason = typeof body?.reason === "string" ? truncateGraphemes(body.reason.trim(), 500) : "";
+      update.halted_reason = reason || null;
     }
     const { error } = await supabase.from("kommo_publish_config").update(update).eq("is_active", true);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });

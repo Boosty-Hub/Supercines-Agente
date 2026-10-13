@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 type RetryResponse = {
   ok?: boolean;
@@ -73,7 +74,7 @@ export function FollowUpRetryButton({ leadId }: { leadId: string }) {
       // Volvió a fallar: el motivo real viene en `error`.
       setMsg({
         tone: "err",
-        text: j?.error ? `Falló de nuevo: ${j.error.slice(0, 120)}` : "Falló de nuevo.",
+        text: j?.error ? `Falló de nuevo: ${truncateGraphemes(j.error, 120)}` : "Falló de nuevo.",
       });
       router.refresh();
     } catch (err) {

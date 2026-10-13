@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 export const runtime = "nodejs";
 
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
         },
       });
       if (res.status === 401 || res.status === 403) {
-        const detail = (await res.text().catch(() => "")).slice(0, 200);
+        const detail = truncateGraphemes(await res.text().catch(() => ""), 200);
         return NextResponse.json(
           {
             ok: false,

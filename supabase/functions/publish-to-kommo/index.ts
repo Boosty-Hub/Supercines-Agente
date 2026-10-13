@@ -15,6 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal, callInternal } from "../_shared/auth.ts";
+import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import {
@@ -147,10 +148,7 @@ async function splitExpired<
 // Cap duro de seguridad en profundidad: 280 chars, cortando en el último espacio.
 function capPublicReply(text: string): string {
   const sanitized = text.replace(/[\n\r\t]/g, " ").trim();
-  if (sanitized.length <= 280) return sanitized;
-  const sub = sanitized.slice(0, 280);
-  const lastSpace = sub.lastIndexOf(" ");
-  return lastSpace > 0 ? sub.slice(0, lastSpace) : sub;
+  return truncateGraphemes(sanitized, 280, { wordBoundary: true });
 }
 
 async function publishOne(

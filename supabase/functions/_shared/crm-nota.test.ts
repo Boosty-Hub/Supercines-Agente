@@ -30,3 +30,13 @@ Deno.test("construirNotaTransferencia: recorta motivos extremadamente largos (Ko
   const nota = construirNotaTransferencia(motivoLargo);
   assertEquals(nota.length <= 2000 + "[Agente] Derivó esta conversación a un asesor humano.\n\nMotivo: ".length, true);
 });
+
+Deno.test("construirNotaTransferencia: el recorte a 2000 no parte un emoji ni deja surrogates sueltos", () => {
+  const casos = ["😊".repeat(1500), "👨‍👩‍👧‍👦".repeat(300), `${"a".repeat(1999)}😊`, `\uD83D${"b".repeat(50)}\uDE0A`];
+  for (const motivo of casos) {
+    const nota = construirNotaTransferencia(motivo);
+    const motivoOut = nota.slice(nota.indexOf("Motivo: ") + 8);
+    if (motivoOut.length > 2000) throw new Error("excede el máximo");
+    if (!nota.isWellFormed()) throw new Error("surrogate suelto");
+  }
+});

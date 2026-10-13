@@ -33,6 +33,7 @@ import {
   type BusinessHoursConfig,
   DEFAULT_TIMEZONE,
 } from "../_shared/business-hours.ts";
+import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -232,7 +233,7 @@ async function runHttpTool(
       const text = await res.text();
       // (g) Cap response at 8 KB.
       const capped =
-        text.length > 8192 ? text.slice(0, 8192) + "…[truncado]" : text;
+        text.length > 8192 ? truncateGraphemes(text, 8192) + "…[truncado]" : stripLoneSurrogates(text);
       return res.ok ? capped : `ERROR_HTTP ${res.status}: ${capped}`;
     } finally {
       clearTimeout(timer);
@@ -941,7 +942,7 @@ function isUpcomingEvent(p: PromoRow, today: { ymd: string }): boolean {
 
 const PROMO_CAP = 8;
 const PROMO_TRUNC = 250;
-function truncate(s: string, n: number) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function truncate(s: string, n: number) { return truncateGraphemes(s, n, { ellipsis: "…" }); }
 
 function buildPromoContext(rows: PromoRow[], timezone: string): {
   activePromos: string | null; upcomingEvents: string | null;
@@ -1689,13 +1690,7 @@ Deno.serve(async (req: Request) => {
           const rawReply = textOf(replyRes, "comment_reply").trim();
           if (rawReply) {
             // Cap duro 280 chars: cortar en el último espacio antes del límite.
-            if (rawReply.length <= 280) {
-              publicReply = rawReply;
-            } else {
-              const sub = rawReply.slice(0, 280);
-              const lastSpace = sub.lastIndexOf(" ");
-              publicReply = lastSpace > 0 ? sub.slice(0, lastSpace) : sub;
-            }
+            publicReply = truncateGraphemes(rawReply, 280, { wordBoundary: true });
           }
           // Registrar consumo de la respuesta pública — fail-open.
           await recordUsage(supabase, {

@@ -6,6 +6,7 @@
 //   import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
 
 import { normalizeLoose } from "./text.ts";
+import { stripLoneSurrogates } from "./text-safe.ts";
 import { calcularEtiquetasNuevas, type EtiquetaExistente } from "./crm-tags.ts";
 
 /**
@@ -33,7 +34,8 @@ const BMP_EQUIVALENTE: Record<string, string> = {
 /** Deja el texto guardable en un campo de Kommo (solo BMP). */
 export function sanitizeKommoFieldValue(input: string): string {
   const out: string[] = [];
-  for (const ch of input) {
+  // Surrogates sueltos (de un truncado previo) romperían el JSON/utf8: fuera primero.
+  for (const ch of stripLoneSurrogates(input)) {
     const cp = ch.codePointAt(0) ?? 0;
     if (cp === 0xfe0f || cp === 0x200d || cp === 0x20e3) continue; // selector de variación / ZWJ / keycap huérfanos
     if (cp > 0xffff) {

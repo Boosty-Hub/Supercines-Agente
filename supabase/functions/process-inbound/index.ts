@@ -13,6 +13,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { authorizeInternal, callInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
+import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { expiredClassificationUpdate, recoverWindowHours } from "../_shared/classify-recovery.ts";
@@ -927,7 +928,7 @@ async function transcribeAudio(
     if (isCreditError("openai", res.status, detail)) {
       await recordProviderCreditAlert(supabase, "openai", { status: res.status, component: "transcribeAudio" });
     }
-    throw new Error(`whisper ${res.status}: ${detail.slice(0, 200)}`);
+    throw new Error(`whisper ${res.status}: ${truncateGraphemes(detail, 200)}`);
   }
   // Transcripción exitosa → si había una alerta de cuota agotada abierta
   // para OpenAI, se resuelve (gateada — no pega a la DB en cada llamada).
@@ -1109,7 +1110,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // Contenido inicial: texto, o un placeholder si es media-only (se reemplaza
       // por la descripción de Haiku tras clasificar, si el adjunto se procesa).
       const baseContent =
-        text || (media ? `[${media.label}${media.filename ? ` ${media.filename}` : ""}]` : "");
+        stripLoneSurrogates(text) || (media ? `[${media.label}${media.filename ? ` ${media.filename}` : ""}]` : "");
 
       // Dedupe de webhooks re-entregados (0050): Kommo reintenta la entrega
       // ante timeout/5xx — sin esta guarda, cada re-entrega creaba una fila

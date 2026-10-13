@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValues } from "@/lib/runtime-config";
 import { createServiceClient } from "@/lib/supabase/service";
 import { SETTINGS_DEFAULT, WEBHOOK_PATH, webhookDestination } from "@/lib/kommo-webhook";
+import { truncateGraphemes } from "@/lib/text-safe";
 
 /**
  * Re-suscribe el webhook de Kommo cuando Kommo lo deshabilitó.
@@ -68,7 +69,7 @@ export async function POST() {
     if (!res.ok) {
       const detalle = await res.text().catch(() => "");
       return NextResponse.json(
-        { error: `Kommo respondió ${res.status}: ${detalle.slice(0, 300)}` },
+        { error: `Kommo respondió ${res.status}: ${truncateGraphemes(detalle, 300)}` },
         { status: 502 },
       );
     }

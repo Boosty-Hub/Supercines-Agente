@@ -1,35 +1,31 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { requestPositionSync } from "@/lib/position-sync";
 
 // La conversación leyó de Kommo una etapa/pipeline distinta de la guardada. La
-// página (GET) NO escribe nada: este componente pide, una sola vez por lead, que
-// el servidor la guarde (POST /api/leads/[id]/position) y refresca la vista y el
-// tablero cuando termina. Sin UI propia.
+// página (GET) NO escribe nada: este componente pide que el servidor la guarde
+// (POST /api/leads/[id]/position) y refresca la vista y el tablero cuando termina.
+// Sin UI propia.
+//
+// Robusto a React 19 StrictMode (dev: montar → desmontar → montar): la request en
+// vuelo se comparte entre montajes (lib/position-sync) y cada efecto se engancha a
+// ella. Antes un ref marcaba «hecho» al EMPEZAR y el 2º montaje salía sin pedir,
+// mientras el 1º ya estaba cancelado: el refresh se perdía.
 export default function LivePositionSync({ leadId }: { leadId: string }) {
   const router = useRouter();
-  const hecho = useRef<string | null>(null);
 
   useEffect(() => {
-    if (hecho.current === leadId) return;
-    hecho.current = leadId;
-    // SIN bandera de cancelación: con el guard `hecho` de arriba, el StrictMode de
-    // React 19 (monta, desmonta y vuelve a montar) corría el efecto UNA vez, lo
-    // cancelaba en el cleanup y la segunda pasada salía por el guard — la respuesta
-    // se perdía y la etapa nunca se guardaba. Un refresh tras desmontar es inocuo.
-    void fetch(`/api/leads/${leadId}/position`, { method: "POST" })
-      .then(async (res) => {
-        if (!res.ok) return;
-        const json = await res.json().catch(() => ({}));
-        if (json?.outcome === "applied") {
-          window.dispatchEvent(new Event("inbox:reload"));
-          router.refresh();
-        }
-      })
-      .catch(() => {
-        /* fail-open: se sigue mostrando lo de Kommo; el webhook o el backfill lo guardan */
-      });
+    let vigente = true;
+    void requestPositionSync(leadId).then((applied) => {
+      if (!vigente || !applied) return;
+      window.dispatchEvent(new Event("inbox:reload"));
+      router.refresh();
+    });
+    return () => {
+      vigente = false;
+    };
   }, [leadId, router]);
 
   return null;

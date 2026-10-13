@@ -1,0 +1,156 @@
+// Edge Function: sync-pipelines
+//
+// Mantiene al día la copia local de los pipelines/etapas de Kommo (que dibuja
+// el tablero del inbox) y rellena kommo_pipeline_id / kommo_stage_id de los
+// leads que ya existían antes de la migración 0065.
+//
+// Se invoca desde:
+//   - pg_cron, cada 10 min (job `sync-pipelines`, migración 0065). Es el camino
+//     automático: tras el deploy, el backfill avanza solo hasta quedar 'done'.
+//   - el botón "Sincronizar" del inbox (POST /api/inbox/sync) para no esperar.
+//
+// Qué hace en cada invocación:
+//   1. Refresca pipelines + etapas (UNA llamada a Kommo) → sync_kommo_pipelines().
+//      Kommo no avisa por webhook cuando se crea/renombra una etapa: esta es la
+//      única forma de enterarse. Mínimo 30 s entre refrescos por instancia.
+//   2. Si el backfill no está 'done', reclama el lease (claim_kommo_backfill) y
+//      recorre /api/v4/leads por páginas, aplicando solo lo que cambió. Es
+//      reanudable (cursor persistido tras cada página) y respeta el rate limit
+//      de Kommo (ver _shared/backfill-positions.ts).
+//
+// Idempotente: correrla N veces converge al mismo estado. Dos invocaciones
+// simultáneas nunca recorren Kommo a la vez (lease en la base).
+//
+// Respuesta rápida (invariante 2 del CLAUDE.md): el refresco de pipelines es
+// una sola llamada y se responde con su resultado; el recorrido de leads, que
+// puede tardar, va en EdgeRuntime.waitUntil. verify_jwt = false (config.toml),
+// sin gate interno: mismo criterio que alerts-scan/health-scan (cron-only). Lo
+// único que cuesta invocarla es 1 llamada a Kommo cada 30 s como máximo y, si
+// hay backfill pendiente, retomar el que ya está en curso.
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { loadConfig } from "../_shared/config.ts";
+import { fetchLeadsPositionsPage, fetchPipelinesFull } from "../_shared/kommo.ts";
+import { runPositionsBackfill, type BackfillProgress } from "../_shared/backfill-positions.ts";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
+  auth: { persistSession: false },
+});
+
+const JOB = "lead_positions";
+/** Lease del backfill: más largo que el presupuesto, para que un worker vivo no lo pierda. */
+const LEASE_SECONDS = 150;
+/** Cuánto puede correr una invocación recorriendo leads. */
+const BUDGET_MS = 100_000;
+/** ~4 req/s: Kommo permite ~7 por cuenta y se comparten con webhook/agente/panel. */
+const PAUSE_MS = 250;
+const PIPELINES_MIN_INTERVAL_MS = 30_000;
+
+let lastPipelinesSyncAt = 0;
+
+type PipelinesResult =
+  | { ok: true; stages: number; skipped?: "recent" }
+  | { ok: false; error: string };
+
+async function syncPipelines(domain: string, token: string): Promise<PipelinesResult> {
+  if (Date.now() - lastPipelinesSyncAt < PIPELINES_MIN_INTERVAL_MS) {
+    return { ok: true, stages: 0, skipped: "recent" };
+  }
+  try {
+    const pipelines = await fetchPipelinesFull(domain, token);
+    const { data, error } = await supabase.rpc("sync_kommo_pipelines", { p_pipelines: pipelines });
+    if (error) return { ok: false, error: `sync_kommo_pipelines: ${error.message}` };
+    lastPipelinesSyncAt = Date.now();
+    return { ok: true, stages: Number(data ?? 0) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function runBackfill(domain: string, token: string): Promise<BackfillProgress | "not_claimed"> {
+  const { data: claimed, error } = await supabase.rpc("claim_kommo_backfill", {
+    p_job: JOB,
+    p_lease_seconds: LEASE_SECONDS,
+  });
+  if (error) throw new Error(`claim_kommo_backfill: ${error.message}`);
+  const row = (claimed as Array<{ next_page: number; scanned: number; updated: number }> | null)?.[0];
+  if (!row) return "not_claimed"; // ya está 'done' o hay otro worker con el lease
+
+  return await runPositionsBackfill(
+    { nextPage: row.next_page, scanned: row.scanned, updated: row.updated },
+    {
+      fetchPage: (page) => fetchLeadsPositionsPage(domain, token, page),
+      apply: async (leads) => {
+        const { data, error: applyErr } = await supabase.rpc("apply_kommo_lead_positions", { p_leads: leads });
+        if (applyErr) throw new Error(`apply_kommo_lead_positions: ${applyErr.message}`);
+        return Number(data ?? 0);
+      },
+      save: async (p) => {
+        const finished = p.status === "done";
+        const released = p.status !== "running"; // pending/failed/done sueltan el lease
+        const { error: saveErr } = await supabase
+          .from("kommo_backfill")
+          .update({
+            status: p.status,
+            next_page: p.nextPage,
+            scanned: p.scanned,
+            updated: p.updated,
+            last_error: p.error ?? null,
+            lease_until: released ? null : new Date(Date.now() + LEASE_SECONDS * 1000).toISOString(),
+            finished_at: finished ? new Date().toISOString() : null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("job", JOB);
+        if (saveErr) throw new Error(`kommo_backfill update: ${saveErr.message}`);
+      },
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    },
+    { budgetMs: BUDGET_MS, pauseMs: PAUSE_MS },
+  );
+}
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "GET") return new Response("sync-pipelines OK", { status: 200 });
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+
+  try {
+    const cfg = await loadConfig(supabase);
+    const domain = cfg.get("KOMMO_API_DOMAIN");
+    const token = cfg.get("KOMMO_ACCESS_TOKEN");
+    // Sin Kommo conectado todavía (deploy nuevo antes del wizard /setup): no es
+    // un error. El cron vuelve a intentar en 10 min.
+    if (!domain || !token) return json({ ok: true, skipped: "kommo_not_configured" });
+
+    const pipelines = await syncPipelines(domain, token);
+
+    // El recorrido de leads puede tardar: va en segundo plano y esta respuesta
+    // sale ya, con el resultado del refresco de pipelines.
+    const backfill = (async () => {
+      try {
+        const r = await runBackfill(domain, token);
+        console.log("sync-pipelines backfill:", JSON.stringify(r));
+      } catch (e) {
+        console.error("sync-pipelines backfill:", e);
+      }
+    })();
+    // @ts-ignore: EdgeRuntime existe en Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(backfill);
+    } else {
+      await backfill; // fallback local/test
+    }
+
+    return json({ ok: pipelines.ok, pipelines, backfill: "scheduled" }, 202);
+  } catch (err) {
+    console.error("sync-pipelines error:", err);
+    return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});

@@ -165,6 +165,23 @@ export async function fetchPipelineStages(
   kommoDomain: string,
   kommoToken: string
 ): Promise<KommoStageLite[]> {
+  return flattenPipelines(await fetchPipelinesFull(kommoDomain, kommoToken));
+}
+
+/** Pipelines con orden, tipo y color: el formato que espera sync_kommo_pipelines (0065). */
+export type KommoPipelineFull = {
+  id: number;
+  name: string;
+  sort: number;
+  is_main: boolean;
+  is_archive: boolean;
+  statuses: Array<{ id: number; name: string; sort: number; type: number; color: string | null }>;
+};
+
+export async function fetchPipelinesFull(
+  kommoDomain: string,
+  kommoToken: string
+): Promise<KommoPipelineFull[]> {
   const url = `https://${kommoDomain}/api/v4/leads/pipelines`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${kommoToken}` },
@@ -177,17 +194,94 @@ export async function fetchPipelineStages(
       pipelines?: Array<{
         id: number;
         name: string;
-        _embedded?: { statuses?: Array<{ id: number; name: string }> };
+        sort?: number;
+        is_main?: boolean;
+        is_archive?: boolean;
+        _embedded?: {
+          statuses?: Array<{ id: number; name: string; sort?: number; type?: number; color?: string }>;
+        };
       }>;
     };
   };
+  return (json._embedded?.pipelines ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    sort: p.sort ?? 0,
+    is_main: p.is_main === true,
+    is_archive: p.is_archive === true,
+    statuses: (p._embedded?.statuses ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      sort: s.sort ?? 0,
+      type: s.type ?? 0,
+      color: s.color ?? null,
+    })),
+  }));
+}
+
+export function flattenPipelines(pipelines: KommoPipelineFull[]): KommoStageLite[] {
   const out: KommoStageLite[] = [];
-  for (const p of json._embedded?.pipelines ?? []) {
-    for (const s of p._embedded?.statuses ?? []) {
+  for (const p of pipelines) {
+    for (const s of p.statuses) {
       out.push({ id: s.id, name: s.name, pipelineId: p.id, pipelineName: p.name });
     }
   }
   return out;
+}
+
+/** Posición de un lead tal como la informa GET /api/v4/leads. */
+export type KommoLeadPosition = { id: number; status_id: number; pipeline_id: number };
+
+export class KommoHttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "KommoHttpError";
+  }
+}
+
+/** Tope de reintentos ante 429 y espera por defecto si Kommo no manda Retry-After. */
+const KOMMO_MAX_429_RETRIES = 4;
+const KOMMO_DEFAULT_RETRY_MS = 1000;
+
+/**
+ * Una página de GET /api/v4/leads (id, etapa y pipeline de cada lead), ordenada
+ * por id para que la paginación sea estable aunque entren leads nuevos mientras
+ * se recorre. Kommo limita a ~7 req/s por cuenta, compartidos con el resto del
+ * sistema: ante un 429 espera (Retry-After si viene) y reintenta; el resto de
+ * los errores salen como KommoHttpError para que el caller decida.
+ */
+export async function fetchLeadsPositionsPage(
+  kommoDomain: string,
+  kommoToken: string,
+  page: number,
+  limit = 250,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+): Promise<{ leads: KommoLeadPosition[]; hasMore: boolean }> {
+  const url = `https://${kommoDomain}/api/v4/leads?limit=${limit}&page=${page}&order[id]=asc`;
+  for (let intento = 0; ; intento++) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (res.status === 204) return { leads: [], hasMore: false };
+    if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
+      const retryAfter = Number(res.headers.get("retry-after"));
+      await res.body?.cancel();
+      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : KOMMO_DEFAULT_RETRY_MS * (intento + 1));
+      continue;
+    }
+    if (!res.ok) {
+      throw new KommoHttpError(res.status, `fetch leads page ${page}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+    }
+    const json = (await res.json()) as {
+      _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
+      _links?: { next?: unknown };
+    };
+    const leads: KommoLeadPosition[] = [];
+    for (const l of json._embedded?.leads ?? []) {
+      if (typeof l.id === "number" && typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
+        leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
+      }
+    }
+    return { leads, hasMore: Boolean(json._links?.next) };
+  }
 }
 
 export type KommoFieldLite = { id: number; name: string };

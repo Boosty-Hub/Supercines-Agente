@@ -45,12 +45,26 @@ function parseFormBracketed(body: string): Record<string, unknown> {
   return result;
 }
 
-// ¿El payload tiene algo que process-inbound sepa procesar?
-// processPayload SOLO mira `leads.add` y `message.add`. Los eventos
-// `leads.update` / `leads.status` son ~64% del tráfico real y no producen
-// NINGÚN efecto — pero cada uno disparaba una invocación completa de
-// process-inbound. Se siguen encolando (trazabilidad); el sweep de pg_cron
-// los marca 'done' dentro del minuto.
+// ¿El payload tiene algo que process-inbound sepa procesar de INMEDIATO?
+// processPayload procesa `leads.add`, `leads.update`, `leads.status` y
+// `message.add`. `update` / `status` son ~64% del tráfico real, pero solo
+// importan cuando mueven al lead de etapa o de pipeline: es lo que mueve la
+// tarjeta en el tablero del inbox (0061).
+//
+//  - `leads.status` (cambio de etapa) y `leads.add` / `message.add` disparan
+//    process-inbound al instante: la tarjeta se mueve en vivo.
+//  - `leads.update` SOLO se encola: el sweep de pg_cron (cada minuto) lo
+//    procesa. En SuperCines los Salesbots escriben custom fields del lead todo
+//    el día y cada escritura genera un leads.update; disparar una invocación por
+//    cada ráfaga de esos eventos cambiaría 1.440 barridos/día por miles de
+//    invocaciones para, casi siempre, no escribir nada. Un movimiento de etapa
+//    siempre trae su `leads.status`, así que no se pierde tiempo real donde
+//    importa, y el barrido igual sincroniza la posición de los `update`.
+//
+// El costo sigue acotado por dos lados más: el coalescing de abajo (como mucho
+// UN trigger cada 2 s por instancia) y que process-inbound solo ESCRIBE si la
+// etapa/pipeline cambió (_shared/lead-position.ts). Este endpoint no hace más
+// trabajo por eso: sigue siendo "insertar y responder" (invariante 6).
 //
 // FAIL-OPEN a propósito: ante cualquier forma que no sepamos inspeccionar
 // (`_raw` de un body que no parseó, un grupo nuevo de Kommo) devolvemos true y
@@ -68,7 +82,7 @@ function isActionable(payload: Record<string, unknown>): boolean {
   const message = group("message");
   // Ningún grupo conocido → puede ser una forma nueva de Kommo: disparar.
   if (!leads && !message) return true;
-  return Boolean(leads?.add) || Boolean(message?.add);
+  return Boolean(leads?.add || leads?.status) || Boolean(message?.add);
 }
 
 // Coalescing del trigger a process-inbound.

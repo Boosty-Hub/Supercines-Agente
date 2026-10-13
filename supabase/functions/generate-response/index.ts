@@ -253,6 +253,7 @@ type CrmContext = {
   // Campos para registrar lead_stage_events (opcionales; fail-open si ausentes)
   internalLeadId?: string;
   currentKommoStageId?: number | null;
+  currentKommoPipelineId?: number | null;
   draftId?: string;
 };
 
@@ -345,31 +346,39 @@ async function runCrmTool(
     const target = matches[0];
     await moveLeadStage(ctx.kommoLeadId, target.id, target.pipelineId, ctx.domain, ctx.token);
 
-    // Registrar evento de cambio de etapa (fail-open: nunca romper el tool).
+    // Registrar el movimiento (fail-open: nunca romper el tool). Va por
+    // record_lead_stage_event (0061): Kommo manda leads.status de vuelta por este
+    // mismo movimiento y la base evita que quede duplicado, llegue antes o después.
     if (ctx.internalLeadId) {
       try {
         // Resolver nombre de etapa anterior si tenemos el id previo
         let fromStageName: string | null = null;
         const prevStageId = ctx.currentKommoStageId;
         if (prevStageId != null) {
-          const prevStage = stages.find((s) => s.id === prevStageId);
+          const prevStage = stages.find(
+            (s) => s.id === prevStageId && (ctx.currentKommoPipelineId == null || s.pipelineId === ctx.currentKommoPipelineId)
+          );
           fromStageName = prevStage?.name ?? null;
         }
-        await supabase.from("lead_stage_events").insert({
-          lead_id: ctx.internalLeadId,
-          from_stage_id: prevStageId ?? null,
-          to_stage_id: target.id,
-          from_stage_name: fromStageName,
-          to_stage_name: target.name,
-          pipeline_name: target.pipelineName,
-          moved_by: "agente",
-          draft_id: ctx.draftId ?? null,
-        });
-        // Actualizar kommo_stage_id en leads para mantener el estado en sync
+        // Etapa + pipeline van JUNTOS: 142/143 existen en todos los pipelines y
+        // sin kommo_pipeline_id el tablero del inbox no ubicaría al lead.
         await supabase
           .from("leads")
-          .update({ kommo_stage_id: target.id })
+          .update({ kommo_stage_id: target.id, kommo_pipeline_id: target.pipelineId })
           .eq("id", ctx.internalLeadId);
+        const { error: rpcErr } = await supabase.rpc("record_lead_stage_event", {
+          p_lead_id: ctx.internalLeadId,
+          p_from_stage_id: prevStageId ?? null,
+          p_from_pipeline_id: ctx.currentKommoPipelineId ?? null,
+          p_to_stage_id: target.id,
+          p_to_pipeline_id: target.pipelineId,
+          p_from_stage_name: fromStageName,
+          p_to_stage_name: target.name,
+          p_pipeline_name: target.pipelineName,
+          p_moved_by: "agente",
+          p_draft_id: ctx.draftId ?? null,
+        });
+        if (rpcErr) throw new Error(rpcErr.message);
       } catch (evErr) {
         console.warn("lead_stage_events insert (agente) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
       }
@@ -737,7 +746,7 @@ async function pickLeadBatch(
 async function getLead(leadId: string) {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, kommo_lead_id, kommo_contact_id, display_name, channel, kommo_stage_id")
+    .select("id, kommo_lead_id, kommo_contact_id, display_name, channel, kommo_stage_id, kommo_pipeline_id")
     .eq("id", leadId)
     .single();
   if (error) throw new Error(`lead ${leadId}: ${error.message}`);
@@ -959,6 +968,7 @@ async function runAgent(opts: {
   bcvEnabled: boolean;
   // Campos para registrar lead_stage_events cuando el agente mueve etapas
   currentKommoStageId?: number | null;
+  currentKommoPipelineId?: number | null;
   draftId?: string;
 }): Promise<Outcome> {
   const start = Date.now();
@@ -1037,6 +1047,7 @@ async function runAgent(opts: {
                 gate: opts.crm,
                 internalLeadId: opts.leadId,
                 currentKommoStageId: opts.currentKommoStageId,
+                currentKommoPipelineId: opts.currentKommoPipelineId,
                 draftId: opts.draftId,
               });
         } else if (ev.name === BCV_TOOL_NAME) {
@@ -1412,6 +1423,7 @@ Deno.serve(async (req: Request) => {
         crm,
         bcvEnabled: cfg?.bcv_rate_enabled === true,
         currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,
+        currentKommoPipelineId: lead.kommo_pipeline_id != null ? Number(lead.kommo_pipeline_id) : null,
         draftId: draft.id,
       });
 

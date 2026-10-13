@@ -1,7 +1,7 @@
 // Edge Function: process-inbound
 // Procesa eventos de inbound_queue:
-//  1. Parsea payload de Kommo (leads.add, message.add)
-//  2. Upsert leads (lead_id de Kommo)
+//  1. Parsea payload de Kommo (leads.add, leads.update / leads.status, message.add)
+//  2. Upsert leads (lead_id de Kommo); sincroniza etapa + pipeline cuando cambian
 //  3. Insert messages
 //  4. Para incoming: clasifica (CLASSIFY_MODEL, Haiku 5.5 por defecto) según verticales en DB
 //  5. Marca queue row como done
@@ -22,6 +22,7 @@ import { effortFor, modelFor } from "../_shared/models.ts";
 import { budgetSkipError, getBudgetGate } from "../_shared/budget.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 import { jsonOf, LLM_PROFILES, LlmRefusalError, LlmTruncatedError } from "../_shared/llm.ts";
+import { parseLeadPosition, planPositionChange } from "../_shared/lead-position.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -66,7 +67,9 @@ type KommoMessage = {
 };
 type KommoPayload = {
   account?: { id?: string; subdomain?: string };
-  leads?: { add?: KommoLead[]; update?: KommoLead[] };
+  // `status` = cambio de etapa (mismo formato que `update`) y llega SOLO, sin
+  // `update` al lado. Los dos se procesan igual (syncLeadPositions).
+  leads?: { add?: KommoLead[]; update?: KommoLead[]; status?: KommoLead[] };
   message?: { add?: KommoMessage[] };
 };
 
@@ -453,12 +456,94 @@ function extractMedia(m: KommoMessage): ExtractedMedia | null {
   return { kind: "other", label: "Archivo", source: { type: "url", url }, filename };
 }
 
+// ---- Posición del lead (etapa + pipeline) ----
+// Compara lo guardado con lo que informa Kommo (_shared/lead-position.ts) y
+// escribe SOLO si cambió: ~1.900 de cada ~2.200 leads.update por semana son de
+// otros campos, y cada UPDATE a `leads` dispara un refresco en vivo en todos los
+// inbox abiertos. Si fue un movimiento real lo registra en lead_stage_events por
+// record_lead_stage_event (0065), que además absorbe el "eco": Kommo manda
+// leads.status también cuando el movimiento lo hizo el agente o el panel, y esas
+// fuentes ya lo registraron.
+async function applyLeadPosition(
+  lead: { id: string; kommo_stage_id: number | null; kommo_pipeline_id: number | null },
+  next: { stageId: number; pipelineId: number | null }
+): Promise<void> {
+  const plan = planPositionChange(
+    {
+      stageId: lead.kommo_stage_id == null ? null : Number(lead.kommo_stage_id),
+      pipelineId: lead.kommo_pipeline_id == null ? null : Number(lead.kommo_pipeline_id),
+    },
+    next
+  );
+  if (!plan.write) return;
+  const { error } = await supabase.from("leads").update(plan.patch).eq("id", lead.id);
+  if (error) throw new Error(`update lead position: ${error.message}`);
+  if (!plan.recordEvent) return;
+  try {
+    const { error: evErr } = await supabase.rpc("record_lead_stage_event", {
+      p_lead_id: lead.id,
+      p_from_stage_id: lead.kommo_stage_id == null ? null : Number(lead.kommo_stage_id),
+      p_from_pipeline_id: lead.kommo_pipeline_id == null ? null : Number(lead.kommo_pipeline_id),
+      p_to_stage_id: next.stageId,
+      p_to_pipeline_id: next.pipelineId ?? (lead.kommo_pipeline_id == null ? null : Number(lead.kommo_pipeline_id)),
+      p_from_stage_name: null, // sin nombres — el UI los resuelve con kommo_stages
+      p_to_stage_name: null,
+      p_pipeline_name: null,
+      p_moved_by: "kommo",
+    });
+    if (evErr) throw new Error(evErr.message);
+  } catch (evErr) {
+    console.warn("lead_stage_events insert (kommo) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
+  }
+}
+
+// leads.update / leads.status: solo importan los que traen etapa. Un lead que
+// todavía no capturamos (sin mensajes) se ignora: no hay nada que sincronizar y
+// el backfill (sync-pipelines) lo trae si llega a necesitarse.
+//
+// Costo (SuperCines: los Salesbots escriben custom fields todo el día, así que
+// casi todos los leads.update son de otros campos): UNA sola consulta por
+// payload para todos sus leads (no una por lead), y cero escrituras si la
+// etapa/pipeline no cambió (applyLeadPosition → planPositionChange). Si el mismo
+// lead aparece varias veces en el payload gana la última posición informada.
+async function syncLeadPositions(changes: KommoLead[]): Promise<void> {
+  const latest = new Map<number, NonNullable<ReturnType<typeof parseLeadPosition>>>();
+  for (const change of changes) {
+    const pos = parseLeadPosition(change);
+    if (pos) latest.set(pos.kommoLeadId, pos);
+  }
+  if (latest.size === 0) return;
+  const { data: rows, error } = await supabase
+    .from("leads")
+    .select("id, kommo_lead_id, kommo_stage_id, kommo_pipeline_id")
+    .in("kommo_lead_id", [...latest.keys()]);
+  if (error) throw new Error(`select lead positions: ${error.message}`);
+  for (const row of (rows ?? []) as Array<{
+    id: string;
+    kommo_lead_id: number;
+    kommo_stage_id: number | null;
+    kommo_pipeline_id: number | null;
+  }>) {
+    const pos = latest.get(Number(row.kommo_lead_id));
+    if (!pos) continue;
+    await applyLeadPosition(row, { stageId: pos.statusId, pipelineId: pos.pipelineId });
+  }
+}
+
 // ---- Upsert lead ----
 // inbound: true → actualiza last_inbound_at (reloj de inactividad para seguimiento)
-// stageId: número → actualiza kommo_stage_id (para run_stage_ids de follow-up)
+// stageId / pipelineId: sincronizan kommo_stage_id / kommo_pipeline_id (para
+// run_stage_ids de follow-up y para el tablero del inbox)
 async function upsertLead(
   kommoLeadId: number,
-  opts: { name?: string; channel?: string; contactId?: number; inbound?: boolean; stageId?: number },
+  opts: {
+    name?: string;
+    channel?: string;
+    contactId?: number;
+    inbound?: boolean;
+    stageId?: number;
+    pipelineId?: number;
+  },
   retried = false
 ): Promise<string> {
   const update: Record<string, unknown> = {
@@ -469,13 +554,11 @@ async function upsertLead(
   if (opts.contactId) update.kommo_contact_id = opts.contactId;
   // Hook de seguimiento: reloj de inactividad (solo inbound)
   if (opts.inbound) update.last_inbound_at = new Date().toISOString();
-  // Hook de seguimiento: sincronizar etapa de Kommo
-  if (opts.stageId !== undefined && opts.stageId !== null) update.kommo_stage_id = opts.stageId;
 
   // Buscar existente
   const { data: existing } = await supabase
     .from("leads")
-    .select("id, follow_up_status, kommo_stage_id")
+    .select("id, follow_up_status, kommo_stage_id, kommo_pipeline_id")
     .eq("kommo_lead_id", kommoLeadId)
     .maybeSingle();
 
@@ -488,31 +571,13 @@ async function upsertLead(
         .update({ follow_up_status: "responded" })
         .eq("id", existing.id);
     }
-    // Capturar movimiento de etapa externo (Kommo): solo cuando cambia el valor
-    // y el anterior no era null (null→id = lead nuevo con etapa inicial, no un movimiento).
-    const prevStageId = (existing as { kommo_stage_id?: number | null }).kommo_stage_id;
-    const newStageId = opts.stageId;
-    if (
-      newStageId !== undefined &&
-      newStageId !== null &&
-      prevStageId !== undefined &&
-      prevStageId !== null &&
-      Number(prevStageId) !== Number(newStageId)
-    ) {
-      try {
-        await supabase.from("lead_stage_events").insert({
-          lead_id: existing.id,
-          from_stage_id: Number(prevStageId),
-          to_stage_id: Number(newStageId),
-          from_stage_name: null, // sin nombres — el UI los resuelve vía mapa de stages
-          to_stage_name: null,
-          pipeline_name: null,
-          moved_by: "kommo",
-          draft_id: null,
-        });
-      } catch (evErr) {
-        console.warn("lead_stage_events insert (kommo) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
-      }
+    // Etapa/pipeline que trae el payload: se escribe solo si cambió y, si fue un
+    // movimiento externo (Kommo), se registra. null → etapa = lead nuevo, no movimiento.
+    if (opts.stageId !== undefined && opts.stageId !== null) {
+      await applyLeadPosition(
+        existing as { id: string; kommo_stage_id: number | null; kommo_pipeline_id: number | null },
+        { stageId: opts.stageId, pipelineId: opts.pipelineId ?? null }
+      );
     }
     return existing.id as string;
   }
@@ -526,6 +591,7 @@ async function upsertLead(
       last_message_at: update.last_message_at,
       last_inbound_at: opts.inbound ? update.last_inbound_at : null,
       kommo_stage_id: opts.stageId ?? null,
+      kommo_pipeline_id: opts.pipelineId ?? null,
     })
     .select("id")
     .single();
@@ -872,6 +938,18 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   const subdomain = payload.account?.subdomain ?? null;
   const inboundMessageIds: string[] = [];
   let staleBacklogSkipped = 0;
+
+  // 0) Cambios de lead (leads.update / leads.status): sincroniza etapa +
+  //    pipeline. `status` llega SOLO, sin `update` al lado — antes se descartaba
+  //    entero. Va PRIMERO y con salida anticipada: un payload que no trae leads
+  //    nuevos ni mensajes (la gran mayoría de los update/status) no necesita
+  //    cargar verticales, reglas de silencio, filtros ni config.
+  const leadChanges = [...(payload.leads?.update ?? []), ...(payload.leads?.status ?? [])];
+  if (leadChanges.length > 0) await syncLeadPositions(leadChanges);
+  if (!payload.leads?.add && !payload.message?.add) {
+    return { subdomain, leads_processed: 0, messages_processed: 0, inboundMessageIds, staleBacklogSkipped };
+  }
+
   const verticals = await getVerticals();
   const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
   const skipRules = await getSkipRules();
@@ -895,9 +973,11 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       const id = Number(l.id);
       if (!Number.isFinite(id)) continue;
       const stageId = l.status_id ? Number(l.status_id) : undefined;
+      const pipelineId = l.pipeline_id ? Number(l.pipeline_id) : undefined;
       await upsertLead(id, {
         name: l.name,
         stageId: Number.isFinite(stageId) ? stageId : undefined,
+        pipelineId: pipelineId !== undefined && Number.isFinite(pipelineId) ? pipelineId : undefined,
       });
     }
   }
@@ -925,12 +1005,16 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       const stageId = payload.leads?.add?.[0]?.status_id
         ? Number(payload.leads.add[0].status_id)
         : undefined;
+      const pipelineId = payload.leads?.add?.[0]?.pipeline_id
+        ? Number(payload.leads.add[0].pipeline_id)
+        : undefined;
       const leadId = await upsertLead(leadKommoId, {
         name: isInbound ? m.author?.name : undefined,
         channel,
         contactId: m.contact_id ? Number(m.contact_id) : undefined,
         inbound: isInbound,
         stageId: stageId !== undefined && Number.isFinite(stageId) ? stageId : undefined,
+        pipelineId: pipelineId !== undefined && Number.isFinite(pipelineId) ? pipelineId : undefined,
       });
 
       const direction = m.type === "incoming" ? "inbound" : "outbound";

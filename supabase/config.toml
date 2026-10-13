@@ -446,3 +446,6 @@ verify_jwt = false
 # default verify_jwt = true y la tool habría empezado a devolver 401.
 [functions.cartelera]
 verify_jwt = false
+
+[functions.sync-pipelines]
+verify_jwt = false

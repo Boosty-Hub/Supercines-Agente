@@ -278,3 +278,4 @@ En el dashboard `/settings`:
 - **Aprendizajes nocturnos**: dashboard `/dreams`.
 - **Apagar temporalmente**: `/settings` → `agent_enabled = false`.
 - **Re-desplegar una Edge Function puntual**: desde el wizard `/first-run` (si hay funciones faltantes) o desde la CLI: `SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy <fn> --project-ref <ref>`.
+- **Orden al actualizar un cliente: migraciones ANTES que funciones.** El panel `/settings` → Sistema (y el aviso del header) ya lo respeta: aplica las migraciones y, si alguna falla, no redespliega nada. A mano (CLI), igual: primero las migraciones, después `functions deploy`. Caso concreto, la `0076` (entrega de alertas al webhook): si se invierte, no se pierde ninguna alerta (el insert no depende de la migración) y `alerts-scan` sigue posteando directo lo que crea él mismo, pero las alertas de otras funciones creadas en esa ventana no salen por Slack/Discord (quedan en `/alerts`).

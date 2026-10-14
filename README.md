@@ -130,6 +130,8 @@ Panel **"Actualizaciones del sistema"**:
 3. **Token** — si nunca lo guardaste, el panel pide el Personal Access Token de Supabase (`sbp_...`). Tras la primera vez queda en `runtime_config` y no lo vuelve a pedir.
 4. **Actualización automática** — toggle para prender/apagar el auto-update del header.
 
+> **Orden**: siempre migraciones → funciones (el panel y el aviso del header lo hacen así y se detienen si una migración falla). Si actualizás a mano por CLI, respetalo. P. ej. la `0076` (alertas al webhook): con las funciones nuevas y sin la migración no se pierde ninguna alerta, pero solo salen por Slack/Discord las que crea `alerts-scan`.
+
 > **Cómo detecta el drift**: migraciones = array `MIGRATIONS` embebido por el codegen vs la tabla `_migrations` (aplicadas); funciones = hash del bundle de cada función vs `runtime_config.DEPLOYED_FUNCTION_HASHES` + presencia real en Supabase.
 >
 > Como `_shared/*` se bundlea en **todas** las funciones, un cambio en un archivo compartido marca las 9 como `cambió` y se redespliegan todas — es esperado y seguro (las que no usan ese archivo quedan idénticas).

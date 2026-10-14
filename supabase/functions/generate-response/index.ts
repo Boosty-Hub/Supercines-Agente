@@ -138,6 +138,29 @@ async function loadHttpTools(supabaseClient: any): Promise<HttpToolRow[]> {
   return items;
 }
 
+// Claves de runtime_config que un header de tool http puede resolver.
+// Las NO secretas se resuelven siempre; los secretos solo si el host de la URL
+// final es su destino legítimo (si no, vacío): una tool apuntada a un host
+// ajeno no puede exfiltrarlos. Cualquier otra clave (p. ej. las de plataforma
+// que cfg.get lee de Deno.env) no se resuelve nunca.
+const PUBLIC_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "KOMMO_API_DOMAIN",
+  "KOMMO_SUBDOMAIN",
+  "ANTHROPIC_AGENT_ID",
+]);
+const SECRET_TOOL_CONFIG_HOSTS: Record<string, (cfg: ConfigReader) => string | undefined> = {
+  KOMMO_ACCESS_TOKEN: (cfg) => cfg.get("KOMMO_API_DOMAIN"),
+};
+
+function hostOf(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    return new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Recursively substitutes {{param}} placeholders in a body_template value.
  * - String leaf that is EXACTLY "{{param}}" → replaced with the typed input
@@ -196,10 +219,23 @@ async function runHttpTool(
 
     // (c) Resolve {{CONFIG_KEY}} in header values via cfg.get (not from input).
     const headers: Record<string, string> = {};
+    let usedSecret = false;
     for (const h of tool.headers ?? []) {
-      headers[h.name] = h.value.replace(/\{\{(\w+)\}\}/g, (_, k) =>
-        cfg.get(k) ?? ""
-      );
+      headers[h.name] = h.value.replace(/\{\{(\w+)\}\}/g, (_, k) => {
+        if (PUBLIC_TOOL_CONFIG_KEYS.has(k)) return cfg.get(k) ?? "";
+        const hostFor = Object.hasOwn(SECRET_TOOL_CONFIG_HOSTS, k)
+          ? SECRET_TOOL_CONFIG_HOSTS[k]
+          : undefined;
+        if (hostFor) {
+          const expected = hostOf(hostFor(cfg));
+          if (expected !== null && expected === hostOf(url)) {
+            usedSecret = true;
+            return cfg.get(k) ?? "";
+          }
+        }
+        console.warn(`[tool:${tool.name}] placeholder no resuelto en header: ${k}`);
+        return "";
+      });
     }
 
     // (d) Build body for non-GET via recursive template walk.
@@ -230,7 +266,14 @@ async function runHttpTool(
     const timer = setTimeout(() => ctrl.abort(), tool.timeout_ms);
 
     try {
-      const res = await fetch(url, { method, headers, body, signal: ctrl.signal });
+      // Con secretos en la request no se siguen redirects (podrían llevar el header a otro host).
+      const res = await fetch(url, {
+        method,
+        headers,
+        body,
+        signal: ctrl.signal,
+        redirect: usedSecret ? "manual" : "follow",
+      });
       const text = await res.text();
       // (g) Cap response at 8 KB.
       const capped =

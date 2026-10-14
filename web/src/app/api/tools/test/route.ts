@@ -3,6 +3,11 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { internalHeadersForUrl } from "@/lib/internal-call";
 import { createServiceClient } from "@/lib/supabase/service";
 import { truncateGraphemes } from "@/lib/text-safe";
+import { getScope } from "@/lib/auth/roles";
+import {
+  TESTER_CONFIG_KEYS,
+  unknownHeaderPlaceholders,
+} from "@/lib/tools/config-placeholders";
 
 // nodejs runtime — runs the HTTP tool executor server-side (resolves secrets
 // from runtime_config, never exposes resolved values back to the client).
@@ -53,6 +58,9 @@ export async function POST(request: Request) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (getScope(user) !== "configuracion") {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
 
   let body: {
     tool: {
@@ -100,8 +108,17 @@ export async function POST(request: Request) {
     }
   }
 
-  // Resolve runtime_config keys for header substitution ({{CONFIG_KEY}}).
-  // Use service client to read all keys; process.env as fallback.
+  // Solo se resuelven claves NO secretas de la lista cerrada TESTER_CONFIG_KEYS, y
+  // únicamente desde runtime_config: nunca process.env. Un placeholder fuera de
+  // la lista se rechaza (se informan los nombres, jamás valores).
+  const unknown = unknownHeaderPlaceholders(tool.headers);
+  if (unknown.length > 0) {
+    return NextResponse.json(
+      { error: `El probador no resuelve estas variables en headers (escribí el valor a mano en el formulario): ${unknown.join(", ")}` },
+      { status: 400 }
+    );
+  }
+
   // NEVER return resolved secret values to the client.
   const serviceSupabase = createServiceClient();
   const { data: configRows } = await serviceSupabase
@@ -112,7 +129,9 @@ export async function POST(request: Request) {
     if (row.value !== null && row.value !== "") configMap[row.key] = row.value;
   }
   const resolveConfigKey = (k: string): string =>
-    configMap[k] ?? process.env[k] ?? "";
+    TESTER_CONFIG_KEYS.has(k) && Object.hasOwn(configMap, k)
+      ? configMap[k]
+      : "";
 
   // Substitute {{param}} in url_template (URL-encode values).
   const url = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>

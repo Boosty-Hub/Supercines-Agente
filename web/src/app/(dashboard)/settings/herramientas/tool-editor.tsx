@@ -28,7 +28,6 @@ export type AgentTool = {
 // Known runtime_config keys the operator might reference in headers.
 // Extend this list as new secrets are added to runtime_config.
 const CONFIG_KEY_OPTIONS = [
-  "ANTHROPIC_API_KEY",
   "KOMMO_ACCESS_TOKEN",
   "KOMMO_API_DOMAIN",
   "KOMMO_SUBDOMAIN",

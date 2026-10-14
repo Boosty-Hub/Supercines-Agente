@@ -40,6 +40,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal } from "../_shared/auth.ts";
 import { loadConfig } from "../_shared/config.ts";
+import { buildWebhookPayload } from "../_shared/alert-webhook.ts";
 import {
   decidirColaAtascada,
   decidirIngestaDetenida,
@@ -174,24 +175,19 @@ async function chequearCola(
 }
 
 // ---------------- Webhook externo (Slack/Discord) ----------------
+// Mismo cuerpo que alerts-scan (_shared/alert-webhook.ts): el detalle puede traer texto de
+// terceros (p. ej. el cuerpo de un error de Kommo), así que se neutralizan menciones y links.
 async function postWebhook(cfg: HealthConfig, inc: IncidentInput) {
   if (!cfg.webhook_enabled || !cfg.webhook_url) return;
   if (!cfg.webhook_kinds.includes(inc.kind)) return;
-  const emoji = inc.severity === "warning" ? "⚠️" : "🚨";
-  const texto = `${emoji} *${inc.title}*\n${inc.description ?? ""}\n${inc.remedy ? `→ ${inc.remedy}` : ""}`;
+  const description = [inc.description ?? "", inc.remedy ? `→ ${inc.remedy}` : ""].filter(Boolean).join("\n\n");
   try {
-    await fetch(cfg.webhook_url, {
+    const res = await fetch(cfg.webhook_url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: texto,
-        embeds: [{
-          title: `${emoji} ${inc.title}`,
-          description: `${inc.description ?? ""}\n\n${inc.remedy ?? ""}`.trim(),
-          color: inc.severity === "warning" ? 16294198 : 15158332,
-        }],
-      }),
+      body: JSON.stringify(buildWebhookPayload({ severity: inc.severity ?? "critical", title: inc.title, description })),
     });
+    await res.body?.cancel();
   } catch (e) {
     console.warn("health-scan webhook post failed:", e);
   }

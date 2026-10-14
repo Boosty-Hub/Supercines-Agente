@@ -12,14 +12,17 @@
 //                          (deja de clasificar) de MONTHLY_BUDGET_USD — una alerta por
 //                          (mes, nivel); ver _shared/budget.ts
 //
-// Después postea cada alerta nueva al webhook configurado (Slack/Discord-friendly).
+// Después barre TODAS las alertas pendientes de webhook (las de recién y las que insertaron
+// otras funciones o el SQL) y postea las de tipos notificables (Slack/Discord-friendly).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal } from "../_shared/auth.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
 import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
-import { type PendingAlert, shouldPostAlert, shouldSweep } from "../_shared/alert-kinds.ts";
+import { shouldSweep } from "../_shared/alert-kinds.ts";
+import { type AlertInsert, insertAlert } from "../_shared/alerts.ts";
+import { buildWebhookPayload, isMissingClaimRpc, type WebhookAlert } from "../_shared/alert-webhook.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { budgetAlertLevel, budgetAlertStillApplies, getBudgetGate, parseBudget } from "../_shared/budget.ts";
@@ -56,85 +59,75 @@ async function existingAlerts(kind: string, refIds: string[]): Promise<Set<strin
   return new Set((data ?? []).map((a) => a.ref_id as string));
 }
 
-type AlertInput = {
-  kind: string;
-  severity: "info" | "warning" | "critical";
-  title: string;
-  description: string;
-  ref_table?: string;
-  ref_id?: string;
-  metadata?: Record<string, unknown>;
-};
+// Toda alerta que crea este barrido pasa por el helper único (_shared/alerts.ts): nace
+// PENDIENTE de webhook y la postea notifyPendingAlerts en esta misma corrida, por el mismo
+// camino (rate limit + dedupe) que las que insertan otras funciones o el SQL.
+type AlertInput = AlertInsert & { description: string };
 
-async function createAlert(a: AlertInput) {
-  const { data, error } = await supabase
-    .from("alerts")
-    .insert({
-      kind: a.kind,
-      severity: a.severity,
-      title: a.title,
-      description: a.description,
-      ref_table: a.ref_table ?? null,
-      ref_id: a.ref_id ?? null,
-      metadata: a.metadata ?? {},
-      // Se postea acá mismo (postWebhook): nace marcada para que el barrido no la duplique.
-      webhook_notified_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(`alert insert: ${error.message}`);
-  return data?.id as string;
+async function createAlert(a: AlertInput): Promise<boolean> {
+  const { error } = await insertAlert(supabase, a);
+  if (error) console.error(`create alert ${a.kind}:`, error);
+  return !error;
 }
 
-async function postWebhook(config: AlertConfig, alert: AlertInput) {
-  if (!config.webhook_enabled || !config.webhook_url) return;
-  if (!config.webhook_kinds.includes(alert.kind)) return;
-  const emoji = alert.severity === "critical" ? "🚨" : alert.severity === "warning" ? "⚠️" : "ℹ️";
-  // Payload genérico compatible con Slack y Discord
-  const payload = {
-    text: `${emoji} *${alert.title}*\n${alert.description}`,
-    embeds: [
-      {
-        title: `${emoji} ${alert.title}`,
-        description: alert.description,
-        color: alert.severity === "critical" ? 15158332 : alert.severity === "warning" ? 16294198 : 5814783,
-      },
-    ],
-  };
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** POST al webhook. true = el servidor lo aceptó (2xx). Nunca lanza. */
+async function postWebhook(url: string, alert: WebhookAlert): Promise<boolean> {
   try {
-    await fetch(config.webhook_url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(buildWebhookPayload(alert)),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
+    await res.body?.cancel();
+    if (!res.ok) console.warn(`webhook post: HTTP ${res.status}`);
+    return res.ok;
   } catch (e) {
     console.warn("webhook post failed:", e);
+    return false;
   }
 }
 
-// Barrido de alertas que insertó OTRO (funciones Edge, SQL): todas las de un tipo notificable
-// llegan a Slack/Discord sin importar quién las creó (ver _shared/alert-kinds.ts y la
-// migración 0076). El reclamo es atómico, con rate limit (SWEEP_LIMIT por barrido), dedupe y
-// descarte de las viejas; el POST es mejor esfuerzo (una alerta ya reclamada no se reintenta:
-// preferimos perder un aviso a duplicar uno).
+type ClaimedAlert = WebhookAlert & { id: string; kind: string; repeated: number };
+
+// Barrido: TODAS las alertas de un tipo notificable llegan a Slack/Discord sin importar quién
+// las insertó (ver _shared/alert-kinds.ts y la migración 0076). El reclamo es atómico y
+// serializado (advisory lock), con rate limit (SWEEP_LIMIT por barrido), dedupe contra lo
+// efectivamente posteado y descarte de las viejas. Un POST fallido NO se reintenta (preferimos
+// perder un aviso a duplicarlo) pero se le quita la marca de posteada, para que el dedupe no
+// suprima la próxima idéntica por un aviso que nunca llegó.
 const SWEEP_LIMIT = 10;
-async function notifyPendingAlerts(config: AlertConfig | null): Promise<number> {
+async function notifyPendingAlerts(config: AlertConfig | null, created: AlertInput[]): Promise<number> {
   if (!shouldSweep(config)) return 0;
-  const { data, error } = await supabase.rpc("claim_alerts_for_webhook", { p_limit: SWEEP_LIMIT });
+  const { data, error } = await supabase.rpc("claim_alerts_for_webhook", {
+    p_kinds: config.webhook_kinds,
+    p_limit: SWEEP_LIMIT,
+  });
   if (error) {
+    if (isMissingClaimRpc(error)) {
+      // Funciones desplegadas ANTES que la migración 0076 (orden incorrecto): se conserva el
+      // comportamiento previo — se postean directo las que creó este barrido. Al aplicar 0076,
+      // su backfill las marca notificadas y no se repiten.
+      console.warn("claim_alerts_for_webhook no existe (falta aplicar la migración 0076): envío directo");
+      let direct = 0;
+      for (const a of created) {
+        if (config.webhook_kinds.includes(a.kind) && (await postWebhook(config.webhook_url, a))) direct++;
+      }
+      return direct;
+    }
     console.warn("claim_alerts_for_webhook:", error.message);
     return 0;
   }
   let posted = 0;
-  for (const a of (data ?? []) as PendingAlert[]) {
-    if (!shouldPostAlert(a, config)) continue; // tipo no notificable (p. ej. dream_error): queda marcada
-    await postWebhook(config!, {
-      kind: a.kind,
-      severity: (a.severity as AlertInput["severity"]) ?? "warning",
-      title: a.title,
-      description: a.description ?? "",
-    });
-    posted++;
+  for (const a of (data ?? []) as ClaimedAlert[]) {
+    if (await postWebhook(config.webhook_url, a)) {
+      posted++;
+      continue;
+    }
+    const { error: relErr } = await supabase.from("alerts").update({ webhook_posted_at: null }).eq("id", a.id);
+    if (relErr) console.warn(`alert ${a.id}: no se pudo desmarcar el envío fallido:`, relErr.message);
   }
   return posted;
 }
@@ -597,22 +590,16 @@ Deno.serve(async (req: Request) => {
     ]);
     const newAlerts = [...failed, ...review, ...regression, ...silence, ...hookDisabled, ...budgetAlerts];
 
-    for (const a of newAlerts) {
-      try {
-        await createAlert(a);
-        if (config) await postWebhook(config, a);
-      } catch (err) {
-        console.error("create alert:", err);
-      }
-    }
+    const created: AlertInput[] = [];
+    for (const a of newAlerts) if (await createAlert(a)) created.push(a);
 
-    const swept = await notifyPendingAlerts(config);
+    const posted = await notifyPendingAlerts(config, created);
 
     return new Response(
       JSON.stringify({
         ok: true,
-        created: newAlerts.length,
-        webhook_swept: swept,
+        created: created.length,
+        webhook_posted: posted,
         breakdown: {
           draft_failed: failed.length,
           human_review_needed: review.length,

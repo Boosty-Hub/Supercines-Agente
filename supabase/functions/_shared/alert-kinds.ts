@@ -9,10 +9,13 @@
 // tipos que de verdad se insertan en el código y en el SQL, para que un tipo nuevo no
 // pueda quedar fuera del registro sin que falle un test.
 //
+// Inserción: TODO insert a `alerts` desde las Edge Functions pasa por `insertAlert`
+// (_shared/alerts.ts), cuyo `kind` es `AlertKind` (unión derivada de este registro): un tipo
+// no registrado no compila (`npm run check`) y el test rechaza cualquier insert directo.
+//
 // Entrega: alerts-scan (cada 5 min) barre las alertas sin notificar (alerts.webhook_notified_at
-// is null; RPC claim_alerts_for_webhook) y postea las de tipos notificables, sin importar
-// quién las insertó. Las que crea el propio alerts-scan se postean al crearse y nacen
-// marcadas, así no se duplican.
+// is null; RPC claim_alerts_for_webhook, 0076) y postea las de tipos notificables, sin importar
+// quién las insertó — también las que crea el propio alerts-scan (un único camino de envío).
 
 export type AlertKindInfo = {
   /** ¿Sale por Slack/Discord? (default de alert_config.webhook_kinds) */
@@ -23,7 +26,7 @@ export type AlertKindInfo = {
   reason: string;
 };
 
-export const ALERT_KINDS: Readonly<Record<string, AlertKindInfo>> = {
+export const ALERT_KINDS = {
   draft_failed: { webhook: true, table: "alerts", reason: "una respuesta del agente falló y el cliente puede quedar sin contestación" },
   human_review_needed: { webhook: true, table: "alerts", reason: "un mensaje requiere que una persona lo atienda (toxicidad, queja seria)" },
   outcomes_regression: { webhook: true, table: "alerts", reason: "la calidad de las respuestas bajó de forma sostenida" },
@@ -51,26 +54,24 @@ export const ALERT_KINDS: Readonly<Record<string, AlertKindInfo>> = {
     table: "alerts",
     reason: "es feedback de calidad del agente, no una caída: puede dispararse varias veces por corrida y se revisa en /dreams (donde se aprueba o descarta)",
   },
-};
+} as const satisfies Record<string, AlertKindInfo>;
+
+/** Todo tipo registrado (alertas e incidentes de salud). */
+export type RegisteredKind = keyof typeof ALERT_KINDS;
+
+/** Tipos que viven en la tabla `alerts`: lo ÚNICO que acepta `insertAlert`. */
+export type AlertKind = {
+  [K in RegisteredKind]: (typeof ALERT_KINDS)[K]["table"] extends "alerts" ? K : never;
+}[RegisteredKind];
 
 /** Tipos que salen por webhook, en el orden del registro. */
 export function webhookKindsDefault(): string[] {
   return Object.entries(ALERT_KINDS).filter(([, v]) => v.webhook).map(([k]) => k);
 }
 
-export type PendingAlert = { id: string; kind: string; severity: string; title: string; description: string | null };
 export type WebhookConfigLike = { webhook_enabled: boolean; webhook_url: string | null; webhook_kinds: string[] };
 
-/**
- * ¿Se postea esta alerta ya reclamada? Solo si el webhook está activo y el tipo está en la
- * lista del operador (que puede haber quitado tipos del default).
- */
-export function shouldPostAlert(alert: Pick<PendingAlert, "kind">, cfg: WebhookConfigLike | null): boolean {
-  if (!cfg || !cfg.webhook_enabled || !cfg.webhook_url) return false;
-  return cfg.webhook_kinds.includes(alert.kind);
-}
-
 /** ¿Hay que barrer? Sin webhook activo no se reclama nada (las alertas esperan a que se configure). */
-export function shouldSweep(cfg: WebhookConfigLike | null): boolean {
+export function shouldSweep(cfg: WebhookConfigLike | null): cfg is WebhookConfigLike & { webhook_url: string } {
   return Boolean(cfg && cfg.webhook_enabled && cfg.webhook_url);
 }

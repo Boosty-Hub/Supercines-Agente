@@ -15,6 +15,7 @@ import { loadConfig } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
+import { insertAlert } from "../_shared/alerts.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import {
   EXPIRED_ALERT_DEDUPE_HOURS,
@@ -1174,7 +1175,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
               : media?.kind === "document"
                 ? "documento"
                 : "adjunto";
-        const { error: alertErr } = await supabase.from("alerts").insert({
+        const { error: alertErr } = await insertAlert(supabase, {
           kind: "media_processing_failed",
           severity: "warning",
           title: `No se pudo procesar una ${kindLabel}`,
@@ -1191,7 +1192,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
             reason: mediaIgnoreReason,
           },
         });
-        if (alertErr) console.error("alert media_processing_failed:", alertErr.message);
+        if (alertErr) console.error("alert media_processing_failed:", alertErr);
       }
 
       // Detección de comentario de Instagram: si el mensaje tiene talk_id y
@@ -1579,10 +1580,14 @@ async function expireStaleFailedClassifications(windowHours: number): Promise<vo
     .limit(1)
     .maybeSingle();
   const plan = expiredAlertPlan(prevAlert ?? null, expired, windowHours);
-  const { error: alertErr } = plan.action === "insert"
-    ? await supabase.from("alerts").insert(plan.row)
-    : await supabase.from("alerts").update(plan.patch).eq("id", plan.id);
-  if (alertErr) console.warn("recover classify: no se pudo registrar la alerta:", alertErr.message);
+  let alertErr: string | null;
+  if (plan.action === "insert") {
+    alertErr = (await insertAlert(supabase, plan.row)).error;
+  } else {
+    const { error } = await supabase.from("alerts").update(plan.patch).eq("id", plan.id);
+    alertErr = error?.message ?? null;
+  }
+  if (alertErr) console.warn("recover classify: no se pudo registrar la alerta:", alertErr);
 }
 
 async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {

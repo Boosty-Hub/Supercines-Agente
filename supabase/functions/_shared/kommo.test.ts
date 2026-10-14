@@ -18,6 +18,8 @@ import {
   patchLeadField,
   patchContactField,
   fetchOutgoingEventIds,
+  fetchOutgoingEvents,
+  outgoingEventsOfLead,
   verifyOutgoingDelivery,
   addLeadNote,
   addLeadTags,
@@ -120,20 +122,68 @@ Deno.test("fetchOutgoingEventIds: filtra por entity_id y devuelve solo esos ids"
   assertEquals(result, new Set(["a1", "a3"]));
 });
 
-Deno.test("fetchOutgoingEventIds: fail-open — error de red devuelve set vacío, no throwea", async () => {
+Deno.test("fetchOutgoingEventIds: error de red → null (no se pudo leer), nunca un set vacío", async () => {
   const result = await withFetchMock(
     (() => Promise.reject(new Error("network down"))) as typeof fetch,
+    () => fetchOutgoingEventIds(555, "dominio.kommo.com", "token")
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("fetchOutgoingEventIds: respuesta no-OK → null", async () => {
+  const result = await withFetchMock(
+    (() => Promise.resolve(new Response("error", { status: 500 }))) as typeof fetch,
+    () => fetchOutgoingEventIds(555, "dominio.kommo.com", "token")
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("fetchOutgoingEventIds: respuesta con forma inesperada → null", async () => {
+  const result = await withFetchMock(
+    (() => Promise.resolve(new Response(JSON.stringify({ title: "x" }), { status: 200 }))) as typeof fetch,
+    () => fetchOutgoingEventIds(555, "dominio.kommo.com", "token")
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("fetchOutgoingEventIds: 204 (Kommo sin eventos) → set vacío (lectura válida)", async () => {
+  const result = await withFetchMock(
+    (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch,
     () => fetchOutgoingEventIds(555, "dominio.kommo.com", "token")
   );
   assertEquals(result, new Set());
 });
 
-Deno.test("fetchOutgoingEventIds: fail-open — respuesta no-OK devuelve set vacío", async () => {
+Deno.test("fetchOutgoingEvents: solo ESE lead (no otro lead ni un contacto con el mismo número), con su fecha", async () => {
   const result = await withFetchMock(
-    (() => Promise.resolve(new Response("error", { status: 500 }))) as typeof fetch,
-    () => fetchOutgoingEventIds(555, "dominio.kommo.com", "token")
+    (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            _embedded: {
+              events: [
+                { id: "a1", entity_id: 555, entity_type: "lead", created_at: 1760356800 },
+                { id: "a2", entity_id: 999, entity_type: "lead", created_at: 1760356801 },
+                { id: "a3", entity_id: 555, entity_type: "contact", created_at: 1760356802 },
+                { id: "a4", entity_id: "555", entity_type: "lead" },
+              ],
+            },
+          }),
+          { status: 200 }
+        )
+      )) as typeof fetch,
+    () => fetchOutgoingEvents(555, "dominio.kommo.com", "token")
   );
-  assertEquals(result, new Set());
+  assertEquals(result, [
+    { id: "a1", createdAt: 1760356800 },
+    { id: "a4", createdAt: null },
+  ]);
+});
+
+Deno.test("outgoingEventsOfLead: sin _embedded.events → null; entradas basura se ignoran", () => {
+  assertEquals(outgoingEventsOfLead(null, 1), null);
+  assertEquals(outgoingEventsOfLead({ _embedded: {} }, 1), null);
+  assertEquals(outgoingEventsOfLead({ _embedded: { events: [null, 3, { entity_id: 1 }] } }, 1), []);
 });
 
 // ---- verifyOutgoingDelivery ----

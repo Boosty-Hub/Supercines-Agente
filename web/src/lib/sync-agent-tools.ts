@@ -12,6 +12,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues, configValuesFresh, setConfigValues } from "@/lib/runtime-config";
+import type { ConfigWriter } from "@/lib/auth/scope-guard";
 import {
   scaffoldHash,
   buildAgentTools,
@@ -120,11 +121,11 @@ async function readBaseline(): Promise<Baseline> {
  * conflicto. Si el agente ya estaba por delante de lo registrado (edición externa) no se
  * registra: taparía ese conflicto real (ver agent-rename.versionToRecordAfterRename).
  */
-export async function renameAgent(apiKey: string, agentId: string, name: string, actor: string): Promise<void> {
+export async function renameAgent(apiKey: string, agentId: string, name: string, writer: ConfigWriter): Promise<void> {
   const result = await renameAgentResource(apiKey, agentId, name);
   const { registeredVersion } = await readBaseline();
   const record = versionToRecordAfterRename({ registered: registeredVersion, result });
-  if (record !== null) await setConfigValues({ ANTHROPIC_AGENT_VERSION: String(record) }, actor);
+  if (record !== null) await setConfigValues({ ANTHROPIC_AGENT_VERSION: String(record) }, writer);
 }
 
 /**
@@ -271,11 +272,11 @@ export async function checkAgentPromptConflict(
  *   - "overwrite":   empuja el de la DB igual (pisa lo de afuera);
  *   - "import_live": no empuja; trae el prompt vivo del operador a la DB.
  *
- * @param actor  Email or identifier of the user triggering the sync (for
- *               audit trail in runtime_config.updated_by).
+ * @param writer  Quién sincroniza y con qué alcance (de requireScope): queda en
+ *                runtime_config.updated_by y setConfigValues valida que pueda escribir.
  */
 export async function syncAgentTools(
-  actor: string,
+  writer: ConfigWriter,
   opts: {
     resolve?: ConflictResolution;
     /** Hash del system vivo que el operador VIO al elegir (PromptConflict.liveHash). Obligatorio con `resolve`. */
@@ -325,7 +326,7 @@ export async function syncAgentTools(
           AGENT_PROMPT_SYNCED_HASH: hashPrompt(liveSystem),
           ANTHROPIC_AGENT_VERSION: String(version),
         },
-        actor
+        writer
       );
       return { version, synced: true, imported: true, placeholders };
     }
@@ -374,7 +375,7 @@ export async function syncAgentTools(
         AGENT_SCAFFOLD_HASH: scaffoldHash(),
         AGENT_PROMPT_SYNCED_HASH: hashPrompt(system),
       },
-      actor
+      writer
     );
 
     return { version: newVersion, synced: true };

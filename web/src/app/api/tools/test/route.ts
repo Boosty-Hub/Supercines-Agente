@@ -1,13 +1,9 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { internalHeadersForUrl } from "@/lib/internal-call";
-import { createServiceClient } from "@/lib/supabase/service";
+import { requireScope } from "@/lib/auth/require-scope";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import { truncateGraphemes } from "@/lib/text-safe";
-import { getScope } from "@/lib/auth/roles";
-import {
-  TESTER_CONFIG_KEYS,
-  unknownHeaderPlaceholders,
-} from "@/lib/tools/config-placeholders";
+import { isToolConfigKey, resolveToolHeaders } from "@/lib/http-tool-keys";
 
 // nodejs runtime — runs the HTTP tool executor server-side (resolves secrets
 // from runtime_config, never exposes resolved values back to the client).
@@ -53,14 +49,10 @@ function substituteBody(
 
 /** POST /api/tools/test — dry-run an http tool with sample inputs. */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  if (getScope(user) !== "configuracion") {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  const auth = await requireScope("configuracion");
+  // El probador ejecuta un fetch con secretos resueltos: solo alcance `configuracion`
+  // (el middleware ya lo exige para /api/tools; requireScope lo repite como defensa en profundidad).
+  if (!auth.ok) return auth.response;
 
   let body: {
     tool: {
@@ -84,7 +76,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
   }
 
-  const { tool, sampleInputs = {} } = body;
+  const { tool } = body;
+  // Datos del cliente: se leen solo como propiedades PROPIAS (nada heredado de Object.prototype).
+  const sampleInputs: Record<string, unknown> =
+    body.sampleInputs && typeof body.sampleInputs === "object" && !Array.isArray(body.sampleInputs)
+      ? body.sampleInputs
+      : {};
 
   if (!tool?.url_template) {
     return NextResponse.json({ error: "tool.url_template es requerido" }, { status: 400 });
@@ -100,7 +97,7 @@ export async function POST(request: Request) {
 
   // Validate required input fields.
   for (const k of tool.input_schema?.required ?? []) {
-    if (!(k in sampleInputs)) {
+    if (!Object.hasOwn(sampleInputs, k)) {
       return NextResponse.json(
         { error: `Falta el parámetro requerido: "${k}"` },
         { status: 400 }
@@ -108,47 +105,36 @@ export async function POST(request: Request) {
     }
   }
 
-  // Solo se resuelven claves NO secretas de la lista cerrada TESTER_CONFIG_KEYS, y
-  // únicamente desde runtime_config: nunca process.env. Un placeholder fuera de
-  // la lista se rechaza (se informan los nombres, jamás valores).
-  const unknown = unknownHeaderPlaceholders(tool.headers);
-  if (unknown.length > 0) {
-    return NextResponse.json(
-      { error: `El probador no resuelve estas variables en headers (escribí el valor a mano en el formulario): ${unknown.join(", ")}` },
-      { status: 400 }
-    );
-  }
-
-  // NEVER return resolved secret values to the client.
-  const serviceSupabase = createServiceClient();
-  const { data: configRows } = await serviceSupabase
-    .from("runtime_config")
-    .select("key, value");
-  const configMap: Record<string, string> = {};
-  for (const row of (configRows ?? []) as Array<{ key: string; value: string | null }>) {
-    if (row.value !== null && row.value !== "") configMap[row.key] = row.value;
-  }
-  const resolveConfigKey = (k: string): string =>
-    TESTER_CONFIG_KEYS.has(k) && Object.hasOwn(configMap, k)
-      ? configMap[k]
-      : "";
+  // Claves para los headers ({{CLAVE}}): SOLO de runtime_config, SOLO las permitidas y cada
+  // secreto ATADO a sus hosts (lib/http-tool-keys.ts). Nunca process.env. Los valores
+  // resueltos jamás se devuelven al cliente.
+  // getRuntimeConfig = mapa SOLO de la DB (sin fallback a env), leído con service_role.
+  const dbConfig = await getRuntimeConfig();
+  const resolveConfigKey = (k: string): string | undefined =>
+    isToolConfigKey(k) && Object.hasOwn(dbConfig, k) ? dbConfig[k] : undefined;
 
   // Substitute {{param}} in url_template (URL-encode values).
   const url = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
-    encodeURIComponent(String(sampleInputs[p] ?? ""))
+    encodeURIComponent(String(Object.hasOwn(sampleInputs, p) ? sampleInputs[p] ?? "" : ""))
   );
 
-  // Resolve {{CONFIG_KEY}} in header values.
-  const headers: Record<string, string> = {};
-  for (const h of tool.headers ?? []) {
-    headers[h.name] = h.value.replace(/\{\{(\w+)\}\}/g, (_, k) =>
-      resolveConfigKey(k)
-    );
-  }
+  // Resolve {{CLAVE}} en los headers con la URL FINAL (ya interpolada) y los secretos atados a sus hosts.
+  const resolved = resolveToolHeaders({
+    headers: tool.headers,
+    urlTemplate: tool.url_template,
+    finalUrl: url,
+    lookup: resolveConfigKey,
+  });
+  if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: 400 });
+  const headers = resolved.headers;
 
   // Tool que apunta a una Edge Function propia: se llama con el secreto interno
   // (nunca se devuelve al cliente), igual que hace el agente.
-  Object.assign(headers, await internalHeadersForUrl(url));
+  // Con el secreto interno adjunto (solo a nuestro propio /functions/v1/) tampoco se siguen
+  // redirects: no puede viajar a otro host.
+  const internal = await internalHeadersForUrl(url);
+  const attachedInternal = Object.keys(internal).length > 0;
+  Object.assign(headers, internal);
 
   // Build body (non-GET only).
   let bodyStr: string | undefined;
@@ -170,6 +156,8 @@ export async function POST(request: Request) {
       headers,
       body: bodyStr,
       signal: ctrl.signal,
+      // Con un secreto en los headers, un 302 NO puede llevarlo a otro host.
+      ...(resolved.hasSecret || attachedInternal ? { redirect: "manual" as const } : {}),
     });
     clearTimeout(timer);
 

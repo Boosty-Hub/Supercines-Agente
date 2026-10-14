@@ -1,6 +1,7 @@
 // server-only: this module must only be imported in server-side code.
 // Creates a service-role Supabase client that bypasses RLS.
 // Used by runtime-config.ts to read secret keys without a user session.
+import "server-only";
 import { createClient } from "@supabase/supabase-js";
 
 export function createServiceClient() {

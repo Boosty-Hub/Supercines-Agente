@@ -19,6 +19,7 @@
 //     PUBLISH_MAX_ATTEMPTS reservas muertas; después `failed`.
 
 import { stripGuardFlags } from "./outbound.ts";
+import type { OutgoingEvent } from "./kommo.ts";
 
 /** Lease de la reserva. Mayor que el wall clock máximo de una Edge Function (400 s):
  *  cuando vence, el worker está muerto con certeza. */
@@ -48,33 +49,55 @@ export type InterruptedResolution =
   | { action: "mark_failed"; reason: string };
 
 /**
- * @param baseline IDs de outgoing_chat_message del lead tomados justo antes del
- *                 salesbot del DM (null = no se tomó: verificación apagada, o murió
- *                 entre la respuesta pública y el DM).
- * @param current  IDs actuales del lead (fetchOutgoingEventIds).
+ * @param baseline  IDs de outgoing_chat_message del lead tomados justo antes del
+ *                  salesbot (null = no se tomó: verificación apagada, murió entre la
+ *                  respuesta pública y el DM, o Kommo no se pudo leer en ese momento).
+ * @param current   Eventos salientes actuales DEL LEAD (fetchOutgoingEvents); null = no
+ *                  se pudieron leer ahora.
+ * @param sendingAt La marca write-ahead (instante en que se decidió disparar el salesbot).
+ *
+ * Solo cuenta como entrega un saliente del lead que NO estaba en la foto previa y que
+ * se creó DESPUÉS de la marca: una respuesta manual anterior que no entró en la foto,
+ * o un evento sin fecha, no prueban nada. Kommo fecha en segundos: un saliente del
+ * mismo segundo que la marca no cuenta (queda «sin confirmar», nunca «enviado» en falso).
  *
  * NUNCA devuelve «reenviar»: con la marca puesta el mensaje pudo haber salido.
  */
 export function resolveInterrupted(
   baseline: readonly string[] | null,
-  current: Iterable<string>
+  current: readonly OutgoingEvent[] | null,
+  sendingAt: string | null
 ): InterruptedResolution {
   if (baseline == null) {
     return {
       action: "mark_failed",
       reason:
-        "la publicación se interrumpió después de empezar el envío y no hay foto previa de los mensajes para verificarlo",
+        "el envío se interrumpió después de empezar y no hay foto previa de los mensajes para verificarlo",
+    };
+  }
+  if (current == null) {
+    return {
+      action: "mark_failed",
+      reason: "el envío se interrumpió después de empezar y no se pudieron leer los mensajes salientes de Kommo para verificarlo",
+    };
+  }
+  const sendingAtMs = sendingAt == null ? NaN : Date.parse(sendingAt);
+  if (!Number.isFinite(sendingAtMs)) {
+    return {
+      action: "mark_failed",
+      reason: "el envío se interrumpió después de empezar y no hay marca de envío con la que comparar",
     };
   }
   const before = new Set(baseline);
-  for (const id of current) {
-    if (!before.has(id)) {
-      return { action: "mark_sent", reason: "apareció un mensaje saliente nuevo después de la interrupción" };
+  for (const ev of current) {
+    if (before.has(ev.id) || ev.createdAt == null) continue;
+    if (ev.createdAt * 1000 > sendingAtMs) {
+      return { action: "mark_sent", reason: "apareció un mensaje saliente del lead posterior al envío" };
     }
   }
   return {
     action: "mark_failed",
-    reason: "la publicación se interrumpió después de empezar el envío y no se encontró el mensaje saliente",
+    reason: "el envío se interrumpió después de empezar y no se encontró el mensaje saliente",
   };
 }
 

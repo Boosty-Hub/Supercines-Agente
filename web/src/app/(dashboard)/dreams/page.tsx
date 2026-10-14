@@ -1,5 +1,6 @@
 import { listDreams, listPendingDreams, readDream, parseFrontmatter } from "@/lib/memory-list";
 import { configValue } from "@/lib/runtime-config";
+import { requirePageScope } from "@/lib/auth/require-scope";
 import { PageShell, EmptyState, Stars } from "@/components/ui";
 import RunButton from "./run-button";
 import DeleteDreamButton from "./delete-button";
@@ -95,6 +96,8 @@ function BodyWithLeadLinks({ body, leadRefs }: { body: string; leadRefs: Record<
 
 export default async function DreamsPage(props: { searchParams: Promise<SearchParams> }) {
   const searchParams = await props.searchParams;
+  // Lee Memory Stores (API key) y config con service_role: solo tras validar el alcance.
+  await requirePageScope("contenido");
   let items: Awaited<ReturnType<typeof listDreams>> = [];
   let pendingItems: Awaited<ReturnType<typeof listPendingDreams>> = [];
   let listError: string | null = null;

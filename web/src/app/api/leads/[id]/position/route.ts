@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { fetchLeadStage } from "@/lib/kommo";
 
@@ -17,11 +17,9 @@ export const dynamic = "force-dynamic";
 // aplicó y limpia la marca «no existe en Kommo» (que Kommo conteste es señal de vida).
 export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("operacion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const { data: lead } = await supabase
     .from("leads")

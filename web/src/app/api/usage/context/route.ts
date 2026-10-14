@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValues } from "@/lib/runtime-config";
 import { listMemories } from "@/lib/anthropic-managed";
 
@@ -16,9 +16,8 @@ const BYTES_PER_TOKEN = 4;
 // 100% dinámico: lee los stores del deployment actual, sirve para cualquier
 // cliente/agente que se monte con este template.
 export async function GET() {
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   const cfg = await configValues([
     "ANTHROPIC_API_KEY",

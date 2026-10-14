@@ -1,4 +1,4 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValue } from "@/lib/runtime-config";
 import { buildCrmActionsContext } from "@/lib/crm-context";
 import { streamText } from "ai";
@@ -69,16 +69,8 @@ interface Body {
 }
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
-  }
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Body;
   try {

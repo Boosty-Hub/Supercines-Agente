@@ -160,7 +160,7 @@ Deno.test("MEDICIÓN: 2000 leads.update seguidos = 2000 inserts, <= 2 cargas de 
 });
 
 // ---- Prototype pollution: el parser corre ANTES de autorizar y las claves son del emisor ----
-import { FORM_LIMITS } from "./kommo-webhook-handler.ts";
+import { FORM_LIMITS, newFormParseStats } from "./kommo-webhook-handler.ts";
 
 /** Vigila que Object.prototype y Array.prototype queden intactos tras el callback. */
 async function assertPrototypesIntact(fn: () => unknown | Promise<unknown>) {
@@ -270,4 +270,24 @@ Deno.test("HANDLER: con Object.prototype YA contaminado, las opciones de segurid
   } finally {
     delete (Object.prototype as Record<string, unknown>).legacySecret;
   }
+});
+
+Deno.test("el payload REAL más profundo de Kommo (custom_fields) entra completo con los límites actuales", () => {
+  const real = "leads[update][0][custom_fields][0][values][0][value]=hola&leads[update][0][custom_fields][0][values][0][enum]=1&leads[update][0][id]=7";
+  const out = JSON.stringify(parseFormBracketed(real));
+  assert(out.includes('"value":"hola"') && out.includes('"enum":"1"') && out.includes('"id":"7"'), out);
+  // 8 segmentos usados de 10 permitidos
+  assert("leads[update][0][custom_fields][0][values][0][value]".replace(/\]/g, "").split("[").length <= FORM_LIMITS.maxDepth);
+});
+
+Deno.test("parseFormBracketed cuenta lo que descarta (profundidad, claves, prohibidas, índice) sin guardar contenido", () => {
+  const st = newFormParseStats();
+  const deep = Array.from({ length: FORM_LIMITS.maxDepth + 1 }, () => "[k]").join("");
+  parseFormBracketed(`a${deep}=1&__proto__[x]=1&constructor[y]=1&b[99999999]=1&ok=1`, st);
+  assertEquals(st.depth, 1);
+  assertEquals(st.forbidden, 2);
+  assertEquals(st.index, 1);
+  const st2 = newFormParseStats();
+  parseFormBracketed(Array.from({ length: FORM_LIMITS.maxKeys + 3 }, (_, i) => `k${i}=v`).join("&"), st2);
+  assertEquals(st2.keys, 1);
 });

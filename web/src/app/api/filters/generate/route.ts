@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValue } from "@/lib/runtime-config";
 import { fetchPipelines } from "@/lib/kommo";
 import { generateObject } from "ai";
@@ -25,13 +25,8 @@ const CHANNEL_VALUES = [
 // texto, canales y etapas de Kommo. Le pasamos las etapas reales para que
 // mapee nombres → status_id.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {

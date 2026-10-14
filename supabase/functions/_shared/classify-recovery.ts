@@ -9,6 +9,8 @@
 // lo respondía (no tiene vertical). Al vencer la ventana se lo manda a revisión humana
 // con un error explícito, y el prefijo "recover:" lo saca del select para siempre.
 
+import type { AlertInsert } from "./alerts.ts";
+
 export const RECOVER_FALLBACK_MAX_AGE_HOURS = 24;
 
 /**
@@ -44,7 +46,8 @@ export const EXPIRED_ALERT_SOURCE = "recover_expired";
  */
 export const EXPIRED_ALERT_DEDUPE_HOURS = 6;
 
-export type ExpiredAlertRow = {
+// AlertInsert: el `kind` tiene que ser un tipo registrado (_shared/alert-kinds.ts).
+export type ExpiredAlertRow = AlertInsert & {
   kind: "human_review_needed";
   severity: "warning";
   title: string;

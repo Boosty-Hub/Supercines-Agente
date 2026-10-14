@@ -19,7 +19,7 @@ import { KommoWebhookPanel } from "@/components/kommo/webhook-panel";
 import { VerticalsAssistant } from "@/components/verticals-assistant";
 import { Button } from "@/components/ui/button";
 import { inputCls, labelCls } from "@/components/ui/styles";
-import type { SetupState, SetupProvisioned } from "@/lib/setup-state";
+import type { SetupState, SetupProvisioned } from "@/lib/setup-state-view";
 import { ALLOWED_MODELS, DEFAULT_MODEL, MODEL_LABELS } from "@/lib/model-config";
 
 type StepStatus = "idle" | "running" | "done" | "error";
@@ -496,7 +496,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                     onChange={(e) => setAnthropicApiKey(e.target.value)}
                     placeholder={
                       anthropicDone
-                        ? "•••••• (ya configurada — dejá vacío para conservar)"
+                        ? `${state.secrets.anthropicApiKey ?? "••••"} (ya configurada — dejá vacío para conservar)`
                         : "sk-ant-..."
                     }
                     className={inputCls + " font-mono"}
@@ -849,7 +849,7 @@ export function SetupDrawer({ state }: { state: SetupState }) {
                     rows={3}
                     placeholder={
                       kommoDone
-                        ? "•••••• (ya configurado — pegá uno nuevo para reemplazar)"
+                        ? `${state.secrets.kommoAccessToken ?? "••••"} (ya configurado — pegá uno nuevo para reemplazar)`
                         : "eyJ0eXAiOiJKV1Qi..."
                     }
                     className={inputCls + " break-all font-mono"}

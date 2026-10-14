@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import {
   findByName,
@@ -27,11 +27,8 @@ const LEADS_DESCRIPTION =
 // Step 2: create/reconcile the two Memory Stores. Idempotent — finds existing
 // stores by name (reuses their IDs) and only creates the missing ones.
 export async function POST() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   const cfg = await configValues([
     "ANTHROPIC_API_KEY",
@@ -85,7 +82,7 @@ export async function POST() {
         ANTHROPIC_MEMORY_MASTER_ID: master.id,
         ANTHROPIC_MEMORY_LEADS_ID: leads.id,
       },
-      user.email ?? "setup-wizard"
+      auth.writer
     );
 
     return NextResponse.json({

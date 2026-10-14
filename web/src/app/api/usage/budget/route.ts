@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 import { MAX_MONTHLY_BUDGET_USD } from "@/lib/budget";
 
@@ -15,9 +15,8 @@ export const runtime = "nodejs";
 //   inferior en sesiones CMA), el margen compensa. Ausente no lo toca.
 // Las Edge Functions toman el cambio en <60s (cache de runtime_config).
 export async function POST(request: Request) {
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: { monthlyBudgetUsd?: unknown; excludeSpentSoFar?: unknown; safetyMarginPct?: unknown } = {};
   try {
@@ -51,6 +50,6 @@ export async function POST(request: Request) {
   if (remove || body.excludeSpentSoFar === false) values.BUDGET_EXCLUDE_BEFORE = null;
   else if (body.excludeSpentSoFar === true) values.BUDGET_EXCLUDE_BEFORE = new Date().toISOString();
 
-  await setConfigValues(values, user.email ?? "consumo-budget");
+  await setConfigValues(values, auth.writer);
   return NextResponse.json({ ok: true, monthlyBudgetUsd: remove ? null : raw });
 }

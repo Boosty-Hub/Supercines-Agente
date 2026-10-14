@@ -37,14 +37,17 @@
 //      request, de página y de API, antes de que el componente o el handler
 //      corran. Ocultar un ítem del menú NO es un permiso: la ruta se sigue
 //      alcanzando escribiendo la URL.
-//   2) La de DATOS no existe todavía. La RLS de las tablas sigue siendo
-//      `authenticated_all`, así que cualquier usuario con sesión —sea el
-//      alcance que sea— puede, en teoría, pegarle directo a PostgREST con la
-//      anon key (que es pública por diseño) y su propio JWT, saltándose esta
-//      capa entera. Cerrarlo exige políticas RLS por alcance en la base, con
-//      funciones que copien EXACTAMENTE `getScope`/`scopeAlcanza` de acá: una
-//      discrepancia entre las dos capas sería peor que no tener la segunda,
-//      porque daría por protegido lo que no lo está.
+//   2) La de DATOS (RLS, migraciones 0078/0079): un usuario con sesión puede
+//      pegarle directo a PostgREST con la anon key (pública por diseño) y su
+//      JWT, saltándose esta capa. Por eso la base también decide: runtime_config,
+//      kommo_credentials y alert_config son solo del servidor (service_role), y
+//      las tablas de config/contenido exigen el alcance en la policy con la
+//      condición INLINE sobre `app_metadata.role` que copia EXACTAMENTE
+//      `getScope`/`scopeAlcanza` de acá (sin rol → configuracion; admin/editor
+//      como alias; irreconocible → cerrado). Si cambia esta regla, cambia la de
+//      las policies en una migración nueva: una discrepancia entre las dos capas
+//      es peor que no tener la segunda. Matriz tabla × alcance en CLAUDE.md;
+//      la prueba es supabase/tests/runtime_config_lockdown.sql.
 
 export type Scope = "operacion" | "contenido" | "configuracion";
 

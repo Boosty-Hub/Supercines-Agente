@@ -17,29 +17,48 @@ import {
 } from "./draft-publish.ts";
 
 // ---------------- resolveInterrupted: nunca reenvía ----------------
+// Eventos de Kommo con created_at en segundos epoch; la marca de envío es un timestamptz.
+const SENDING_AT = "2026-10-13T12:00:00.400Z";
+const AFTER = Math.floor(Date.parse(SENDING_AT) / 1000) + 3;
+const BEFORE = Math.floor(Date.parse(SENDING_AT) / 1000) - 3;
+const evs = (...ids: string[]) => ids.map((id) => ({ id, createdAt: AFTER }));
 
-Deno.test("interrumpido: un saliente nuevo respecto de la foto previa → se registra enviado", () => {
-  assertEquals(resolveInterrupted(["1", "2"], new Set(["1", "2", "3"])).action, "mark_sent");
+Deno.test("interrumpido: un saliente nuevo respecto de la foto previa y posterior a la marca → se registra enviado", () => {
+  assertEquals(resolveInterrupted(["1", "2"], evs("1", "2", "3"), SENDING_AT).action, "mark_sent");
 });
 
 Deno.test("interrumpido: sin saliente nuevo → failed (revisión humana), NO reenvío", () => {
-  const r = resolveInterrupted(["1", "2"], new Set(["2", "1"]));
+  const r = resolveInterrupted(["1", "2"], evs("2", "1"), SENDING_AT);
   assertEquals(r.action, "mark_failed");
   assert(/no se encontró/.test(r.reason));
 });
 
-Deno.test("interrumpido: sin foto previa (verificación apagada o murió entre pública y DM) → failed", () => {
-  assertEquals(resolveInterrupted(null, new Set(["9"])).action, "mark_failed");
+Deno.test("interrumpido: sin foto previa (verificación apagada, murió entre pública y DM, o Kommo ilegible) → failed", () => {
+  assertEquals(resolveInterrupted(null, evs("9"), SENDING_AT).action, "mark_failed");
 });
 
-Deno.test("interrumpido: Kommo no devolvió eventos (fail-open = set vacío) → failed, nunca enviado en falso", () => {
-  assertEquals(resolveInterrupted([], new Set()).action, "mark_failed");
+Deno.test("interrumpido: Kommo ilegible al verificar (current null) → failed, nunca enviado en falso", () => {
+  const r = resolveInterrupted([], null, SENDING_AT);
+  assertEquals(r.action, "mark_failed");
+  assert(/no se pudieron leer/.test(r.reason));
+});
+
+Deno.test("interrumpido: Kommo sin eventos del lead → failed", () => {
+  assertEquals(resolveInterrupted([], [], SENDING_AT).action, "mark_failed");
+});
+
+Deno.test("interrumpido: un saliente que no estaba en la foto pero es ANTERIOR a la marca no es la entrega", () => {
+  assertEquals(resolveInterrupted([], [{ id: "x", createdAt: BEFORE }], SENDING_AT).action, "mark_failed");
+});
+
+Deno.test("interrumpido: sin marca de envío legible → failed", () => {
+  assertEquals(resolveInterrupted([], evs("x"), null).action, "mark_failed");
 });
 
 Deno.test("interrumpido: las acciones posibles son solo mark_sent / mark_failed", () => {
-  const cases: Array<[string[] | null, string[]]> = [[null, []], [[], ["x"]], [["x"], ["x"]]];
+  const cases: Array<[string[] | null, string[] | null]> = [[null, []], [[], ["x"]], [["x"], ["x"]], [[], null]];
   for (const [b, c] of cases) {
-    assert(["mark_sent", "mark_failed"].includes(resolveInterrupted(b, c).action));
+    assert(["mark_sent", "mark_failed"].includes(resolveInterrupted(b, c && evs(...c), SENDING_AT).action));
   }
 });
 

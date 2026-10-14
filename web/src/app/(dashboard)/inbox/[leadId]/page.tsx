@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requirePageScope } from "@/lib/auth/require-scope";
 import { Badge, EmptyState, MessageSquare } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import { draftText } from "@/lib/draft-text";
@@ -138,7 +138,7 @@ export default async function ConversationPage(
     if (typeof v === "string" && v) backParams.set(k, v);
   }
   const backQS = backParams.toString();
-  const supabase = await createSupabaseServerClient();
+  const { supabase } = await requirePageScope("operacion");
   const leadId = params.leadId;
   if (!/^[0-9a-f-]{36}$/i.test(leadId)) return <NotFound />;
 

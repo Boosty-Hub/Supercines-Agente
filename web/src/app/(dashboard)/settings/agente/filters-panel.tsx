@@ -1383,7 +1383,9 @@ function IgnoredCategoriesSection({ verticals }: { verticals: VerticalLite[] }) 
 // ---------------------------------------------------------------------------
 export type MediaFlags = { images: boolean; documents: boolean; audio: boolean };
 
-function MediaSection({ media, hasOpenaiKey }: { media: MediaFlags; hasOpenaiKey: boolean }) {
+function MediaSection({ media, openaiKeyMasked }: { media: MediaFlags; openaiKeyMasked: string | null }) {
+  // La key nunca llega al navegador: solo su versión enmascarada (lib/config-secrets.ts).
+  const hasOpenaiKey = openaiKeyMasked !== null;
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [askKey, setAskKey] = useState(false);
@@ -1478,7 +1480,13 @@ function MediaSection({ media, hasOpenaiKey }: { media: MediaFlags; hasOpenaiKey
               </p>
               <p className="text-xs text-neutral-400">
                 Se transcriben con OpenAI Whisper y el agente responde el texto.
-                {!hasOpenaiKey && " Requiere tu API key de OpenAI."}
+                {hasOpenaiKey ? (
+                  <>
+                    {" "}Key de OpenAI: <span className="font-mono">{openaiKeyMasked}</span>
+                  </>
+                ) : (
+                  " Requiere tu API key de OpenAI."
+                )}
               </p>
             </div>
             <Switch
@@ -1534,7 +1542,7 @@ export function FiltersPanel({
   debounce,
   freshness,
   media,
-  hasOpenaiKey = false,
+  openaiKeyMasked = null,
 }: {
   rules: Rule[];
   limits: Limits;
@@ -1544,7 +1552,7 @@ export function FiltersPanel({
   debounce: number;
   freshness: number;
   media: MediaFlags;
-  hasOpenaiKey?: boolean;
+  openaiKeyMasked?: string | null;
 }) {
   return (
     <div className="space-y-6">
@@ -1555,7 +1563,7 @@ export function FiltersPanel({
       </p>
       <BatchingSection debounce={debounce} />
       <FreshnessSection freshness={freshness} />
-      <MediaSection media={media} hasOpenaiKey={hasOpenaiKey} />
+      <MediaSection media={media} openaiKeyMasked={openaiKeyMasked} />
       <SkipRulesSection
         rules={rules}
         currentChannels={channels.ignored}

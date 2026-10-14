@@ -748,34 +748,66 @@ export async function runSalesbot(
   }
 }
 
+/** Un evento `outgoing_chat_message` de un lead. `createdAt` en segundos epoch (Kommo). */
+export type OutgoingEvent = { id: string; createdAt: number | null };
+
 /**
- * Devuelve los IDs de eventos `outgoing_chat_message` recientes que pertenecen a un
- * lead. Kommo NO permite filtrar estos eventos por entidad (filter[entity]=lead los
- * excluye; filter[entity_id] da 400), así que pedimos los últimos N por TIPO a nivel
- * cuenta y matcheamos `entity_id` del lado nuestro. Fail-open: ante cualquier error
- * devuelve un set vacío (el verificador lo interpreta como "sin novedad todavía").
+ * Extrae, de la respuesta de `/api/v4/events`, los eventos salientes de ESE lead.
+ * Puro (sin red). null = la respuesta no tiene la forma esperada (no se pudo leer).
+ * Un evento de otra entidad con el mismo número (p. ej. un contacto) no cuenta.
  */
+export function outgoingEventsOfLead(json: unknown, kommoLeadId: number): OutgoingEvent[] | null {
+  const embedded = (json as { _embedded?: { events?: unknown } } | null)?._embedded;
+  const events = embedded?.events;
+  if (!Array.isArray(events)) return null;
+  const out: OutgoingEvent[] = [];
+  for (const e of events) {
+    if (e == null || typeof e !== "object") continue;
+    const ev = e as { id?: unknown; entity_id?: unknown; entity_type?: unknown; created_at?: unknown };
+    if (ev.id == null || String(ev.entity_id) !== String(kommoLeadId)) continue;
+    if (ev.entity_type != null && ev.entity_type !== "lead") continue;
+    const createdAt = Number(ev.created_at);
+    out.push({ id: String(ev.id), createdAt: ev.created_at != null && Number.isFinite(createdAt) ? createdAt : null });
+  }
+  return out;
+}
+
+/**
+ * Devuelve los eventos `outgoing_chat_message` recientes que pertenecen a un lead.
+ * Kommo NO permite filtrar estos eventos por entidad (filter[entity]=lead los excluye;
+ * filter[entity_id] da 400), así que pedimos los últimos N por TIPO a nivel cuenta y
+ * matcheamos el lead del lado nuestro.
+ *
+ * null = NO se pudo leer (red, HTTP no-OK, respuesta ilegible). Nunca se confunde con
+ * «el lead no tiene salientes» ([]): una foto previa vacía por un error haría pasar
+ * cualquier saliente del lead por la entrega del mensaje. 204 (sin eventos) es [].
+ */
+export async function fetchOutgoingEvents(
+  kommoLeadId: number,
+  kommoDomain: string,
+  kommoToken: string,
+  limit = 100
+): Promise<OutgoingEvent[] | null> {
+  const url = `https://${kommoDomain}/api/v4/events?filter[type]=outgoing_chat_message&order[created_at]=desc&limit=${limit}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (res.status === 204) return [];
+    if (!res.ok) return null;
+    return outgoingEventsOfLead(await res.json(), kommoLeadId);
+  } catch {
+    return null;
+  }
+}
+
+/** IDs de los eventos salientes del lead (ver fetchOutgoingEvents). null = no se pudo leer. */
 export async function fetchOutgoingEventIds(
   kommoLeadId: number,
   kommoDomain: string,
   kommoToken: string,
   limit = 100
-): Promise<Set<string>> {
-  const url = `https://${kommoDomain}/api/v4/events?filter[type]=outgoing_chat_message&order[created_at]=desc&limit=${limit}`;
-  try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (!res.ok) return new Set();
-    const json = await res.json();
-    // deno-lint-ignore no-explicit-any
-    const events: any[] = json?._embedded?.events ?? [];
-    return new Set(
-      events
-        .filter((e) => String(e.entity_id) === String(kommoLeadId))
-        .map((e) => String(e.id))
-    );
-  } catch {
-    return new Set();
-  }
+): Promise<Set<string> | null> {
+  const events = await fetchOutgoingEvents(kommoLeadId, kommoDomain, kommoToken, limit);
+  return events ? new Set(events.map((e) => e.id)) : null;
 }
 
 /**
@@ -806,7 +838,8 @@ export async function verifyOutgoingDelivery(
   while (Date.now() < deadline) {
     await sleep(delay);
     delay = 3500;
-    const current = await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken);
+    // Una lectura fallida (null) no es entrega ni no-entrega: se vuelve a mirar.
+    const current = (await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken)) ?? [];
     for (const id of current) {
       if (!baseline.has(id)) return true;
     }

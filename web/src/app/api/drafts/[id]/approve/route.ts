@@ -1,15 +1,13 @@
 import { NextResponse } from "next/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { triggerInternalFunction } from "@/lib/internal-call";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DRAFT_APPROVABLE_STATUSES, DRAFT_NOT_ACTIONABLE } from "@/lib/draft-status";
 
 export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("operacion");
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   let body: string | undefined;
   try {

@@ -18,10 +18,12 @@
 // lo único que lee el collector del Hub.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import type { AlertKind } from "./alert-kinds.ts";
+import { insertAlert } from "./alerts.ts";
 
 export type Provider = "anthropic" | "openai";
 
-const CREDIT_ALERT_KIND = "provider_credit_exhausted";
+const CREDIT_ALERT_KIND = "provider_credit_exhausted" satisfies AlertKind;
 
 const TITLES: Record<Provider, string> = {
   anthropic: "Sin créditos de Claude (Anthropic)",
@@ -86,8 +88,7 @@ export async function recordProviderCreditAlert(
       return;
     }
 
-    // deno-lint-ignore no-explicit-any
-    const { error: insErr } = await (supabase as any).from("alerts").insert({
+    const { error: insErr } = await insertAlert(supabase, {
       kind: CREDIT_ALERT_KIND,
       severity: "critical",
       title: TITLES[provider],
@@ -95,7 +96,7 @@ export async function recordProviderCreditAlert(
         "El proveedor rechazó la llamada por saldo/cuota agotada. El agente no puede responder hasta recargar.",
       metadata: { provider, ...meta, last_seen_at: nowIso },
     });
-    if (insErr) throw new Error(insErr.message);
+    if (insErr) throw new Error(insErr);
   } catch (e) {
     console.error(
       `recordProviderCreditAlert(${provider}) failed (ignored):`,

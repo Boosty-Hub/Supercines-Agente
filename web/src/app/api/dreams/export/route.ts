@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { listDreams, readDream } from "@/lib/memory-list";
 
 // Descarga TODOS los dreams del Memory Store master como un único
 // archivo JSON. Cada entrada conserva `path` y `content` originales para
 // poder reimportarse vía POST /api/dreams/import sin pérdida.
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   try {
     const items = await listDreams();

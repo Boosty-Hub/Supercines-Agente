@@ -43,7 +43,7 @@ export function AgenteTab({
   comments,
   routing,
   assignees,
-  hasOpenaiKey = false,
+  openaiKeyMasked = null,
   children,
 }: {
   initialSection: AgenteSection;
@@ -63,7 +63,7 @@ export function AgenteTab({
   comments: CommentsConfig;
   routing: RoutingConfig;
   assignees: Assignee[];
-  hasOpenaiKey?: boolean;
+  openaiKeyMasked?: string | null;
   /** Panel de Identidad (server-rendered: encendido, estado Anthropic, prompt). */
   children: React.ReactNode;
 }) {
@@ -93,7 +93,7 @@ export function AgenteTab({
           ignoredStageIds={ignoredStageIds}
           debounce={debounce}
           media={media}
-          hasOpenaiKey={hasOpenaiKey}
+          openaiKeyMasked={openaiKeyMasked}
         />
       </div>
 

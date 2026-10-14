@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { getMemoryClient } from "@/lib/memory";
 
 function safeName(base: string): string {
@@ -9,11 +9,9 @@ function safeName(base: string): string {
 // Descarga el contenido del sample de voz tal como se ingirió.
 export async function GET(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const { data, error } = await supabase
     .from("voice_samples")
@@ -40,11 +38,9 @@ export async function GET(_request: Request, props: { params: Promise<{ id: stri
 
 export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   // Fetch para recuperar memory_ids antes de borrar
   const { data: sample, error: fetchErr } = await supabase

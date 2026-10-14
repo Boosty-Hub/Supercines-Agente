@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { checkAgentPromptConflict, syncAgentTools, type ConflictResolution } from "@/lib/sync-agent-tools";
 
 export const runtime = "nodejs";
@@ -20,9 +20,8 @@ export const runtime = "nodejs";
 //   - import_live: no empuja; trae el prompt vivo del operador a la DB, restituyendo los
 //                  placeholders conocidos (los valores ambiguos se informan y no se tocan).
 export async function POST(request: Request) {
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let resolve: ConflictResolution | undefined;
   let expectedLiveHash: string | undefined;
@@ -40,7 +39,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const res = await syncAgentTools(user.email ?? "agent-sync", { resolve, expectedLiveHash });
+  const res = await syncAgentTools(auth.writer, { resolve, expectedLiveHash });
   if (res.stale) {
     return NextResponse.json(
       { ok: false, stale: true, error: res.error, conflict: res.conflict ?? null },
@@ -63,8 +62,7 @@ export async function POST(request: Request) {
 
 // GET /api/agent/sync — ¿hay un conflicto de prompt pendiente? (sin modificar nada)
 export async function GET() {
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
   return NextResponse.json({ ok: true, conflict: await checkAgentPromptConflict() });
 }

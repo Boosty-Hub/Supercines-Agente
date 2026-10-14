@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValue } from "@/lib/runtime-config";
 import { costUsd, parsePricingOverride } from "@/lib/ai-pricing";
@@ -17,9 +17,8 @@ const BATCH_SIZE = 200;
 // El cliente llama en loop hasta done=true.
 export async function POST(request: Request) {
   // Auth obligatorio
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   let body: { cursor?: string } = {};
   try {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValue } from "@/lib/runtime-config";
 import { generateObject } from "ai";
 import { z } from "zod";
@@ -13,13 +13,8 @@ export const runtime = "nodejs";
 // an instruction, decide whether to EDIT an existing section or INSERT a new
 // one, and (for new) where it belongs thematically. Tiny output → no timeout.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {

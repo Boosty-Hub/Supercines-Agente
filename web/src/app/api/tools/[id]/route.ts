@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 
 // nodejs runtime — calls Anthropic via syncAgentTools.
@@ -8,11 +8,9 @@ export const runtime = "nodejs";
 /** PATCH /api/tools/[id] — partial update (fields + enabled toggle) */
 export async function PATCH(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   // Fetch the target row first to enforce the system-tool guard.
   const { data: existing, error: fetchErr } = await supabase
@@ -70,7 +68,7 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
 
   if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 });
 
-  const sync = await syncAgentTools(user.email ?? "dashboard").catch((e) => ({
+  const sync = await syncAgentTools(auth.writer).catch((e) => ({
     synced: false,
     version: null,
     error: String(e),
@@ -82,11 +80,9 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
 /** DELETE /api/tools/[id] — delete an http tool */
 export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const { data: existing, error: fetchErr } = await supabase
     .from("agent_tools")
@@ -111,7 +107,7 @@ export async function DELETE(_request: Request, props: { params: Promise<{ id: s
 
   if (deleteErr) return NextResponse.json({ error: deleteErr.message }, { status: 500 });
 
-  const sync = await syncAgentTools(user.email ?? "dashboard").catch((e) => ({
+  const sync = await syncAgentTools(auth.writer).catch((e) => ({
     synced: false,
     version: null,
     error: String(e),

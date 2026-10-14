@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { trustedActorName } from "@/lib/auth/actor";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { moveLeadInKommo } from "@/lib/kommo";
 import { createServiceClient } from "@/lib/supabase/service";
 import { parseExpected, type ExpectedPosition } from "@/lib/move-position";
@@ -19,11 +19,9 @@ type PipelineRef = { name?: string };
 // tiempo, en el mismo paso (apply_lead_position, 0061).
 export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("operacion");
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   let stageId: number;
   let pipelineId: number;

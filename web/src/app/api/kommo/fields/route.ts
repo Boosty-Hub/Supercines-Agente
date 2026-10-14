@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { fetchCustomFields, createCustomField } from "@/lib/kommo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   try {
     const { configured, leads, contacts } = await fetchCustomFields();
@@ -26,11 +23,8 @@ export async function GET() {
 const ALLOWED_TYPES = ["text", "textarea", "numeric", "date", "url"];
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {

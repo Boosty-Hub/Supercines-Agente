@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 
@@ -11,11 +11,9 @@ export const runtime = "nodejs";
 //   - url/apiKey → runtime_config BCV_RATE_URL / BCV_RATE_APIKEY (fuente custom;
 //     vacío = usar el fallback público sin credenciales)
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   let body: Record<string, unknown>;
   try {
@@ -53,12 +51,12 @@ export async function POST(request: Request) {
         ...(body.url !== undefined ? { BCV_RATE_URL: String(body.url).trim() } : {}),
         ...(body.apiKey !== undefined ? { BCV_RATE_APIKEY: String(body.apiKey).trim() } : {}),
       },
-      user.email ?? "dashboard"
+      auth.writer
     );
   }
 
   // Registra la tool en Anthropic la primera vez que se activa (idempotente).
-  const sync = await syncAgentTools(user.email ?? "dashboard").catch((e) => ({
+  const sync = await syncAgentTools(auth.writer).catch((e) => ({
     synced: false,
     version: null,
     error: String(e),

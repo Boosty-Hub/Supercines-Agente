@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
 import { truncateGraphemes } from "@/lib/text-safe";
 
@@ -9,11 +9,8 @@ export const runtime = "nodejs";
 // key against the API, and persist everything to runtime_config. No external
 // provisioning happens here — that's the memory/agent/kommo steps.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {
@@ -93,7 +90,7 @@ export async function POST(request: Request) {
         ...(leadsStoreName ? { MEMORY_STORE_LEADS_NAME: leadsStoreName } : {}),
         ...(systemPrompt ? { SYSTEM_PROMPT: systemPrompt } : {}),
       },
-      user.email ?? "setup-wizard"
+      auth.writer
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

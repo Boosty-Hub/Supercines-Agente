@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Modal, Button, ConfirmDialog, Badge } from "@/components/ui";
+import { HTTP_TOOL_DATA_KEYS, HTTP_TOOL_KOMMO_SECRET } from "@/lib/http-tool-keys";
+import { Modal, Button, ConfirmDialog, Badge, SegmentedControl, type SegmentedItem } from "@/components/ui";
 
 // El tipo vivía en la vieja tools/page.tsx (hoy un redirect a Ajustes), así que
 // pasa a vivir junto al editor que lo usa.
@@ -25,14 +26,10 @@ export type AgentTool = {
   created_at: string;
 };
 
-// Known runtime_config keys the operator might reference in headers.
-// Extend this list as new secrets are added to runtime_config.
-const CONFIG_KEY_OPTIONS = [
-  "KOMMO_ACCESS_TOKEN",
-  "KOMMO_API_DOMAIN",
-  "KOMMO_SUBDOMAIN",
-  "ANTHROPIC_AGENT_ID",
-];
+// Claves de runtime_config que una tool puede referenciar en headers (lib/http-tool-keys.ts):
+// KOMMO_ACCESS_TOKEN solo viaja al host de KOMMO_API_DOMAIN; los secretos propios van como
+// TOOL_<X> con sus hosts en TOOL_<X>_HOSTS.
+const CONFIG_KEY_OPTIONS: readonly string[] = [HTTP_TOOL_KOMMO_SECRET, ...HTTP_TOOL_DATA_KEYS];
 
 // Modal is imported from @/components/ui
 

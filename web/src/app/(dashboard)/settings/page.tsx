@@ -14,7 +14,9 @@ import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
 import { retrieveAgent } from "@/lib/anthropic-managed";
 import { onceRetriever } from "@/lib/once-retriever";
 import { formKey } from "@/lib/form-key";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requirePageScope } from "@/lib/auth/require-scope";
+import { createServiceClient } from "@/lib/supabase/service";
+import { maskSecret } from "@/lib/config-secrets";
 import { Badge, PageShell, SectionCard } from "@/components/ui";
 import { toReviewMode } from "@/lib/review-mode";
 
@@ -43,6 +45,8 @@ export default async function SettingsPage(props: {
   }>;
 }) {
   const searchParams = await props.searchParams;
+  // Alcance validado ANTES de leer config/secretos con el cliente de servicio.
+  const { supabase } = await requirePageScope("configuracion");
   const cfg = await configValues([
     "SYSTEM_PROMPT",
     "OPERATOR_NAME",
@@ -60,7 +64,9 @@ export default async function SettingsPage(props: {
   // un retriever por render hace que se lea una sola vez de Anthropic.
   const liveAgent = onceRetriever(retrieveAgent);
 
-  const supabase = await createSupabaseServerClient();
+  // kommo_credentials y alert_config no son legibles con la sesión (0079): se leen con
+  // service_role, ya validado el alcance. webhook_url es un secreto: solo viaja enmascarado.
+  const svc = createServiceClient();
   const [rulesRes, pubRes, vertRes, seenRes, fuRes, credRes, alertRes, toolsRes, assigneesRes, haltRes, crmExtraRes, syncStatus, promptConflict] =
     await Promise.all([
       supabase
@@ -86,12 +92,12 @@ export default async function SettingsPage(props: {
         .select("timezone, business_hours, business_hours_start, business_hours_end, active_days")
         .eq("is_active", true)
         .maybeSingle(),
-      supabase
+      svc
         .from("kommo_credentials")
         .select("subdomain, account_id, token_expires_at")
         .eq("is_active", true)
         .maybeSingle(),
-      supabase
+      svc
         .from("alert_config")
         .select("webhook_url, webhook_enabled")
         .eq("is_active", true)
@@ -305,7 +311,7 @@ export default async function SettingsPage(props: {
             debounce={(p?.response_debounce_seconds ?? 45) as number}
             freshness={(p?.answer_max_age_hours ?? 1) as number}
             media={media}
-            hasOpenaiKey={Boolean(cfg.OPENAI_API_KEY)}
+            openaiKeyMasked={maskSecret(cfg.OPENAI_API_KEY)}
             crm={crm}
             handoffConfig={handoffConfig}
             bcvEnabled={p?.bcv_rate_enabled === true}
@@ -392,7 +398,7 @@ export default async function SettingsPage(props: {
         sistema={
           <div className="space-y-4">
             <AlertsForm
-              webhookUrl={(alertRes.data?.webhook_url as string | null) ?? ""}
+              webhookMasked={maskSecret(alertRes.data?.webhook_url as string | null | undefined)}
               enabled={alertRes.data?.webhook_enabled === true}
             />
             <SectionCard

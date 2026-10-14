@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValues } from "@/lib/runtime-config";
 import { createServiceClient } from "@/lib/supabase/service";
 import { maskDestination, webhookDestination } from "@/lib/kommo-webhook";
@@ -22,11 +22,9 @@ import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
  */
 
 export async function POST() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   if (!base) {

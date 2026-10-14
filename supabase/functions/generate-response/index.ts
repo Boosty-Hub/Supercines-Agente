@@ -34,6 +34,8 @@ import {
   DEFAULT_TIMEZONE,
 } from "../_shared/business-hours.ts";
 import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
+import { resolveToolHeaders } from "../_shared/http-tool-keys.ts";
+import { insertAlert } from "../_shared/alerts.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -138,29 +140,6 @@ async function loadHttpTools(supabaseClient: any): Promise<HttpToolRow[]> {
   return items;
 }
 
-// Claves de runtime_config que un header de tool http puede resolver.
-// Las NO secretas se resuelven siempre; los secretos solo si el host de la URL
-// final es su destino legítimo (si no, vacío): una tool apuntada a un host
-// ajeno no puede exfiltrarlos. Cualquier otra clave (p. ej. las de plataforma
-// que cfg.get lee de Deno.env) no se resuelve nunca.
-const PUBLIC_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
-  "KOMMO_API_DOMAIN",
-  "KOMMO_SUBDOMAIN",
-  "ANTHROPIC_AGENT_ID",
-]);
-const SECRET_TOOL_CONFIG_HOSTS: Record<string, (cfg: ConfigReader) => string | undefined> = {
-  KOMMO_ACCESS_TOKEN: (cfg) => cfg.get("KOMMO_API_DOMAIN"),
-};
-
-function hostOf(raw: string | undefined): string | null {
-  if (!raw) return null;
-  try {
-    return new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Recursively substitutes {{param}} placeholders in a body_template value.
  * - String leaf that is EXACTLY "{{param}}" → replaced with the typed input
@@ -217,26 +196,17 @@ async function runHttpTool(
       encodeURIComponent(String(Object.hasOwn(input, p) ? input[p] ?? "" : ""))
     );
 
-    // (c) Resolve {{CONFIG_KEY}} in header values via cfg.get (not from input).
-    const headers: Record<string, string> = {};
-    let usedSecret = false;
-    for (const h of tool.headers ?? []) {
-      headers[h.name] = h.value.replace(/\{\{(\w+)\}\}/g, (_, k) => {
-        if (PUBLIC_TOOL_CONFIG_KEYS.has(k)) return cfg.get(k) ?? "";
-        const hostFor = Object.hasOwn(SECRET_TOOL_CONFIG_HOSTS, k)
-          ? SECRET_TOOL_CONFIG_HOSTS[k]
-          : undefined;
-        if (hostFor) {
-          const expected = hostOf(hostFor(cfg));
-          if (expected !== null && expected === hostOf(url)) {
-            usedSecret = true;
-            return cfg.get(k) ?? "";
-          }
-        }
-        console.warn(`[tool:${tool.name}] placeholder no resuelto en header: ${k}`);
-        return "";
-      });
-    }
+    // (c) Resolve {{CLAVE}} en los headers con la URL FINAL y cada secreto atado a sus hosts
+    // (_shared/http-tool-keys.ts): una tool no puede mandar un secreto a un host que no le
+    // corresponde (ni el modelo moverlo con un {{param}} en el host).
+    const resolved = resolveToolHeaders({
+      headers: tool.headers,
+      urlTemplate: tool.url_template,
+      finalUrl: url,
+      lookup: (k) => cfg.get(k),
+    });
+    if (!resolved.ok) return `ERROR_CONFIG_TOOL: ${resolved.error}`;
+    const headers = resolved.headers;
 
     // (d) Build body for non-GET via recursive template walk.
     let body: string | undefined;
@@ -257,8 +227,10 @@ async function runHttpTool(
     // esa tabla la lee cualquier usuario autenticado del panel (RLS) y el secreto
     // de las funciones internas no puede quedar a su alcance. Solo se adjunta a
     // nuestro propio origen /functions/v1/ — nunca a un host de terceros.
+    let attachedInternal = false;
     if (url.startsWith(`${SUPABASE_URL}/functions/v1/`)) {
       Object.assign(headers, await internalHeaders(supabase));
+      attachedInternal = true;
     }
 
     // (f) AbortController with tool timeout.
@@ -266,14 +238,8 @@ async function runHttpTool(
     const timer = setTimeout(() => ctrl.abort(), tool.timeout_ms);
 
     try {
-      // Con secretos en la request no se siguen redirects (podrían llevar el header a otro host).
-      const res = await fetch(url, {
-        method,
-        headers,
-        body,
-        signal: ctrl.signal,
-        redirect: usedSecret ? "manual" : "follow",
-      });
+      // Con un secreto en los headers, un 302 no puede llevarlo a otro host.
+      const res = await fetch(url, { method, headers, body, signal: ctrl.signal, ...(resolved.hasSecret || attachedInternal ? { redirect: "manual" as const } : {}) });
       const text = await res.text();
       // (g) Cap response at 8 KB.
       const capped =
@@ -1776,7 +1742,7 @@ Deno.serve(async (req: Request) => {
         if (publicReplyBlocked) {
           console.error(`generate-response: respuesta pública del draft ${draft.id} bloqueada — ${publicReplyBlocked}`);
           publicReply = undefined;
-          const { error: blockAlertErr } = await supabase.from("alerts").insert({
+          const { error: blockAlertErr } = await insertAlert(supabase, {
             kind: "outbound_blocked",
             severity: "warning",
             title: "Se bloqueó la respuesta pública a un comentario",
@@ -1787,7 +1753,7 @@ Deno.serve(async (req: Request) => {
             ref_id: draft.id,
             metadata: { part: "public_reply", reason: publicReplyBlocked, stage: "generate" },
           });
-          if (blockAlertErr) console.warn("alert outbound_blocked:", blockAlertErr.message);
+          if (blockAlertErr) console.warn("alert outbound_blocked:", blockAlertErr);
         }
       }
 

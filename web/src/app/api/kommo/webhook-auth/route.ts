@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues } from "@/lib/runtime-config";
-import { getScope, scopeAlcanza } from "@/lib/auth/roles";
 import { generateWebhookSecret, maskDestination, strictModeBlocker, webhookDestination } from "@/lib/kommo-webhook";
 import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
 
@@ -26,16 +25,6 @@ import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
  * y ofrece «Actualizar en Kommo»).
  */
 const PREVIOUS_GRACE_HOURS = 24;
-
-async function requireConfigUser(): Promise<NextResponse | null> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  if (!scopeAlcanza(getScope(user), "configuracion")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  return null;
-}
 
 function baseUrl(): string | null {
   return process.env.NEXT_PUBLIC_SUPABASE_URL || null;
@@ -66,8 +55,8 @@ async function applySecret(base: string, secret: string) {
 }
 
 export async function GET() {
-  const denied = await requireConfigUser();
-  if (denied) return denied;
+  const gate = await requireScope("configuracion");
+  if (!gate.ok) return gate.response;
   const base = baseUrl();
   if (!base) return NextResponse.json({ url: null });
   try {
@@ -98,8 +87,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const denied = await requireConfigUser();
-  if (denied) return denied;
+  const gate = await requireScope("configuracion");
+  if (!gate.ok) return gate.response;
   const base = baseUrl();
   if (!base) return NextResponse.json({ error: "Falta NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
   const body = (await req.json().catch(() => ({}))) as { action?: string; mode?: string; force?: boolean };

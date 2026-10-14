@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 
 // nodejs runtime — calls Anthropic via syncAgentTools.
@@ -10,11 +10,9 @@ const RESERVED_NAMES = new Set(["search_kb", "agent_toolset_20260401"]);
 
 /** GET /api/tools — list all tools (system + http) ordered by type desc, created_at asc */
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const { data, error } = await supabase
     .from("agent_tools")
@@ -28,11 +26,9 @@ export async function GET() {
 
 /** POST /api/tools — create a new http tool */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   let body: Record<string, unknown>;
   try {
@@ -110,7 +106,7 @@ export async function POST(request: Request) {
   }
 
   // Fire-and-forget sync to Anthropic (CRUD already committed).
-  const sync = await syncAgentTools(user.email ?? "dashboard").catch((e) => ({
+  const sync = await syncAgentTools(auth.writer).catch((e) => ({
     synced: false,
     version: null,
     error: String(e),

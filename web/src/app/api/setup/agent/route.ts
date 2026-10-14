@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import {
@@ -64,11 +64,8 @@ async function fetchDeclaredToolRows(): Promise<AgentToolRow[]> {
 // Step 3: create/reconcile the Anthropic Environment + Managed Agent. Idempotent
 // — finds existing resources by name (reuses + updates) and creates missing ones.
 export async function POST() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   const cfg = await configValues([
     "ANTHROPIC_API_KEY",
@@ -171,11 +168,11 @@ export async function POST() {
     const existingAgent = agentById ?? (await findByName(key, "agents", agentName!));
     if (existingAgent) {
       if (existingAgent.name !== agentName) {
-        await renameAgent(key, existingAgent.id, agentName!, user.email ?? "setup-wizard");
+        await renameAgent(key, existingAgent.id, agentName!, auth.writer);
       }
       // Agent exists — use syncAgentTools for the update path (it handles
       // optimistic concurrency retry and persists the new version).
-      const sync = await syncAgentTools(user.email ?? "setup-wizard");
+      const sync = await syncAgentTools(auth.writer);
       // El prompt vivo fue editado fuera del dashboard: el wizard NO lo pisa ni registra
       // como sincronizado algo que no se sincronizó. Se resuelve en la página Agente.
       if (sync.conflict) {
@@ -208,7 +205,7 @@ export async function POST() {
         // sincronización para detectar ediciones externas (lib/agent-prompt-sync.ts).
         ...(agentCreated ? { AGENT_PROMPT_SYNCED_HASH: hashPrompt(system) } : {}),
       },
-      user.email ?? "setup-wizard"
+      auth.writer
     );
 
     return NextResponse.json({

@@ -1,6 +1,13 @@
 // server-only: this module must only be imported in server-side code.
 // Reads runtime_config table via service-role client.
 //
+// SECURITY (migración 0079): runtime_config NO es legible ni escribible con la sesión del
+// usuario (ni anon ni authenticated tienen privilegio). La única vía es este módulo, con el
+// cliente de servicio, desde rutas/páginas que YA validaron sesión + alcance
+// (lib/auth/require-scope.ts). Escribir exige un ConfigWriter (solo lo fabrica requireScope)
+// y se valida clave por clave (lib/config-secrets.ts#configKeysDenied). Los valores
+// secretos nunca se devuelven al navegador: ver lib/config-secrets.ts (configView/maskSecret).
+//
 // PRECEDENCE RULE (same as Edge _shared/config.ts):
 //   1. runtime_config.value WHERE key=K, if NOT NULL AND != '' → use it.
 //   2. Otherwise process.env[key].
@@ -10,8 +17,19 @@
 // the DB once per server component tree, regardless of how many times
 // getRuntimeConfig() / configValue() are called.
 
+import "server-only";
 import { cache } from "react";
 import { createServiceClient } from "@/lib/supabase/service";
+import { configKeysDenied } from "@/lib/config-secrets";
+import type { ConfigWriter } from "@/lib/auth/scope-guard";
+
+/** Se intentó escribir una clave que el alcance del que escribe no permite. */
+export class ConfigWriteForbiddenError extends Error {
+  constructor(readonly keys: string[]) {
+    super(`Sin alcance para escribir: ${keys.join(", ")}`);
+    this.name = "ConfigWriteForbiddenError";
+  }
+}
 
 type ConfigRow = { key: string; value: string | null };
 
@@ -108,8 +126,11 @@ export async function configValuesFresh<K extends string>(
  */
 export async function setConfigValues(
   values: Record<string, string | null | undefined>,
-  updatedBy = "dashboard"
+  writer: ConfigWriter
 ): Promise<void> {
+  const denied = configKeysDenied(writer.scope, Object.keys(values));
+  if (denied.length > 0) throw new ConfigWriteForbiddenError(denied);
+  const updatedBy = writer.by;
   const supabase = createServiceClient();
   const updatedAt = new Date().toISOString();
   const rows = Object.entries(values).map(([key, value]) => ({

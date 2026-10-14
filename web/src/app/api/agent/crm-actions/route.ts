@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
 
@@ -30,11 +30,9 @@ const FIELDS = new Set([
 const CONFIG_FIELDS = new Set(["HANDOFF_STAGE_NAME", "HANDOFF_PIPELINE_NAME"]);
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   let body: Record<string, unknown>;
   try {
@@ -86,7 +84,7 @@ export async function POST(request: Request) {
 
   if (Object.keys(configPatch).length > 0) {
     try {
-      await setConfigValues(configPatch, user.email ?? "dashboard");
+      await setConfigValues(configPatch, auth.writer);
     } catch (e) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : String(e) },
@@ -97,7 +95,7 @@ export async function POST(request: Request) {
 
   // Sync idempotente: registra las tools internas en Anthropic si aún no están
   // (no-op si el agente no está aprovisionado). No bloquea la respuesta si falla.
-  const sync = await syncAgentTools(user.email ?? "dashboard").catch((e) => ({
+  const sync = await syncAgentTools(auth.writer).catch((e) => ({
     synced: false,
     version: null,
     error: String(e),

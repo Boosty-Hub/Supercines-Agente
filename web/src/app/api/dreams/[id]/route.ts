@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { deleteDream, triggerDigestRebuild } from "@/lib/memory-list";
 
 // Borra un aprendizaje del master Memory Store. Al eliminarse el archivo,
 // el agente deja de leerlo y no lo adopta en próximas respuestas.
 export async function DELETE(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   try {
     const { wasActive } = await deleteDream(params.id);

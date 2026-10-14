@@ -32,11 +32,19 @@ const ROLES: ReadonlySet<string> = new Set(["lead", "agente"]);
 const INVISIBLES = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-‏‪-\u202e⁠-⁤⁦-⁩\ufeff­͏؜᠎]/g;
 const SALTOS = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/g;
 
+// Paréntesis angulares "alternativos" que NFKC NO colapsa a < / > y que un modelo puede leer
+// como apertura/cierre de etiqueta: 〈 〉 (U+2329/232A → U+3008/3009), ⟨ ⟩ (U+27E8/27E9),
+// ‹ › (U+2039/203A), ❬ ❭ ❰ ❱ (U+276C-2771), 《 》 (U+300A/300B), ⟪ ⟫ (U+27EA/27EB).
+// Se mapean a < / > (y de ahí a entidad). NO se tocan « » (comillas españolas, de uso común
+// y sin forma de etiqueta). Los "<" fullwidth/small (U+FF1C, U+FE64) ya los colapsa NFKC.
+const ANGLE_OPEN = /[\u2329\u3008\u27e8\u2039\u276c\u2770\u300a\u27ea]/g;
+const ANGLE_CLOSE = /[\u232a\u3009\u27e9\u203a\u276d\u2771\u300b\u27eb]/g;
+
 export function sanitizeUntrusted(input: string, opts: { maxChars?: number } = {}): string {
   // Un surrogate UTF-16 suelto (de un lead o de un corte previo) hace que Anthropic
   // responda 400 «no low surrogate»: se descarta ANTES de normalizar.
   let s = stripLoneSurrogates(String(input ?? "")).normalize("NFKC");
-  s = s.replace(SALTOS, "\n").replace(INVISIBLES, "");
+  s = s.replace(SALTOS, "\n").replace(INVISIBLES, "").replace(ANGLE_OPEN, "<").replace(ANGLE_CLOSE, ">");
   s = s.split("\n").map((l) => l.trim()).filter(Boolean).join(" ⏎ ");
   const max = opts.maxChars;
   // Corte por GRAFEMA (no parte emojis, banderas ni secuencias ZWJ) y sin surrogates sueltos.

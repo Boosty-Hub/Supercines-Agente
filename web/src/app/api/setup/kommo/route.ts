@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { setConfigValues } from "@/lib/runtime-config";
 
@@ -19,11 +19,8 @@ function decodeJwt(jwt: string): Record<string, unknown> {
 // KOMMO_* to runtime_config. Ports scripts/save-kommo-credentials.mjs MINUS the
 // Management-API secret push — Edge Functions read these from runtime_config now.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {
@@ -128,7 +125,7 @@ export async function POST(request: Request) {
         KOMMO_API_DOMAIN: apiDomain,
         KOMMO_ACCESS_TOKEN: accessToken,
       },
-      user.email ?? "setup-wizard"
+      auth.writer
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -63,11 +63,13 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorizeInternal, callInternal } from "../_shared/auth.ts";
 import { truncateGraphemes } from "../_shared/text-safe.ts";
+import { type AlertInsert, insertAlert } from "../_shared/alerts.ts";
 import { loadConfig } from "../_shared/config.ts";
 import { draftText, OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import {
   runSalesbot,
   fetchOutgoingEventIds,
+  fetchOutgoingEvents,
   verifyOutgoingDelivery,
 } from "../_shared/kommo.ts";
 import { isHaltedRow, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -135,6 +137,7 @@ type ClaimedDraft = {
   reviewer_id: string | null;
   created_at: string;
   publish_baseline: string[] | null;
+  publish_sending_at: string | null;
   // Sin el hint de FK el cliente tipado infiere `messages` como 1:N; en runtime es
   // un objeto único (lead del mensaje).
   // deno-lint-ignore no-explicit-any
@@ -142,7 +145,7 @@ type ClaimedDraft = {
 };
 
 const DRAFT_SELECT =
-  "id, message_id, body, edited_body, agent_metadata, reviewer_id, created_at, publish_baseline, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))";
+  "id, message_id, body, edited_body, agent_metadata, reviewer_id, created_at, publish_baseline, publish_sending_at, messages!drafts_message_id_fkey(lead_id, leads(kommo_lead_id, display_name))";
 
 async function loadDraft(id: string): Promise<ClaimedDraft> {
   const { data, error } = await supabase.from("drafts").select(DRAFT_SELECT).eq("id", id).single();
@@ -247,7 +250,8 @@ async function publishOne(
   // Antes de disparar, tomamos una "foto" de los mensajes salientes que el lead YA
   // tenía, para poder detectar el NUEVO que (si todo va bien) genere el salesbot.
   // La foto se guarda con la marca write-ahead: si el worker muere, la recuperación
-  // verifica contra ella en vez de reenviar.
+  // verifica contra ella en vez de reenviar. Si Kommo no se pudo leer, la foto es null
+  // (no un «sin salientes»): no se verifica y un corte queda sin confirmar.
   const baseline = verify.enabled ? await fetchOutgoingEventIds(leadId, kommoDomain, kommoToken) : null;
 
   // El texto que realmente sale es el editado a mano en el inbox si lo hay.
@@ -281,9 +285,9 @@ function leadLabel(msgs: { leads?: { display_name?: string | null; kommo_lead_id
   return msgs?.leads?.display_name ?? `lead ${msgs?.leads?.kommo_lead_id ?? "?"}`;
 }
 
-async function insertAlert(row: Record<string, unknown>, label: string): Promise<void> {
-  const { error } = await supabase.from("alerts").insert(row);
-  if (error) console.warn(`alert ${label}:`, error.message);
+async function alertOrWarn(alert: AlertInsert, label: string): Promise<void> {
+  const { error } = await insertAlert(supabase, alert);
+  if (error) console.warn(`alert ${label}:`, error);
 }
 
 /** Escribe el resultado final, SOLO si la reserva sigue siendo nuestra. */
@@ -375,7 +379,7 @@ async function processClaimed(
     outcome.kind === "delivered" || outcome.kind === "undelivered" ? outcome.publicBlocked : null;
   if (publicBlocked) {
     // Respuesta pública bloqueada por el verificador: la parte pública NO salió.
-    await insertAlert(
+    await alertOrWarn(
       {
         kind: "outbound_blocked",
         severity: "warning",
@@ -393,7 +397,7 @@ async function processClaimed(
   if (outcome.kind === "undelivered") {
     // El bot se disparó (Kommo respondió OK) pero NO apareció un mensaje
     // saliente en la ventana: el mensaje NO llegó al canal. No es un "enviado".
-    await insertAlert(
+    await alertOrWarn(
       {
         kind: "salesbot_not_delivered",
         severity: "warning",
@@ -444,17 +448,18 @@ async function recoverDead(owner: string, kommoDomain: string, kommoToken: strin
     try {
       const draft = await loadDraft(row.draft_id);
       const kommoLeadId = Number(draft.messages?.leads?.kommo_lead_id);
+      // null = no se pudo leer Kommo (o no hay foto previa): queda sin confirmar, nunca enviado.
       const current = Number.isFinite(kommoLeadId) && draft.publish_baseline
-        ? await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken)
-        : new Set<string>();
-      const decision = resolveInterrupted(draft.publish_baseline, current);
+        ? await fetchOutgoingEvents(kommoLeadId, kommoDomain, kommoToken)
+        : null;
+      const decision = resolveInterrupted(draft.publish_baseline, current, draft.publish_sending_at);
       const baseMeta = { ...(draft.agent_metadata ?? {}), publish_interrupted: true };
       if (decision.action === "mark_sent") {
         await finalize(row.draft_id, owner, { kind: "delivered", verified: true, publicBlocked: null, recovered: true }, baseMeta);
         console.warn(`publish-to-kommo: draft ${row.draft_id} interrumpido — ${decision.reason}: se registra como enviado`);
       } else {
         await finalize(row.draft_id, owner, { kind: "error", message: decision.reason }, baseMeta);
-        await insertAlert(
+        await alertOrWarn(
           {
             kind: "salesbot_not_delivered",
             severity: "warning",

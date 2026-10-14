@@ -1,5 +1,5 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getScope } from "@/lib/auth/roles";
+import { requirePageScope } from "@/lib/auth/require-scope";
+import { createServiceClient } from "@/lib/supabase/service";
 import { getAgentSyncStatus } from "@/lib/agent-sync-status";
 import { AgentSyncBanner } from "@/components/agent-sync-banner";
 import {
@@ -82,11 +82,10 @@ export default async function ConsumoPage(
   const validRange = [7, 30, 90].includes(range) ? range : 30;
   const since = new Date(Date.now() - validRange * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  const supabase = await createSupabaseServerClient();
+  const { supabase, scope } = await requirePageScope("contenido");
   // Cambiar modelos y techo de gasto es configuración (el middleware ya lo exige
   // en las APIs); acá solo se deshabilita el control para quien no puede.
-  const { data: { user } } = await supabase.auth.getUser();
-  const puedeConfigurar = getScope(user) === "configuracion";
+  const puedeConfigurar = scope === "configuracion";
   // Desfase agente vivo vs código/config: solo se consulta (y se muestra) a quien puede sincronizar.
   const syncStatus = puedeConfigurar ? await getAgentSyncStatus() : null;
 
@@ -283,7 +282,8 @@ export default async function ConsumoPage(
 
   // ---- Techo de gasto mensual (gasto del mes en curso vs MONTHLY_BUDGET_USD) ----
   const budgetCfg = await configValues(["MONTHLY_BUDGET_USD", "BUDGET_EXCLUDE_BEFORE", "BUDGET_SAFETY_MARGIN_PCT"]);
-  const { data: monthSpend } = await supabase.rpc("gasto_mes_actual");
+  // gasto_mes_actual lee runtime_config (BUDGET_EXCLUDE_BEFORE): solo service_role (0079).
+  const { data: monthSpend } = await createServiceClient().rpc("gasto_mes_actual");
 
   // ---- Modelos por componente (DB-first, default = diseño del pipeline) ----
   const modelCfg = await configValues(Object.keys(MODEL_KEYS));

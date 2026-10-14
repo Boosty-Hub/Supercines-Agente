@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { parseDocument, chunkText } from "@/lib/kb-parsers";
 import { embedTexts } from "@/lib/embed";
 
@@ -8,11 +8,9 @@ export const maxDuration = 60;
 const ACCEPTED = new Set(["pdf", "docx", "txt", "md", "srt", "vtt"]);
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const form = await request.formData();
   const file = form.get("file") as File | null;

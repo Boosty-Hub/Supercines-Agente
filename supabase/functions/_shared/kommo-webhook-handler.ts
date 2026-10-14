@@ -20,6 +20,7 @@
 
 // deno-lint-ignore-file no-explicit-any
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { insertAlert } from "./alerts.ts";
 import { authorizeWebhook, extractToken, type LoadOptions, noteWebhookRequest, withTimeout } from "./webhook-auth.ts";
 
 /** Kommo manda payloads de pocos KB; algo mucho más grande no es Kommo. */
@@ -39,25 +40,42 @@ export const INSERT_TIMEOUT_MS = 5000;
 //  - se acota la profundidad, la cantidad de claves y el índice máximo de los arrays
 //    (un `a[999999999]=x` armaría un array disperso gigante: DoS al serializarlo);
 //  - nunca se lee una propiedad que no sea propia (Object.hasOwn).
-export const FORM_LIMITS = { maxDepth: 8, maxKeys: 5000, maxIndex: 1000 } as const;
+// maxDepth 10: el payload real más profundo de Kommo es
+// leads[update][0][custom_fields][0][values][0][value] = 8 segmentos; 10 deja margen sin
+// abrir la puerta a anidados patológicos.
+export const FORM_LIMITS = { maxDepth: 10, maxKeys: 5000, maxIndex: 1000 } as const;
+
+/** Qué descartó el parser (contadores, nunca contenido). */
+export type FormParseStats = { depth: number; keys: number; forbidden: number; index: number };
+export const newFormParseStats = (): FormParseStats => ({ depth: 0, keys: 0, forbidden: 0, index: 0 });
 const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 const INDEX_RE = /^\d{1,6}$/;
 
-export function parseFormBracketed(body: string): Record<string, unknown> {
+export function parseFormBracketed(body: string, stats: FormParseStats = newFormParseStats()): Record<string, unknown> {
   const params = new URLSearchParams(body);
   const result: Record<string, unknown> = Object.create(null);
   let n = 0;
   for (const [key, value] of params.entries()) {
-    if (++n > FORM_LIMITS.maxKeys) break;
+    if (++n > FORM_LIMITS.maxKeys) {
+      stats.keys++;
+      break;
+    }
     const path = key.replace(/\]/g, "").split("[");
-    if (path.length > FORM_LIMITS.maxDepth) continue;
-    if (path.some((seg) => FORBIDDEN_SEGMENTS.has(seg))) continue;
+    if (path.length > FORM_LIMITS.maxDepth) {
+      stats.depth++;
+      continue;
+    }
+    if (path.some((seg) => FORBIDDEN_SEGMENTS.has(seg))) {
+      stats.forbidden++;
+      continue;
+    }
     // deno-lint-ignore no-explicit-any
     let cursor: any = result;
     for (let i = 0; i < path.length; i++) {
       const seg = path[i];
       // Un array solo admite índices numéricos acotados.
       if (Array.isArray(cursor) && (!INDEX_RE.test(seg) || Number(seg) > FORM_LIMITS.maxIndex)) {
+        stats.index++;
         break;
       }
       if (i === path.length - 1) {
@@ -127,7 +145,16 @@ export function parseBody(raw: string, contentType: string): Record<string, unkn
       return { _raw: raw };
     }
   }
-  if (ct.includes("application/x-www-form-urlencoded")) return parseFormBracketed(raw);
+  if (ct.includes("application/x-www-form-urlencoded")) {
+    const stats = newFormParseStats();
+    const parsed = parseFormBracketed(raw, stats);
+    // Lo descartado se registra (solo contadores): un payload legítimo de Kommo que
+    // se pasara de los límites se vería acá; uno malicioso también.
+    if (stats.depth + stats.keys + stats.forbidden + stats.index > 0) {
+      console.warn(`kommo-webhook: el parser descartó claves del form (profundidad=${stats.depth}, claves=${stats.keys}, prohibidas=${stats.forbidden}, indice=${stats.index})`);
+    }
+    return parsed;
+  }
   // Best-effort: probar JSON, si falla devolver raw
   try {
     return JSON.parse(raw);
@@ -160,18 +187,15 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 async function dropAlert(supabase: SupabaseClient, description: string, metadata: Record<string, unknown>) {
-  try {
-    await (supabase as any).from("alerts").insert({
-      kind: "inbound_dropped",
-      severity: "critical",
-      title: "Se perdió un webhook de Kommo",
-      description,
-      ref_table: "inbound_queue",
-      metadata,
-    });
-  } catch (e) {
-    console.error("no se pudo ni dejar la alerta de payload perdido:", e);
-  }
+  const { error } = await insertAlert(supabase, {
+    kind: "inbound_dropped",
+    severity: "critical",
+    title: "Se perdió un webhook de Kommo",
+    description,
+    ref_table: "inbound_queue",
+    metadata,
+  });
+  if (error) console.error("no se pudo ni dejar la alerta de payload perdido:", error);
 }
 
 export function createKommoWebhookHandler(supabase: SupabaseClient, rawOptions: WebhookHandlerOptions = {}) {

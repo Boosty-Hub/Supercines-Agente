@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { renameAgent, syncAgentTools } from "@/lib/sync-agent-tools";
 
@@ -10,11 +10,8 @@ export const runtime = "nodejs";
 // GET — returns the current agent identity (system prompt + display names) so
 // the editor page can prefill. Reads DB-first / env-fallback.
 export async function GET() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   const cfg = await configValues([
     "SYSTEM_PROMPT",
@@ -44,11 +41,8 @@ export async function GET() {
 // the /setup wizard (Phase 3) can create the agent from it. We never block the
 // save on Anthropic — identity persistence and remote sync are independent.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   const form = await request.formData();
   const systemPrompt = form.get("system_prompt")?.toString() ?? "";
@@ -66,7 +60,7 @@ export async function POST(request: Request) {
     agentName !== "" && (current.AGENT_NAME ?? "") !== "" && agentName !== current.AGENT_NAME;
   if (nameChanged && current.ANTHROPIC_AGENT_ID && current.ANTHROPIC_API_KEY) {
     try {
-      await renameAgent(current.ANTHROPIC_API_KEY, current.ANTHROPIC_AGENT_ID, agentName, user.email ?? "dashboard");
+      await renameAgent(current.ANTHROPIC_API_KEY, current.ANTHROPIC_AGENT_ID, agentName, auth.writer);
     } catch (err) {
       // El rename falló → NO persistir el nombre nuevo (quedaría inconsistente).
       // El resto de la identidad se guarda igual.
@@ -84,7 +78,7 @@ export async function POST(request: Request) {
         AGENT_NAME: agentName,
         NEXT_PUBLIC_AGENT_LABEL: agentLabel,
       },
-      user.email ?? "dashboard"
+      auth.writer
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -98,7 +92,7 @@ export async function POST(request: Request) {
   //    SIEMPRE corre, incluso si el rename falló — la persistencia de identidad
   //    y el sync del prompt son independientes; un rename fallido no debe dejar
   //    los cambios de prompt sin sincronizar.
-  const sync = await syncAgentTools(user.email ?? "dashboard");
+  const sync = await syncAgentTools(auth.writer);
 
   if (renameError) {
     const detail = sync.synced

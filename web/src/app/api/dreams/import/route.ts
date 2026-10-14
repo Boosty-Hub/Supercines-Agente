@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createDream, listDreams, triggerDigestRebuild } from "@/lib/memory-list";
 
 type DreamEntry = { path: string; content: string };
@@ -9,11 +9,8 @@ type DreamEntry = { path: string; content: string };
 // Idempotente: paths ya presentes se omiten (skipped) para evitar duplicados
 // al re-subir el mismo archivo.
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   let body: unknown;
   try {

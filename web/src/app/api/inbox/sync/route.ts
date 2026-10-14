@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { callInternalFunction, INTERNAL_401_HINT } from "@/lib/internal-call";
 import { configValues } from "@/lib/runtime-config";
@@ -65,11 +66,8 @@ export async function GET() {
 }
 
 export async function POST() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("operacion");
+  if (!auth.ok) return auth.response;
 
   // Sin Kommo conectado no hay nada que sincronizar: no es un error del sistema ni
   // de las migraciones, y la UI lo dice con su propio mensaje.

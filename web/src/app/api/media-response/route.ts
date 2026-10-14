@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
 
 // Habilita/deshabilita que el agente responda a adjuntos del lead.
@@ -7,11 +7,9 @@ import { configValue, setConfigValues } from "@/lib/runtime-config";
 // externa (OpenAI Whisper): para activarlo hace falta una OPENAI_API_KEY
 // en runtime_config (se puede mandar acá mismo como body.openaiKey).
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const body = await request.json();
   const update: Record<string, unknown> = {};
@@ -29,7 +27,7 @@ export async function POST(request: Request) {
             { status: 400 }
           );
         }
-        await setConfigValues({ OPENAI_API_KEY: incomingKey }, user.email ?? "dashboard");
+        await setConfigValues({ OPENAI_API_KEY: incomingKey }, auth.writer);
       } else {
         const existing = await configValue("OPENAI_API_KEY");
         if (!existing) {

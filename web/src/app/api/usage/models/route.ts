@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
@@ -13,9 +13,8 @@ export const runtime = "nodejs";
 // real de las sesiones CMA); si esa actualización falla, NO se persiste la
 // key para que config y agente no diverjan.
 export async function POST(request: Request) {
-  const authClient = await createSupabaseServerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown> = {};
   try {
@@ -37,7 +36,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Nada para actualizar" }, { status: 400 });
   }
 
-  const actor = user.email ?? "consumo-models";
+  const actor = auth.writer;
   let agentVersion: number | null = null;
 
   // AGENT_MODEL: sincronizar primero con Anthropic (el agente manda).

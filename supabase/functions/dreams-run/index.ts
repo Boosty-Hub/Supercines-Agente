@@ -20,6 +20,7 @@ import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { enforceDigestWordCap } from "../_shared/dreams-digest-cap.ts";
 import { buildConsolidationPrompt } from "../_shared/dreams-consolidation.ts";
 import { draftText } from "../_shared/draft-text.ts";
+import { insertAlert } from "../_shared/alerts.ts";
 import { canSkipDigestRebuild, digestFingerprint } from "../_shared/dreams-digest-fingerprint.ts";
 import { sanitizeUntrusted, turn, EVALUATION_NOTICE } from "../_shared/untrusted.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
@@ -657,7 +658,7 @@ async function runDreams(
       // sepa que el agente ya se está autocorrigiendo; si quedó pendiente, para
       // que lo apruebe cuanto antes.
       if (severity === "error") {
-        const { error: alertErr } = await supabase.from("alerts").insert({
+        const { error: alertErr } = await insertAlert(supabase, {
           kind: "dream_error",
           severity: "warning",
           title: `Dream con severidad ERROR: ${learning.title}`,
@@ -668,7 +669,7 @@ async function runDreams(
               : "Estado: PENDIENTE — aprobalo en /dreams para que el agente lo adopte."),
           metadata: { path: p, period, category: learning.category, active },
         });
-        if (alertErr) console.warn("alert dream_error:", alertErr.message);
+        if (alertErr) console.warn("alert dream_error:", alertErr);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

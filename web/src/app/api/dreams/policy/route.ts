@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 
 const POLICIES = ["all", "error", "none"] as const;
@@ -9,11 +9,8 @@ const POLICIES = ["all", "error", "none"] as const;
 //   error → solo errores se auto-activan; el resto espera aprobación
 //   none  → todo espera aprobación manual en /dreams
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   let body: { policy?: unknown };
   try {
@@ -30,6 +27,6 @@ export async function POST(request: Request) {
     );
   }
 
-  await setConfigValues({ DREAMS_AUTO_ACTIVATE: policy }, user.email ?? "dashboard");
+  await setConfigValues({ DREAMS_AUTO_ACTIVATE: policy }, auth.writer);
   return NextResponse.json({ ok: true, policy });
 }

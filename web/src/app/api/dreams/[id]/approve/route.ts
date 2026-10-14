@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { approveDream, triggerDigestRebuild } from "@/lib/memory-list";
 
 // Aprueba un dream pendiente: lo mueve de /dreams-pending/ a /dreams/.
 // A partir de ahí el agente lo lee como regla implícita al responder.
 export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("contenido");
+  if (!auth.ok) return auth.response;
 
   try {
     const res = await approveDream(params.id);

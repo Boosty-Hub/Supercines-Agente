@@ -5,6 +5,7 @@ import { SequenceEditor } from "./sequence-editor";
 import { ConfigPanel } from "./config-panel";
 import { RecentSends, type RecentSend } from "./recent-sends";
 import { Guide } from "./guide";
+import { latestAttemptIds } from "@/lib/follow-up-retry";
 
 export const dynamic = "force-dynamic";
 
@@ -85,7 +86,9 @@ export default async function SeguimientoPage() {
     supabase
       .from("follow_ups")
       .select("id, lead_id, step, status, error, sent_at, sending_at, leads(display_name, kommo_lead_id), follow_up_templates(name)")
+      // Mismo orden que la base para «último intento» (sent_at, id): 0077.
       .order("sent_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(20),
   ]);
 
@@ -93,7 +96,13 @@ export default async function SeguimientoPage() {
   const steps = (stepsRes.data ?? []) as FollowUpStep[];
   const config = configRes.data as FollowUpConfig | null;
 
-  const recentSends: RecentSend[] = ((sendsRes.data ?? []) as FollowUpSendRow[]).map((s) => {
+  const sendRows = (sendsRes.data ?? []) as FollowUpSendRow[];
+  // Solo el último intento de cada (lead, paso) ofrece reintentar: las 20 filas son las
+  // más nuevas del log, así que si un intento está acá, los posteriores también.
+  const latest = latestAttemptIds(
+    sendRows.map((s) => ({ id: s.id, leadId: s.lead_id, step: s.step, sentAt: s.sent_at }))
+  );
+  const recentSends: RecentSend[] = sendRows.map((s) => {
     const lead = Array.isArray(s.leads) ? s.leads[0] : s.leads;
     const template = Array.isArray(s.follow_up_templates) ? s.follow_up_templates[0] : s.follow_up_templates;
     return {
@@ -105,8 +114,9 @@ export default async function SeguimientoPage() {
       sentAt: s.sent_at,
       templateName: template?.name ?? null,
       error: s.error,
-      // failed CON marca de envío (0072): la plantilla pudo haber salido.
+      // failed CON marca de envío (0075): la plantilla pudo haber salido.
       unconfirmed: s.status === "failed" && s.sending_at != null,
+      canRetry: s.status === "failed" && latest.has(s.id),
     };
   });
 

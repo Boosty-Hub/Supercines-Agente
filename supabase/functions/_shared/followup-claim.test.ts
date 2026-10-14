@@ -18,6 +18,13 @@ import {
 } from "./followup-claim.ts";
 
 const ID = "11111111-1111-1111-1111-111111111111";
+// Marca de envío y eventos de Kommo (created_at en segundos epoch).
+const SENDING_AT = "2026-10-13T12:00:00.400Z";
+const SENDING_S = Date.parse(SENDING_AT) / 1000;
+const BEFORE = Math.floor(SENDING_S) - 5;
+const SAME_SECOND = Math.floor(SENDING_S);
+const AFTER = Math.floor(SENDING_S) + 3;
+const ev = (id: string, createdAt: number) => ({ id, createdAt });
 
 // ─── interpretClaim ───────────────────────────────────────────────────────
 
@@ -45,6 +52,15 @@ Deno.test("interpretClaim: respuesta rara (claimed sin id, vacío, motivo descon
   for (const data of [[{ follow_up_id: null, reason: "claimed" }], [], null, [{ follow_up_id: ID, reason: "x" }]]) {
     const r = interpretClaim(data, null);
     assertEquals(r.ok ? null : r.reason, "error");
+  }
+});
+
+Deno.test("interpretClaim: un motivo que coincide con algo heredado (constructor, __proto__…) → error, no un mensaje heredado", () => {
+  for (const reason of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+    const r = interpretClaim([{ follow_up_id: null, reason }], null);
+    assertEquals(r.ok ? null : r.reason, "error", reason);
+    assertEquals(!r.ok && typeof r.message, "string", reason);
+    assertEquals(!r.ok && r.message.startsWith("claim_follow_up: respuesta inesperada"), true, reason);
   }
 });
 
@@ -91,12 +107,30 @@ Deno.test("error después de la marca → unconfirmed (nunca failed reintentable
 });
 
 Deno.test("reserva muerta con marca: saliente nuevo respecto de la foto → sent recuperado", () => {
-  assertEquals(resolveDeadFollowUp(["e1"], new Set(["e1", "e2"])), { kind: "sent", recovered: true });
+  assertEquals(resolveDeadFollowUp(["e1"], [ev("e1", AFTER), ev("e2", AFTER)], SENDING_AT), {
+    kind: "sent",
+    recovered: true,
+  });
 });
 
 Deno.test("reserva muerta con marca: sin saliente nuevo o sin foto → unconfirmed, NUNCA reenviar", () => {
-  assertEquals(resolveDeadFollowUp(["e1"], new Set(["e1"])).kind, "unconfirmed");
-  assertEquals(resolveDeadFollowUp(null, new Set(["e9"])).kind, "unconfirmed");
+  assertEquals(resolveDeadFollowUp(["e1"], [ev("e1", AFTER)], SENDING_AT).kind, "unconfirmed");
+  assertEquals(resolveDeadFollowUp(null, [ev("e9", AFTER)], SENDING_AT).kind, "unconfirmed");
+});
+
+Deno.test("reserva muerta con marca: Kommo ilegible ahora (current null) → unconfirmed", () => {
+  assertEquals(resolveDeadFollowUp(["e1"], null, SENDING_AT).kind, "unconfirmed");
+});
+
+Deno.test("reserva muerta con marca: un saliente nuevo ANTERIOR (o del mismo segundo) a la marca no confirma", () => {
+  assertEquals(resolveDeadFollowUp([], [ev("e2", BEFORE)], SENDING_AT).kind, "unconfirmed");
+  assertEquals(resolveDeadFollowUp([], [ev("e2", SAME_SECOND)], SENDING_AT).kind, "unconfirmed");
+  assertEquals(resolveDeadFollowUp([], [{ id: "e2", createdAt: null }], SENDING_AT).kind, "unconfirmed");
+});
+
+Deno.test("reserva muerta con marca: sin marca legible → unconfirmed", () => {
+  assertEquals(resolveDeadFollowUp([], [ev("e2", AFTER)], null).kind, "unconfirmed");
+  assertEquals(resolveDeadFollowUp([], [ev("e2", AFTER)], "no es una fecha").kind, "unconfirmed");
 });
 
 Deno.test("el lease supera el wall clock de una Edge Function (400 s)", () => {

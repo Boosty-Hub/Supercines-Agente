@@ -16,6 +16,8 @@ export type RecentSend = {
   error: string | null;
   /** Falló DESPUÉS de disparar la plantilla: pudo haberle llegado (0072). */
   unconfirmed: boolean;
+  /** Fallido y ÚLTIMO intento de su (lead, paso): el único que se puede reintentar (0077). */
+  canRetry: boolean;
 };
 
 // Estados de la fila del intento (follow_ups.status, 0072): `claimed` = reservado y en
@@ -48,8 +50,9 @@ function shortError(err: string): string {
 /**
  * Log de los últimos envíos de seguimiento (tabla `follow_ups`: una fila por intento;
  * el panel solo la lee, la escriben las Edge Functions a través de la reserva de 0072).
- * Cada fila abre la conversación del lead; los fallidos ofrecen reintentar
- * a mano sin esperar al próximo barrido de follow-up-scan.
+ * Cada fila abre la conversación del lead; el último intento fallido de cada paso ofrece
+ * reintentar a mano sin esperar al próximo barrido de follow-up-scan (los intentos
+ * superados por uno posterior del mismo lead y paso no: son historia).
  */
 export function RecentSends({ rows }: { rows: RecentSend[] }) {
   return (
@@ -91,7 +94,7 @@ export function RecentSends({ rows }: { rows: RecentSend[] }) {
                 )}
               </Link>
               {/* Reintentar: FUERA del Link — ver nota en follow-up-retry-button.tsx */}
-              {r.status === "failed" && <FollowUpRetryButton leadId={r.leadId} unconfirmed={r.unconfirmed} />}
+              {r.canRetry && <FollowUpRetryButton followUpId={r.id} step={r.step} unconfirmed={r.unconfirmed} />}
             </li>
           ))}
         </ul>

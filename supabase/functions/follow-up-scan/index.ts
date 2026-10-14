@@ -37,13 +37,20 @@ import {
   runSalesbot,
   fetchLeadStage,
   fetchOutgoingEventIds,
+  fetchOutgoingEvents,
   KOMMO_WON_STATUS,
   KOMMO_LOST_STATUS,
 } from "../_shared/kommo.ts";
 import { captureSessionUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
-import { evaluateRetryGate, retryOutcomeFor, type RetryOutcome } from "../_shared/followup-retry.ts";
+import {
+  evaluateRetryGate,
+  parseScanRequest,
+  retryOutcomeFor,
+  type RetryOutcome,
+  type ScanRequest,
+} from "../_shared/followup-retry.ts";
 import {
   closeFor,
   FOLLOW_UP_LEASE_SECONDS,
@@ -64,6 +71,8 @@ import { fetchLeadHistory } from "../_shared/history.ts";
 import { OutboundBlockedError, outboundLeak, writeClientText } from "../_shared/outbound.ts";
 import { UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
+import { resolveTemplateVariables } from "../_shared/followup-variables.ts";
+import { insertAlert } from "../_shared/alerts.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -341,7 +350,9 @@ async function stampSkipCooldown(leadId: string): Promise<void> {
 
 // ---- Reserva por lead y paso (0072, decisiones en _shared/followup-claim.ts) ----
 
-type RunMode = { manual: boolean; confirmResend: boolean };
+/** attemptId: el intento que eligió la persona (reintento manual); la base exige que sea
+ *  el último de ese paso (0077). null en el barrido. */
+type RunMode = { manual: boolean; confirmResend: boolean; attemptId: string | null };
 
 /** Cierra la reserva con la guarda de dueño. Lanza si la base no respondió (lo
  *  registra runClaimedFollowUp; el lease vence y la recuperación lo resuelve). */
@@ -363,7 +374,7 @@ async function closeClaim(id: string, owner: string, close: Exclude<ClaimClose, 
 
 // El seguimiento pudo haberle llegado al lead y no se confirmó: no se reenvía solo.
 async function alertUnconfirmed(leadId: string, error: string): Promise<void> {
-  const { error: alertErr } = await supabase.from("alerts").insert({
+  const { error: alertErr } = await insertAlert(supabase, {
     kind: "salesbot_not_delivered",
     severity: "warning",
     title: "Revisá si le llegó un seguimiento automático",
@@ -375,7 +386,7 @@ async function alertUnconfirmed(leadId: string, error: string): Promise<void> {
     ref_id: leadId,
     metadata: { part: "follow_up", reason: "follow_up_unconfirmed", detail: error },
   });
-  if (alertErr) console.warn("alert follow_up_unconfirmed:", alertErr.message);
+  if (alertErr) console.warn("alert follow_up_unconfirmed:", alertErr);
 }
 
 /**
@@ -393,6 +404,7 @@ async function processLead(row: DueLeadRow, deps: Deps, mode: RunMode): Promise<
         p_lease_seconds: FOLLOW_UP_LEASE_SECONDS,
         p_manual: mode.manual,
         p_confirm_resend: mode.confirmResend,
+        p_attempt_id: mode.attemptId,
       });
       return interpretClaim(data, error);
     },
@@ -440,18 +452,19 @@ async function recoverDead(owner: string, kommoDomain: string, kommoToken: strin
     try {
       const { data: fu, error: fuErr } = await supabase
         .from("follow_ups")
-        .select("baseline, leads(kommo_lead_id)")
+        .select("baseline, sending_at, leads(kommo_lead_id)")
         .eq("id", r.follow_up_id)
         .maybeSingle();
       if (fuErr || !fu) throw new Error(fuErr?.message ?? "fila no encontrada");
       const leadRel = (fu as { leads: { kommo_lead_id: number } | { kommo_lead_id: number }[] | null }).leads;
       const kommoLeadId = Number((Array.isArray(leadRel) ? leadRel[0] : leadRel)?.kommo_lead_id);
-      const baseline = (fu as { baseline: string[] | null }).baseline;
+      const { baseline, sending_at: sendingAt } = fu as { baseline: string[] | null; sending_at: string | null };
+      // null = Kommo no se pudo leer (o no hay foto previa): queda sin confirmar, nunca enviado.
       const current =
         Number.isFinite(kommoLeadId) && baseline
-          ? await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken)
-          : new Set<string>();
-      const outcome = resolveDeadFollowUp(baseline, current);
+          ? await fetchOutgoingEvents(kommoLeadId, kommoDomain, kommoToken)
+          : null;
+      const outcome = resolveDeadFollowUp(baseline, current, sendingAt);
       const close = closeFor(outcome);
       if (close) await closeClaim(r.follow_up_id, owner, close, maxFollowUps);
       if (outcome.kind === "unconfirmed") await alertUnconfirmed(r.lead_id, outcome.error);
@@ -611,34 +624,28 @@ async function sendStep(row: DueLeadRow, deps: Deps, markSending: SendingMark): 
   }
 
   // action === "send"
-  // Parsear variables del JSON
-  let resolvedVars: Record<string, string> = {};
-  const varsRaw = rawOutput.match(/<variables>([\s\S]*?)<\/variables>/i)?.[1];
-  if (varsRaw) {
-    try {
-      const parsed = JSON.parse(varsRaw.trim());
-      if (typeof parsed === "object" && parsed !== null) {
-        resolvedVars = parsed as Record<string, string>;
-      }
-    } catch {
-      // "treating as skip" ⇒ mismo cooldown (0049): un template que produce
-      // JSON roto de forma consistente re-quemaría una sesión CMA por barrido.
-      console.warn(`follow-up-scan: failed to parse <variables> JSON for lead ${leadId}, treating as skip`);
-      await stampSkipCooldown(leadId);
-      return { kind: "released", reason: "el agente devolvió las variables de la plantilla ilegibles; se reintenta más tarde" };
-    }
+  // Variables de la plantilla (_shared/followup-variables.ts): solo propiedades PROPIAS
+  // del JSON del agente, en un mapa sin prototipo. Una clave como "constructor" no
+  // resuelve a lo heredado de Object.prototype ni pasa por «completa».
+  const vars = resolveTemplateVariables(
+    rawOutput.match(/<variables>([\s\S]*?)<\/variables>/i)?.[1],
+    template.variables.map((v) => v.name)
+  );
+  if (!vars.ok && vars.reason === "invalid_json") {
+    // "treating as skip" ⇒ mismo cooldown (0049): un template que produce
+    // JSON roto de forma consistente re-quemaría una sesión CMA por barrido.
+    console.warn(`follow-up-scan: failed to parse <variables> JSON for lead ${leadId}, treating as skip`);
+    await stampSkipCooldown(leadId);
+    return { kind: "released", reason: "el agente devolvió las variables de la plantilla ilegibles; se reintenta más tarde" };
   }
-
-  // Verificar que todas las variables requeridas estén presentes
-  for (const variable of template.variables) {
-    if (!resolvedVars[variable.name]) {
-      // "treating as skip" ⇒ mismo cooldown (0049): una variable irresoluble
-      // es un error de configuración persistente, no transitorio.
-      console.warn(`follow-up-scan: missing variable "${variable.name}" for lead ${leadId}, treating as skip`);
-      await stampSkipCooldown(leadId);
-      return { kind: "released", reason: `el agente no completó la variable "${variable.name}"; se reintenta más tarde` };
-    }
+  if (!vars.ok) {
+    // "treating as skip" ⇒ mismo cooldown (0049): una variable irresoluble
+    // es un error de configuración persistente, no transitorio.
+    console.warn(`follow-up-scan: missing variable "${vars.name}" for lead ${leadId}, treating as skip`);
+    await stampSkipCooldown(leadId);
+    return { kind: "released", reason: `el agente no completó la variable "${vars.name}"; se reintenta más tarde` };
   }
+  const resolvedVars = vars.values;
 
   // Verificador de texto saliente (_shared/outbound.ts): las variables que el
   // modelo completó son texto que el cliente va a leer en la plantilla. Se verifican
@@ -653,7 +660,9 @@ async function sendStep(row: DueLeadRow, deps: Deps, markSending: SendingMark): 
   // Enviar: foto de salientes → PATCH de los campos → marca write-ahead → salesbot.
   // Escribir los campos no le manda nada al cliente; lo envía el salesbot, y antes de
   // dispararlo se fija la marca (con la foto, para resolver un corte sin reenviar). Si
-  // la reserva ya no es nuestra, markSending lanza y NO se dispara nada.
+  // la reserva ya no es nuestra, markSending lanza y NO se dispara nada. Si Kommo no se
+  // pudo leer, la foto queda null (no «sin salientes»): un corte posterior se resuelve
+  // «sin confirmar», nunca «enviado».
   const baseline = await fetchOutgoingEventIds(lead.kommo_lead_id, deps.kommoDomain, deps.kommoToken);
   try {
     for (const variable of template.variables) {
@@ -670,7 +679,7 @@ async function sendStep(row: DueLeadRow, deps: Deps, markSending: SendingMark): 
         kommoToken: deps.kommoToken,
       });
     }
-    await markSending([...baseline], resolvedVars);
+    await markSending(baseline ? [...baseline] : null, resolvedVars);
     await runSalesbot(template.salesbot_id, lead.kommo_lead_id, deps.kommoDomain, deps.kommoToken);
   } catch (err) {
     if (err instanceof FollowUpLeaseLostError) throw err;
@@ -698,7 +707,7 @@ async function blockFollowUp(
   reason: string
 ): Promise<FollowUpOutcome> {
   console.error(`follow-up-scan: seguimiento de lead ${leadId} bloqueado (${variableName}): ${reason}`);
-  const { error: alertErr } = await supabase.from("alerts").insert({
+  const { error: alertErr } = await insertAlert(supabase, {
     kind: "outbound_blocked",
     severity: "warning",
     title: "Se bloqueó un seguimiento automático",
@@ -709,16 +718,20 @@ async function blockFollowUp(
     ref_id: leadId,
     metadata: { part: "follow_up", reason, variable: variableName },
   });
-  if (alertErr) console.warn("alert outbound_blocked:", alertErr.message);
+  if (alertErr) console.warn("alert outbound_blocked:", alertErr);
   await stampSkipCooldown(leadId);
   return { kind: "failed", error: `bloqueado por guard: ${reason} (variable ${variableName})`, variables: vars };
 }
 
-// ---- Reintento MANUAL de un lead puntual ----
-// Lo dispara el botón "Reintentar" de la pestaña Seguimientos del inbox, sobre un
-// seguimiento que quedó en `failed`. Ningún camino de fallo avanza el estado del
-// lead, así que el paso NO se consumió: reintentar es volver a correr el mismo
-// paso, sin tocar nada.
+// ---- Reintento MANUAL de un intento puntual ----
+// Lo dispara el botón "Reintentar" de /seguimiento, sobre un intento que quedó en
+// `failed`. Ningún camino de fallo avanza el estado del lead, así que el paso NO se
+// consumió: reintentar es volver a correr el mismo paso, sin tocar nada.
+//
+// Es POR INTENTO: el panel manda `follow_up_id` + `step` de la fila. Solo se reintenta
+// si ese paso es el que el lead debe recibir ahora (follow_up_step + 1) y ese intento
+// es el último de ese paso para ese lead (lo verifica la base al reservar, 0077); si
+// no, responde 409 (`conflict`) con el motivo: la persona miraba una fila vieja.
 //
 // Es una decisión humana explícita (mismo criterio que el envío manual de
 // publish-to-kommo), así que saltea la rotación del barrido automático y el
@@ -735,12 +748,25 @@ async function blockFollowUp(
 // `_shared/followup-retry.ts`, puro y probado sin tocar Supabase ni Kommo.
 type RetryResult = RetryOutcome & { outsideHours?: boolean };
 
-async function retryOne(leadId: string, force: boolean, confirmResend: boolean, deps: Deps): Promise<RetryResult> {
-  const { data: lead } = await supabase
-    .from("leads")
-    .select("id, follow_up_step, follow_up_status, opted_out, kommo_lead_id")
-    .eq("id", leadId)
+async function retryOne(
+  req: Extract<ScanRequest, { kind: "retry" }>,
+  deps: Deps
+): Promise<RetryResult> {
+  const { data: attempt, error: attemptErr } = await supabase
+    .from("follow_ups")
+    .select("id, lead_id, step, status")
+    .eq("id", req.followUpId)
     .maybeSingle();
+  if (attemptErr) throw new Error(`leer el intento ${req.followUpId}: ${attemptErr.message}`);
+
+  const { data: lead, error: leadErr } = attempt
+    ? await supabase
+        .from("leads")
+        .select("id, follow_up_step, follow_up_status, opted_out, kommo_lead_id")
+        .eq("id", attempt.lead_id)
+        .maybeSingle()
+    : { data: null, error: null };
+  if (leadErr) throw new Error(`leer el lead del intento ${req.followUpId}: ${leadErr.message}`);
 
   const { data: cfg } = await supabase
     .from("follow_up_config")
@@ -750,10 +776,12 @@ async function retryOne(leadId: string, force: boolean, confirmResend: boolean, 
     .eq("is_active", true)
     .maybeSingle();
 
-  const gate = evaluateRetryGate(lead, cfg);
-  if (!gate.ok) return { ok: false, skipped: gate.reason };
+  const gate = evaluateRetryGate(req.step, attempt, lead, cfg);
+  if (!gate.ok) return { ok: false, skipped: gate.reason, ...(gate.conflict ? { conflict: true } : {}) };
+  // gate.ok implica que el intento existe (evaluateRetryGate lo exige).
+  if (!attempt) return { ok: false, conflict: true, skipped: "ese intento de seguimiento ya no existe" };
 
-  if (!force) {
+  if (!req.force) {
     const bh: BusinessHoursConfig = {
       timezone: (cfg?.timezone as string) || DEFAULT_TIMEZONE,
       business_hours: (cfg?.business_hours as BusinessHoursConfig["business_hours"]) ?? null,
@@ -782,13 +810,13 @@ async function retryOne(leadId: string, force: boolean, confirmResend: boolean, 
 
   const result = await processLead(
     {
-      lead_id: leadId,
+      lead_id: attempt.lead_id,
       step_number: Number(stepCfg.step_number),
       delay_hours: Number(stepCfg.delay_hours),
       template_id: (stepCfg.template_id as string | null) ?? null,
     },
     deps,
-    { manual: true, confirmResend }
+    { manual: true, confirmResend: req.confirmResend, attemptId: req.followUpId }
   );
   return retryOutcomeFor(result);
 }
@@ -808,19 +836,21 @@ Deno.serve(async (req: Request) => {
     if (denied) return denied;
   }
 
-  // ¿Reintento manual puntual? El botón "Reintentar" manda { lead_id, force?, confirm_resend? }.
-  // Sin body (o sin lead_id) = barrido automático, comportamiento de siempre.
-  let manualLeadId: string | null = null;
-  let manualForce = false;
-  let manualConfirmResend = false;
+  // ¿Reintento manual de un intento? El botón manda { follow_up_id, step, force?, confirm_resend? }.
+  // Sin body (o sin follow_up_id) = barrido automático, comportamiento de siempre.
+  let scanReq: ScanRequest = { kind: "sweep" };
   try {
-    const b = await req.json();
-    if (b && typeof b.lead_id === "string" && b.lead_id.trim()) manualLeadId = b.lead_id.trim();
-    manualForce = b?.force === true;
-    manualConfirmResend = b?.confirm_resend === true;
+    scanReq = parseScanRequest(await req.json());
   } catch {
     // sin body = barrido automático
   }
+  if (scanReq.kind === "invalid") {
+    return new Response(JSON.stringify({ ok: false, error: scanReq.error }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const manual = scanReq.kind === "retry" ? scanReq : null;
 
   try {
     // Apagado total: corta ANTES de tocar Anthropic (el follow-up usa el
@@ -875,7 +905,7 @@ Deno.serve(async (req: Request) => {
     // siempre: si no hay nada pendiente sale sin exigir el resto de la config. El
     // reintento manual no pasa por la RPC — su gate es retryOne.
     let rows: DueLeadRow[] = [];
-    if (!manualLeadId) {
+    if (!manual) {
       // SQL gate: retorna leads elegibles (o vacío si config deshabilitada / fuera de
       // horario). Excluye los que tienen el paso reservado, enviado o sin confirmar
       // (0075); igual, la reserva de processLead es la que decide de forma atómica.
@@ -928,10 +958,10 @@ Deno.serve(async (req: Request) => {
     // si el panel corta (timeout del host serverless), el reintento termina igual y
     // cierra su reserva. Si el runtime lo mata igual, la reserva vence y la
     // recuperación la resuelve sin reenviar (0075).
-    if (manualLeadId) {
-      const res = await keepAlive(retryOne(manualLeadId, manualForce, manualConfirmResend, deps));
+    if (manual) {
+      const res = await keepAlive(retryOne(manual, deps));
       return new Response(JSON.stringify(res), {
-        status: 200,
+        status: res.conflict ? 409 : 200,
         headers: { "content-type": "application/json" },
       });
     }
@@ -943,7 +973,7 @@ Deno.serve(async (req: Request) => {
     const slowWork = (async () => {
       for (const row of rows) {
         try {
-          await processLead(row, deps, { manual: false, confirmResend: false });
+          await processLead(row, deps, { manual: false, confirmResend: false, attemptId: null });
         } catch (err) {
           // Solo fallas de infraestructura fuera de la reserva (p. ej. la alerta): si
           // la reserva quedó tomada, vence y la recupera el próximo barrido.

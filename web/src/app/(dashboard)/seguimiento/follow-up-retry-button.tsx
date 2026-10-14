@@ -5,7 +5,9 @@
 // inválido, y cada click navegaría además de reintentar).
 //
 // Ningún camino de fallo del scan avanza el estado del lead, así que el paso
-// no se consumió: reintentar vuelve a correr el mismo paso. El reintento toma la
+// no se consumió: reintentar vuelve a correr el mismo paso. Es POR INTENTO: manda el
+// intento y su paso; si hubo un intento posterior o el lead ya avanzó, el servidor
+// responde 409 con el motivo (la fila era vieja) y no envía nada. El reintento toma la
 // MISMA reserva por lead y paso que el barrido automático (0072): si el barrido lo
 // está enviando, no se manda dos veces (la respuesta trae el motivo).
 //
@@ -27,6 +29,8 @@ type RetryResponse = {
   outsideHours?: boolean;
   /** El paso pudo haberle llegado y no se confirmó: hace falta confirmar el reenvío. */
   unconfirmed?: boolean;
+  /** El intento ya no es el último de su paso o el lead avanzó (409). */
+  conflict?: boolean;
   status?: string;
   error?: string | null;
 };
@@ -37,7 +41,15 @@ const CONFIRM_RESEND =
 
 type RunOpts = { force: boolean; confirmResend: boolean };
 
-export function FollowUpRetryButton({ leadId, unconfirmed = false }: { leadId: string; unconfirmed?: boolean }) {
+export function FollowUpRetryButton({
+  followUpId,
+  step,
+  unconfirmed = false,
+}: {
+  followUpId: string;
+  step: number;
+  unconfirmed?: boolean;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
@@ -49,7 +61,7 @@ export function FollowUpRetryButton({ leadId, unconfirmed = false }: { leadId: s
       const res = await fetch("/api/follow-up/retry", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadId, force: opts.force, confirmResend: opts.confirmResend }),
+        body: JSON.stringify({ followUpId, step, force: opts.force, confirmResend: opts.confirmResend }),
       });
       const j = (await res.json().catch(() => null)) as RetryResponse | null;
 
@@ -63,6 +75,12 @@ export function FollowUpRetryButton({ leadId, unconfirmed = false }: { leadId: s
       }
       if (j?.ok) {
         setMsg({ tone: "ok", text: "Enviado ✓" });
+        router.refresh();
+        return;
+      }
+      // La fila era vieja (hubo un intento posterior o el lead avanzó): no se envió nada.
+      if (res.status === 409 || j?.conflict) {
+        setMsg({ tone: "warn", text: `No se envió: ${j?.skipped ?? "ese intento ya no es el actual"}` });
         router.refresh();
         return;
       }

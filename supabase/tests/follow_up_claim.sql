@@ -7,6 +7,7 @@
 --   · finish_follow_up `sent` avanza el lead en la misma transacción (y respeta responded),
 --   · recover_dead_follow_up_claims (requeued / gave_up / resolve; nunca reenvía lo marcado),
 --   · «sin confirmar» y tope de interrupciones: el barrido no reintenta; a mano sí,
+--   · reintento manual por intento (0077): solo el último intento del paso que le toca,
 --   · índices únicos (doble registro imposible), follow_up_due_leads excluye lo bloqueado,
 --   · RLS (el panel solo lee follow_ups), guard de JWT y permisos.
 --
@@ -24,10 +25,22 @@ begin
 end $$;
 
 -- Reserva → (id, motivo) como texto 'motivo' para comparar fácil.
+-- Con p_confirm (reenvío confirmado por una persona) se pasa el último intento del paso,
+-- que es lo que manda el panel (0077: la confirmación queda atada a un intento).
+create or replace function pg_temp.latest(p_lead uuid, p_step int) returns uuid language sql as $$
+  select id from follow_ups where lead_id = p_lead and step = p_step order by sent_at desc, id desc limit 1
+$$;
 create or replace function pg_temp.claim(p_lead uuid, p_step int, p_owner uuid,
                                          p_manual boolean default false, p_confirm boolean default false)
 returns text language sql as $$
-  select reason from claim_follow_up(p_lead, p_step, null, p_owner, 600, p_manual, p_confirm)
+  select reason from claim_follow_up(p_lead, p_step, null, p_owner, 600, p_manual, p_confirm,
+                                     case when p_confirm then pg_temp.latest(p_lead, p_step) end)
+$$;
+-- Reintento manual sobre un intento concreto (0077).
+create or replace function pg_temp.retry(p_lead uuid, p_step int, p_owner uuid, p_attempt uuid,
+                                         p_confirm boolean default false)
+returns text language sql as $$
+  select reason from claim_follow_up(p_lead, p_step, null, p_owner, 600, true, p_confirm, p_attempt)
 $$;
 create or replace function pg_temp.fid(p_lead uuid) returns uuid language sql as $$
   select id from follow_ups where lead_id = p_lead and status = 'claimed'
@@ -57,7 +70,7 @@ select pg_temp.expect('la reserva es una fila claimed con dueño, lease ~10 min 
           and sending_at is null and step = 1)
      from follow_ups where lead_id = '00000000-0000-0000-0000-00000000a001'));
 do $$ begin
-  perform claim_follow_up('00000000-0000-0000-0000-00000000a002', 1, null, '00000000-0000-0000-0000-0000000000aa', 0, false, false);
+  perform claim_follow_up('00000000-0000-0000-0000-00000000a002', 1, null, '00000000-0000-0000-0000-0000000000aa', 0, false, false, null);
   raise exception 'FALLO: lease 0 aceptado';
 exception when invalid_parameter_value then raise notice 'ok: lease 0 rechazado';
 end $$;
@@ -201,6 +214,50 @@ do $$ begin
 exception when invalid_parameter_value then raise notice 'ok: sent sin p_max_follow_ups rechazado';
 end $$;
 
+-- 7b) Reintento manual POR INTENTO (0077): solo el último intento del paso que le toca.
+insert into leads (id, kommo_lead_id, display_name, last_inbound_at) values
+  ('00000000-0000-0000-0000-00000000a005', 9005, 'Lead cinco', now() - interval '2 hours');
+-- Intento A: falla limpio (antes de marcar).
+select pg_temp.claim('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000aa');
+create temp table att_a as select pg_temp.fid('00000000-0000-0000-0000-00000000a005') as id;
+select finish_follow_up((select id from att_a), '00000000-0000-0000-0000-0000000000aa', 'failed', 'Kommo 500', null, null);
+-- Intento B: se corta después de marcar → «sin confirmar».
+select pg_temp.claim('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000aa');
+create temp table att_b as select pg_temp.fid('00000000-0000-0000-0000-00000000a005') as id;
+select mark_follow_up_sending((select id from att_b), '00000000-0000-0000-0000-0000000000aa', array['e1'], null);
+select finish_follow_up((select id from att_b), '00000000-0000-0000-0000-0000000000aa', 'failed', 'sin confirmar', null, null);
+select pg_temp.expect('el último intento del paso es B (orden sent_at, id)',
+  pg_temp.latest('00000000-0000-0000-0000-00000000a005', 1) = (select id from att_b));
+select pg_temp.expect('reintentar el intento A (hay uno posterior): superseded',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb', (select id from att_a)) = 'superseded');
+select pg_temp.expect('confirmar el reenvío del intento A NO confirma el B: superseded',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb', (select id from att_a), true) = 'superseded');
+select pg_temp.expect('un intento de otro lead no es el último de este: superseded',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb',
+                (select id from follow_ups where lead_id = '00000000-0000-0000-0000-00000000a003' limit 1)) = 'superseded');
+select pg_temp.expect('el intento B pedido para un paso que no es el siguiente: step_changed',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 2, '00000000-0000-0000-0000-0000000000bb', (select id from att_b)) = 'step_changed');
+select pg_temp.expect('el intento B sin confirmar el reenvío: unconfirmed',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb', (select id from att_b)) = 'unconfirmed');
+do $$ begin
+  perform claim_follow_up('00000000-0000-0000-0000-00000000a005', 1, null, gen_random_uuid(), 600, true, true, null);
+  raise exception 'FALLO: confirmar un reenvío sin decir qué intento se aceptó';
+exception when invalid_parameter_value then raise notice 'ok: confirmar sin intento rechazado';
+end $$;
+do $$ begin
+  perform claim_follow_up('00000000-0000-0000-0000-00000000a005', 1, null, gen_random_uuid(), 600, false, true,
+                          (select id from follow_ups where lead_id = '00000000-0000-0000-0000-00000000a005' order by sent_at desc limit 1));
+  raise exception 'FALLO: el barrido (no manual) confirmó un reenvío';
+exception when invalid_parameter_value then raise notice 'ok: confirmar fuera del reintento manual rechazado';
+end $$;
+select pg_temp.expect('el intento B confirmando el reenvío: claimed',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb', (select id from att_b), true) = 'claimed');
+select pg_temp.expect('la reserva nueva queda como el último intento (sent_at al reservar)',
+  pg_temp.latest('00000000-0000-0000-0000-00000000a005', 1) = pg_temp.fid('00000000-0000-0000-0000-00000000a005'));
+select finish_follow_up(pg_temp.fid('00000000-0000-0000-0000-00000000a005'), '00000000-0000-0000-0000-0000000000bb', 'sent', null, null, 3);
+select pg_temp.expect('con el paso ya enviado (el lead avanzó), reintentar B: step_changed',
+  pg_temp.retry('00000000-0000-0000-0000-00000000a005', 1, '00000000-0000-0000-0000-0000000000bb', (select id from att_b), true) = 'step_changed');
+
 -- 8) follow_up_due_leads excluye el lead con el paso bloqueado.
 update follow_up_config
    set enabled = true, business_hours = null, business_hours_start = 0, business_hours_end = 24,
@@ -230,8 +287,9 @@ grant execute on function pg_temp.rechaza(text) to authenticated;
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
 insert into res select 'lee', count(*) > 0 from follow_ups;
-with d as (delete from follow_ups where status = 'claimed' returning 1) insert into res select 'no borra', count(*) = 0 from d;
-with u as (update follow_ups set status = 'sent' where status = 'claimed' returning 1) insert into res select 'no actualiza', count(*) = 0 from u;
+-- Desde 0079 authenticated ni siquiera tiene el privilegio de tabla (antes: la RLS dejaba 0 filas).
+insert into res values ('no borra', pg_temp.rechaza($q$delete from follow_ups where status = 'claimed'$q$));
+insert into res values ('no actualiza', pg_temp.rechaza($q$update follow_ups set status = 'sent' where status = 'claimed'$q$));
 insert into res values ('no inserta',
   pg_temp.rechaza($q$insert into follow_ups (lead_id, step, status) values ('00000000-0000-0000-0000-00000000a004', 2, 'sent')$q$));
 reset role;
@@ -242,27 +300,27 @@ select pg_temp.expect('la reserva viva de lead cuatro sigue intacta',
   pg_temp.fid('00000000-0000-0000-0000-00000000a004') is not null);
 
 -- 10) Guard: con JWT de usuario se rechaza aunque alguien le otorgue EXECUTE.
-grant execute on function claim_follow_up(uuid, int, uuid, uuid, int, boolean, boolean) to authenticated;
+grant execute on function claim_follow_up(uuid, int, uuid, uuid, int, boolean, boolean, uuid) to authenticated;
 create temp table res2 (ok boolean);
 grant all on res2 to authenticated;
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
 insert into res2 values (pg_temp.rechaza(
-  $q$select * from claim_follow_up('00000000-0000-0000-0000-00000000a004', 1, null, gen_random_uuid(), 600, true, true)$q$));
+  $q$select * from claim_follow_up('00000000-0000-0000-0000-00000000a004', 1, null, gen_random_uuid(), 600, true, true, gen_random_uuid())$q$));
 reset role;
 reset request.jwt.claims;
 select pg_temp.expect('el guard rechaza a un usuario con JWT en claim_follow_up', (select bool_and(ok) from res2));
-revoke execute on function claim_follow_up(uuid, int, uuid, uuid, int, boolean, boolean) from authenticated;
+revoke execute on function claim_follow_up(uuid, int, uuid, uuid, int, boolean, boolean, uuid) from authenticated;
 
 -- 11) Permisos: solo service_role (las Edge Functions); nada para anon/authenticated.
 select pg_temp.expect('RPCs de la reserva de seguimiento solo para service_role',
-  has_function_privilege('service_role', 'claim_follow_up(uuid,int,uuid,uuid,int,boolean,boolean)', 'execute')
+  has_function_privilege('service_role', 'claim_follow_up(uuid,int,uuid,uuid,int,boolean,boolean,uuid)', 'execute')
   and has_function_privilege('service_role', 'mark_follow_up_sending(uuid,uuid,text[],jsonb)', 'execute')
   and has_function_privilege('service_role', 'finish_follow_up(uuid,uuid,text,text,jsonb,int)', 'execute')
   and has_function_privilege('service_role', 'release_follow_up_claim(uuid,uuid)', 'execute')
   and has_function_privilege('service_role', 'recover_dead_follow_up_claims(uuid,int,int)', 'execute')
   and has_function_privilege('service_role', 'follow_up_block_reason(uuid,int,boolean,boolean)', 'execute')
-  and not has_function_privilege('authenticated', 'claim_follow_up(uuid,int,uuid,uuid,int,boolean,boolean)', 'execute')
+  and not has_function_privilege('authenticated', 'claim_follow_up(uuid,int,uuid,uuid,int,boolean,boolean,uuid)', 'execute')
   and not has_function_privilege('anon', 'mark_follow_up_sending(uuid,uuid,text[],jsonb)', 'execute')
   and not has_function_privilege('authenticated', 'finish_follow_up(uuid,uuid,text,text,jsonb,int)', 'execute')
   and not has_function_privilege('anon', 'release_follow_up_claim(uuid,uuid)', 'execute')

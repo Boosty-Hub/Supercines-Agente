@@ -18,6 +18,7 @@
 //     nada al cliente) → se reintenta, hasta el tope de interrupciones de la base.
 
 import { resolveInterrupted } from "./draft-publish.ts";
+import type { OutgoingEvent } from "./kommo.ts";
 
 /** Lease de la reserva. Mayor que el wall clock máximo de una Edge Function (400 s):
  *  cuando vence, el worker está muerto con certeza. */
@@ -29,6 +30,7 @@ export type ClaimRefusal =
   | "opted_out"
   | "terminal"
   | "step_changed"
+  | "superseded"
   | "in_flight"
   | "already_sent"
   | "unconfirmed"
@@ -40,6 +42,8 @@ export const CLAIM_MESSAGES: Record<ClaimRefusal, string> = {
   opted_out: "el lead pidió no recibir más mensajes (opt-out)",
   terminal: "el seguimiento de este lead ya terminó (respondió, se detuvo o llegó al máximo)",
   step_changed: "ese paso ya se procesó: el lead avanzó mientras tanto",
+  superseded:
+    "ese intento ya no es el último de este paso: hubo un intento posterior. Recargá la página y, si hace falta, reintentá desde el más reciente",
   in_flight: "ya hay un seguimiento en curso para este lead; esperá a que termine",
   already_sent: "ese paso del seguimiento ya se le envió a este lead",
   unconfirmed:
@@ -60,7 +64,9 @@ export function interpretClaim(data: unknown, error: { message: string } | null)
   if (reason === "claimed" && typeof row?.follow_up_id === "string" && row.follow_up_id) {
     return { ok: true, id: row.follow_up_id };
   }
-  if (reason && reason in CLAIM_MESSAGES) {
+  // Object.hasOwn: el motivo viene de afuera (la base); "constructor", "toString" o
+  // "__proto__" no pueden resolver a algo heredado de Object.prototype.
+  if (reason && Object.hasOwn(CLAIM_MESSAGES, reason)) {
     const r = reason as ClaimRefusal;
     return { ok: false, reason: r, message: CLAIM_MESSAGES[r] };
   }
@@ -132,12 +138,16 @@ export function outcomeAfterError(message: string, marked: boolean): FollowUpOut
 /**
  * Resuelve una reserva muerta CON marca de envío (recover_dead_follow_up_claims →
  * resolve). NUNCA devuelve «reenviar»: con la marca la plantilla pudo haber salido.
+ * Solo es «enviado» si aparece un saliente DE ESE LEAD que no estaba en la foto previa
+ * y es posterior a `sendingAt`; sin foto (Kommo no se pudo leer al enviar) o sin poder
+ * leer Kommo ahora, queda «sin confirmar» (ver resolveInterrupted).
  */
 export function resolveDeadFollowUp(
   baseline: readonly string[] | null,
-  current: Iterable<string>
+  current: readonly OutgoingEvent[] | null,
+  sendingAt: string | null
 ): Extract<FollowUpOutcome, { kind: "sent" } | { kind: "unconfirmed" }> {
-  const d = resolveInterrupted(baseline, current);
+  const d = resolveInterrupted(baseline, current, sendingAt);
   if (d.action === "mark_sent") return { kind: "sent", recovered: true };
   return {
     kind: "unconfirmed",

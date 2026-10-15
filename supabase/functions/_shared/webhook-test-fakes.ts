@@ -53,6 +53,11 @@ export function fakeClient(initial: FakeMode) {
     },
     rpc: (fn: string, args: any) => {
       rpcs.push({ fn, args });
+      if (fn === "insert_alert_aggregated") {
+        // los tipos de origen externo se insertan agregados (0076): se registra como alerta
+        inserts.push({ table: "alerts", row: { kind: args.p_kind, severity: args.p_severity, title: args.p_title, metadata: args.p_metadata } });
+        return Promise.resolve({ data: "alert-id", error: null });
+      }
       return Promise.resolve({ data: "strict", error: null });
     },
   };

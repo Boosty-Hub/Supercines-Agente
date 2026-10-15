@@ -48,9 +48,52 @@ create index if not exists alerts_webhook_pending_idx on alerts (created_at) whe
 -- dedupe: búsqueda de una idéntica posteada en la ventana
 create index if not exists alerts_webhook_posted_idx on alerts (kind, title, webhook_posted_at) where webhook_posted_at is not null;
 
+-- ── Agregación de alertas de alta frecuencia y origen externo ───────────────────────────
+-- Un tercero SIN autenticar puede disparar alertas (webhook_rejected, webhook_unsigned, y
+-- inbound_dropped si la base anda mal) a un ritmo que él decide. Una fila por evento llenaría
+-- la tabla `alerts`, el panel y el webhook. insert_alert_aggregated hace UPSERT por
+-- (tipo, ventana): UNA fila por ventana con `agg_count` y el último detalle. La fila se postea
+-- una vez (al reclamarse); los eventos siguientes de la misma ventana solo suben el contador.
+alter table alerts add column if not exists agg_key text;
+alter table alerts add column if not exists agg_count int not null default 1;
+create unique index if not exists alerts_agg_uidx on alerts (kind, agg_key) where agg_key is not null;
+
+create or replace function insert_alert_aggregated(
+  p_kind        text,
+  p_severity    text,
+  p_title       text,
+  p_description text,
+  p_ref_table   text,
+  p_metadata    jsonb,
+  p_window      interval
+)
+returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_key text;
+  v_id  uuid;
+begin
+  if public.end_user_request() then
+    raise exception 'insufficient_privilege' using errcode = 'insufficient_privilege';
+  end if;
+  v_key := p_kind || ':' || floor(extract(epoch from now()) / greatest(extract(epoch from p_window), 1))::bigint;
+  insert into alerts (kind, severity, title, description, ref_table, metadata, agg_key, agg_count)
+  values (p_kind, p_severity, p_title, p_description, p_ref_table, coalesce(p_metadata, '{}'::jsonb), v_key, 1)
+  on conflict (kind, agg_key) where agg_key is not null do update
+     set agg_count   = alerts.agg_count + 1,
+         description = excluded.description,
+         metadata    = coalesce(excluded.metadata, '{}'::jsonb)
+                       || jsonb_build_object('count', alerts.agg_count + 1, 'last_at', now())
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+revoke execute on function insert_alert_aggregated(text, text, text, text, text, jsonb, interval) from public, anon, authenticated;
+grant execute on function insert_alert_aggregated(text, text, text, text, text, jsonb, interval) to service_role;
+
 -- Versiones previas (borrador sin desplegar) con otra firma / tipo de retorno.
 drop function if exists claim_alerts_for_webhook(int, interval, interval);
 drop function if exists claim_alerts_for_webhook(text[], int, interval, interval);
+drop function if exists claim_alerts_for_webhook(text[], text[], int, int, interval, interval);
 
 -- Reclama las alertas pendientes y devuelve SOLO las que hay que postear:
 --  1. pg_advisory_xact_lock(hashtextextended('alerts:webhook_sweep', 73)) — clave FIJA: dos
@@ -58,8 +101,12 @@ drop function if exists claim_alerts_for_webhook(text[], int, interval, interval
 --     marcó como posteado, así el dedupe no tiene carreras). Se libera al terminar la transacción.
 --  2. Las de más de p_max_age se cierran sin postear (suprimidas: ya no son noticia).
 --  3. Las de un tipo fuera de p_kinds (lo que el operador notifica) se cierran sin postear.
---  4. Rate limit: hasta p_limit pendientes por barrido, las más viejas primero (el resto espera
---     al siguiente). `for update skip locked` además del lock: no espera filas de otro escritor.
+--  4. Rate limit con PRIORIDAD: hasta p_limit pendientes por barrido. Primero las de los
+--     tipos críticos (p_critical_kinds = los `critical` del registro): nunca esperan detrás de
+--     warnings o infos, aunque alguien los inunde. Los NO críticos tienen además un tope de
+--     p_per_kind por tipo y barrido: un tipo que dispara un tercero (webhook_rejected…) no
+--     puede copar el cupo. Dentro de cada grupo, las más viejas primero; el resto espera al
+--     siguiente barrido.
 --  5. Dedupe: idéntica (tipo + título + referencia) a otra POSTEADA (webhook_posted_at) hace
 --     menos de p_dedupe → suprimida. Entre idénticas del MISMO lote sale solo la más vieja, y
 --     `repeated` cuenta cuántas se suprimieron con ella (el aviso dice «(+N repetidas)»).
@@ -67,10 +114,12 @@ drop function if exists claim_alerts_for_webhook(text[], int, interval, interval
 -- reintenta; si falla, alerts-scan lo vuelve a null (no se postea dos veces una alerta, y un
 -- aviso que no llegó no suprime al siguiente).
 create function claim_alerts_for_webhook(
-  p_kinds   text[],
-  p_limit   int      default 10,
-  p_max_age interval default interval '24 hours',
-  p_dedupe  interval default interval '1 hour'
+  p_kinds          text[],
+  p_critical_kinds text[]   default '{}',
+  p_limit          int      default 10,
+  p_per_kind       int      default 3,
+  p_max_age        interval default interval '24 hours',
+  p_dedupe         interval default interval '1 hour'
 )
 returns table (
   id          uuid,
@@ -101,13 +150,26 @@ begin
    where a.webhook_notified_at is null and not (a.kind = any(coalesce(p_kinds, '{}'::text[])));
 
   return query
-  with cand as (
-    select a.id, a.kind, a.title, a.ref_id, a.created_at
+  with ranked as (
+    select a.id, a.kind, a.created_at,
+           (a.kind = any(coalesce(p_critical_kinds, '{}'::text[]))) as crit,
+           row_number() over (partition by a.kind order by a.created_at, a.id) as krn
       from alerts a
      where a.webhook_notified_at is null
-     order by a.created_at, a.id
+  ),
+  picked as (
+    select r.id
+      from ranked r
+     where r.crit or r.krn <= greatest(p_per_kind, 0)
+     order by r.crit desc, r.created_at, r.id
      limit greatest(p_limit, 0)
-       for update skip locked
+  ),
+  cand as (
+    select a.id, a.kind, a.title, a.ref_id, a.created_at
+      from alerts a
+      join picked p on p.id = a.id
+     order by a.created_at, a.id
+       for update of a skip locked
   ),
   grouped as (
     select c.*,
@@ -142,8 +204,8 @@ begin
    order by m.created_at, m.id;
 end;
 $$;
-revoke execute on function claim_alerts_for_webhook(text[], int, interval, interval) from public, anon, authenticated;
-grant execute on function claim_alerts_for_webhook(text[], int, interval, interval) to service_role;
+revoke execute on function claim_alerts_for_webhook(text[], text[], int, int, interval, interval) from public, anon, authenticated;
+grant execute on function claim_alerts_for_webhook(text[], text[], int, int, interval, interval) to service_role;
 
 -- Tipos notificables (== webhookKindsDefault() de _shared/alert-kinds.ts; dream_error NO).
 alter table alert_config
@@ -152,12 +214,13 @@ alter table alert_config
     'draft_failed', 'human_review_needed', 'outcomes_regression', 'inbound_silence', 'inbound_dropped',
     'kommo_webhook_disabled', 'budget_exceeded', 'outbound_blocked', 'salesbot_not_delivered',
     'provider_credit_exhausted', 'webhook_unsigned', 'webhook_rejected', 'kommo_webhook_caido',
-    'kommo_token', 'ingesta_detenida', 'cola_atascada'
+    'kommo_token', 'ingesta_detenida', 'cola_atascada', 'registro_abierto'
   ]::text[];
 
 -- Configuraciones EXISTENTES: se suman los tipos que NO existían como notificables en la
 -- versión de producción anterior (2f2ce14), sin pisar lo que el operador eligió para el resto:
 --  · outbound_blocked (0069), webhook_unsigned y webhook_rejected (0070): tipos nuevos.
+--  · registro_abierto (incidente de seguridad de health-scan): tipo nuevo.
 --  · salesbot_not_delivered y provider_credit_exhausted: ya se insertaban, pero no estaban en
 --    ningún default ni se posteaban (solo salían las alertas de alerts-scan).
 -- Como no existían, ningún operador pudo haberlos quitado: agregarlos no contradice ninguna
@@ -170,7 +233,8 @@ declare
   k text;
 begin
   foreach k in array array[
-    'outbound_blocked', 'webhook_unsigned', 'webhook_rejected', 'salesbot_not_delivered', 'provider_credit_exhausted'
+    'outbound_blocked', 'webhook_unsigned', 'webhook_rejected', 'salesbot_not_delivered', 'provider_credit_exhausted',
+    'registro_abierto'
   ]::text[] loop
     update alert_config set webhook_kinds = array_append(webhook_kinds, k) where not (k = any(webhook_kinds));
   end loop;

@@ -13,13 +13,14 @@
 //   alerta que no se pudo guardar no debe tumbar el flujo que la detectó).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import type { AlertKind } from "./alert-kinds.ts";
+import { ALERT_KINDS, aggregateWindowMinutes, type AlertKind } from "./alert-kinds.ts";
 
 export type AlertSeverity = "info" | "warning" | "critical";
 
 export type AlertInsert = {
   kind: AlertKind;
-  severity: AlertSeverity;
+  /** Si falta, la del registro (ALERT_KINDS[kind].severity). */
+  severity?: AlertSeverity;
   title: string;
   description?: string | null;
   ref_table?: string | null;
@@ -33,6 +34,7 @@ export const ALERT_INSERT_COLUMNS = ["kind", "severity", "title", "description",
 /** Fila a insertar: solo las claves presentes de ALERT_INSERT_COLUMNS. */
 export function alertRow(alert: AlertInsert): Record<string, unknown> {
   const row: Record<string, unknown> = {};
+  alert = { ...alert, severity: alert.severity ?? ALERT_KINDS[alert.kind].severity };
   for (const col of ALERT_INSERT_COLUMNS) {
     const v = alert[col];
     if (v !== undefined) row[col] = v;
@@ -42,6 +44,25 @@ export function alertRow(alert: AlertInsert): Record<string, unknown> {
 
 export async function insertAlert(supabase: SupabaseClient, alert: AlertInsert): Promise<{ error: string | null }> {
   try {
+    // Tipos de alta frecuencia y origen externo (webhook_rejected, webhook_unsigned,
+    // inbound_dropped…): UNA fila por ventana con contador, en el INSERT mismo (RPC de 0076).
+    const windowMin = aggregateWindowMinutes(alert.kind);
+    if (windowMin !== undefined) {
+      const row = alertRow(alert);
+      const { error } = await supabase.rpc("insert_alert_aggregated", {
+        p_kind: row.kind,
+        p_severity: row.severity,
+        p_title: row.title,
+        p_description: row.description ?? null,
+        p_ref_table: row.ref_table ?? null,
+        p_metadata: row.metadata ?? {},
+        p_window: `${windowMin} minutes`,
+      });
+      // Sin la migración 0076 (PGRST202: la función no existe) se inserta una fila normal: no se
+      // pierde la alerta en la ventana entre desplegar las funciones y migrar.
+      if (!error) return { error: null };
+      if ((error as { code?: string }).code !== "PGRST202") return { error: error.message };
+    }
     const { error } = await supabase.from("alerts").insert(alertRow(alert));
     return { error: error ? error.message : null };
   } catch (e) {

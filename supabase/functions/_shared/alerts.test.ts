@@ -70,3 +70,82 @@ function _typeOnly(sb: SupabaseClient) {
   void insertAlert(sb, { kind: "draft_failed", severity: "grave", title: "t" });
 }
 void _typeOnly;
+
+// ---- Severidad por tipo y agregación de los tipos de origen externo ----
+import { aggregateWindowMinutes, ALERT_KINDS, criticalKinds } from "./alert-kinds.ts";
+
+function fakeRpc(opts: { rpcError?: { code: string; message: string } } = {}) {
+  const calls: { fn: string; args: Record<string, unknown> }[] = [];
+  const inserts: Record<string, unknown>[] = [];
+  const sb = {
+    rpc(fn: string, args: Record<string, unknown>) {
+      calls.push({ fn, args });
+      return Promise.resolve({ data: "id", error: opts.rpcError ?? null });
+    },
+    from() {
+      return { insert: (row: Record<string, unknown>) => (inserts.push(row), Promise.resolve({ error: null })) };
+    },
+  };
+  return { sb: sb as unknown as SupabaseClient, calls, inserts };
+}
+
+Deno.test("la severidad por defecto de una alerta es la del registro", () => {
+  assertEquals(alertRow({ kind: "kommo_webhook_disabled", title: "t" }).severity, "critical");
+  assertEquals(alertRow({ kind: "dream_error", title: "t" }).severity, "info");
+  assertEquals(alertRow({ kind: "draft_failed", title: "t", severity: "critical" }).severity, "critical"); // explícita gana
+});
+
+Deno.test("los críticos del registro incluyen lo que NO puede esperar detrás de una inundación", () => {
+  const c = criticalKinds();
+  for (const k of ["kommo_webhook_disabled", "provider_credit_exhausted", "budget_exceeded", "salesbot_not_delivered", "inbound_dropped"]) {
+    assertEquals(c.includes(k), true, k);
+  }
+  // los de origen externo y los informativos NO son críticos
+  for (const k of ["webhook_rejected", "webhook_unsigned", "dream_error", "outbound_blocked"]) assertEquals(c.includes(k), false, k);
+});
+
+Deno.test("los tipos de origen externo se AGREGAN en el insert (una fila por ventana, con contador)", async () => {
+  assertEquals(aggregateWindowMinutes("webhook_rejected"), 60);
+  assertEquals(aggregateWindowMinutes("webhook_unsigned"), 360);
+  assertEquals(aggregateWindowMinutes("inbound_dropped"), 15);
+  assertEquals(aggregateWindowMinutes("draft_failed"), undefined);
+  const f = fakeRpc();
+  const r = await insertAlert(f.sb, { kind: "webhook_rejected", title: "Se descartaron", description: "d", metadata: { m: 1 } });
+  assertEquals(r.error, null);
+  assertEquals(f.calls.length, 1);
+  assertEquals(f.calls[0].fn, "insert_alert_aggregated");
+  assertEquals(f.calls[0].args.p_window, "60 minutes");
+  assertEquals(f.calls[0].args.p_severity, "warning");
+  assertEquals(f.inserts.length, 0, "no inserta una fila por evento");
+});
+
+Deno.test("un tipo NO agregable se inserta como fila normal", async () => {
+  const f = fakeRpc();
+  await insertAlert(f.sb, { kind: "draft_failed", title: "t" });
+  assertEquals(f.calls.length, 0);
+  assertEquals(f.inserts.length, 1);
+});
+
+Deno.test("sin la migración 0076 (PGRST202) el tipo agregable se inserta igual: no se pierde la alerta", async () => {
+  const f = fakeRpc({ rpcError: { code: "PGRST202", message: "Could not find the function" } });
+  const r = await insertAlert(f.sb, { kind: "inbound_dropped", title: "Se perdió un webhook" });
+  assertEquals(r.error, null);
+  assertEquals(f.inserts.length, 1);
+});
+
+Deno.test("otro error del RPC se devuelve (no se enmascara con un insert)", async () => {
+  const f = fakeRpc({ rpcError: { code: "42501", message: "insufficient_privilege" } });
+  const r = await insertAlert(f.sb, { kind: "webhook_unsigned", title: "t" });
+  assertEquals(r.error, "insufficient_privilege");
+  assertEquals(f.inserts.length, 0);
+});
+
+Deno.test("las ventanas del registro coinciden con las de la migración 0073 (webhook_rejected 1 h, webhook_unsigned 6 h)", () => {
+  const sql = Deno.readTextFileSync(new URL("../../migrations/0073_kommo_webhook_auth.sql", import.meta.url));
+  const win = (kind: string) => {
+    const m = sql.match(new RegExp(`'${kind}',[\\s\\S]{0,900}?interval '(\\d+) hours?'`));
+    return m ? Number(m[1]) * 60 : null;
+  };
+  assertEquals(win("webhook_rejected"), ALERT_KINDS.webhook_rejected.aggregateMinutes);
+  assertEquals(win("webhook_unsigned"), ALERT_KINDS.webhook_unsigned.aggregateMinutes);
+});

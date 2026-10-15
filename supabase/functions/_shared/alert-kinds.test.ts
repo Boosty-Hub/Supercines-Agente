@@ -202,7 +202,7 @@ Deno.test("0076 suma a las configs EXISTENTES exactamente los tipos que no exist
   const m = sql.match(/foreach k in array array\[([\s\S]*?)\]::text\[\]/);
   assert(m, "no se encontró la lista de tipos nuevos para configs existentes");
   const added = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
-  assertEquals(added, ["outbound_blocked", "webhook_unsigned", "webhook_rejected", "salesbot_not_delivered", "provider_credit_exhausted"]);
+  assertEquals(added, ["outbound_blocked", "webhook_unsigned", "webhook_rejected", "salesbot_not_delivered", "provider_credit_exhausted", "registro_abierto"]);
   for (const k of added) assertEquals(ALERT_KINDS[k as RegisteredKind].webhook, true, k);
 });
 
@@ -234,7 +234,12 @@ Deno.test("todo tipo que el código o el SQL insertan en `alerts` está en el re
   }
   for await (const u of walk(new URL("migrations/", root))) {
     if (!u.pathname.endsWith(".sql")) continue;
-    for (const k of sqlAlertKinds(await Deno.readTextFile(u))) {
+    // insert_alert_aggregated (0076) es el camino agregado: su propio cuerpo recibe el tipo por
+    // parámetro, así que se verifican sus LLAMADAS (tipo literal) en vez de su INSERT interno.
+    const raw = await Deno.readTextFile(u);
+    const body = raw.replace(/create or replace function insert_alert_aggregated[\s\S]*?\n\$\$;/i, "");
+    const aggregatedCalls = [...body.replace(/--[^\n]*/g, "").matchAll(/insert_alert_aggregated\(\s*'([a-z_]+)'/g)].map((m) => m[1]);
+    for (const k of [...sqlAlertKinds(body), ...aggregatedCalls]) {
       seen++;
       const info = (ALERT_KINDS as Record<string, { table: string }>)[k];
       if (!info || info.table !== "alerts") bad.push(`${k} (${relOf(u)})`);

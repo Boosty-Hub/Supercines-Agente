@@ -58,7 +58,7 @@ select pg_temp.expect('claim_alerts_for_webhook tomó pg_advisory_xact_lock(hash
 insert into alerts (kind, severity, title, description, created_at)
 select 'inbound_dropped', 'critical', 'B' || lpad(g::text, 2, '0'), 'x', now() - (g || ' minutes')::interval from generate_series(1, 25) g;
 select pg_temp.expect('el barrido respeta p_limit (10) y toma las más viejas',
-  (select count(*) = 10 and min(title) = 'B16' from claim_alerts_for_webhook(:kinds, 10)));
+  (select count(*) = 10 and min(title) = 'B16' from claim_alerts_for_webhook(:kinds, '{}'::text[], 10, 100)));
 select pg_temp.expect('quedan 15 pendientes para el siguiente barrido',
   (select count(*) = 15 from alerts where webhook_notified_at is null));
 delete from alerts where title like 'B%';
@@ -68,7 +68,7 @@ insert into alerts (kind, severity, title, description, created_at)
 select 'dream_error', 'warning', 'D' || g, 'x', now() - interval '1 hour' from generate_series(1, 12) g;
 insert into alerts (kind, severity, title, description) values ('draft_failed', 'critical', 'NOTIF', 'x');
 select pg_temp.expect('con 12 dream_error más viejos, la notificable igual sale en el barrido de 10',
-  (select count(*) = 1 and bool_and(title = 'NOTIF') from claim_alerts_for_webhook(:kinds, 10)));
+  (select count(*) = 1 and bool_and(title = 'NOTIF') from claim_alerts_for_webhook(:kinds, '{}'::text[], 10, 100)));
 select pg_temp.expect('los dream_error quedaron cerrados, ni posteados ni suprimidos',
   (select bool_and(webhook_notified_at is not null and webhook_posted_at is null and not webhook_suppressed)
      from alerts where kind = 'dream_error'));
@@ -139,16 +139,66 @@ select pg_temp.expect('la alerta distinta del lote sale con repeated = 0',
 select pg_temp.expect('las dos repetidas quedan suprimidas y no posteadas',
   (select count(*) = 2 from alerts where title = 'No confirmado' and webhook_suppressed and webhook_posted_at is null));
 
+-- 7b) INUNDACIÓN desde un tercero sin autenticar: 1000 webhook_rejected + 1 crítica.
+delete from alerts where true;
+select count(insert_alert_aggregated('webhook_rejected', 'warning', 'Se descartaron requests', 'x', 'kommo_webhook_auth',
+                                     jsonb_build_object('motivo', 'g' || g), interval '1 hour'))
+  from generate_series(1, 1000) g;
+insert into alerts (kind, severity, title, description, created_at)
+values ('kommo_webhook_disabled', 'critical', 'Kommo deshabilitó el webhook', 'x', now());
+select pg_temp.expect('1000 eventos del mismo tipo en la ventana = UNA fila (la tabla no crece con la inundación)',
+  (select count(*) = 1 from alerts where kind = 'webhook_rejected'));
+select pg_temp.expect('la fila agregada lleva el contador (1000) y el último detalle',
+  (select agg_count = 1000 and (metadata->>'count')::int = 1000 and metadata->>'motivo' = 'g1000'
+     from alerts where kind = 'webhook_rejected'));
+select pg_temp.expect('la tabla tiene como mucho N = 2 filas tras la inundación + la crítica',
+  (select count(*) = 2 from alerts));
+create temp table flood1 on commit drop as
+  select * from claim_alerts_for_webhook(array['webhook_rejected', 'kommo_webhook_disabled']::text[],
+                                         array['kommo_webhook_disabled']::text[], 10, 3);
+select pg_temp.expect('la crítica sale en el PRIMER barrido', (select count(*) = 1 from flood1 where kind = 'kommo_webhook_disabled'));
+select pg_temp.expect('y la agregada sale UNA sola vez (un solo aviso por ventana)', (select count(*) = 1 from flood1 where kind = 'webhook_rejected'));
+-- los eventos siguientes de la misma ventana solo suben el contador: no hay otro aviso ni otra fila
+select insert_alert_aggregated('webhook_rejected', 'warning', 'Se descartaron requests', 'x', 'kommo_webhook_auth', '{}'::jsonb, interval '1 hour');
+select pg_temp.expect('un evento más en la misma ventana no crea fila ni reenvía el aviso',
+  (select count(*) = 1 from alerts where kind = 'webhook_rejected')
+  and (select count(*) = 0 from claim_alerts_for_webhook(array['webhook_rejected']::text[], '{}'::text[])));
+select pg_temp.expect('insert_alert_aggregated solo para service_role',
+  has_function_privilege('service_role', 'insert_alert_aggregated(text, text, text, text, text, jsonb, interval)', 'execute')
+  and not has_function_privilege('anon', 'insert_alert_aggregated(text, text, text, text, text, jsonb, interval)', 'execute')
+  and not has_function_privilege('authenticated', 'insert_alert_aggregated(text, text, text, text, text, jsonb, interval)', 'execute'));
+
+-- 7c) aunque ALGUIEN inserte 1000 filas sueltas del mismo tipo (sin agregar), el cupo no se copa:
+--     las críticas van primero y un tipo no crítico tiene tope por barrido.
+delete from alerts where true;
+insert into alerts (kind, severity, title, description, created_at)
+select 'webhook_rejected', 'warning', 'R' || g, 'x', now() - interval '2 hours' + (g || ' seconds')::interval
+  from generate_series(1, 1000) g;
+insert into alerts (kind, severity, title, description, created_at) values
+  ('provider_credit_exhausted', 'critical', 'Sin crédito', 'x', now()),
+  ('budget_exceeded', 'critical', 'Presupuesto', 'x', now()),
+  ('salesbot_not_delivered', 'critical', 'No confirmado', 'x', now());
+create temp table flood2 on commit drop as
+  select * from claim_alerts_for_webhook(
+    array['webhook_rejected', 'provider_credit_exhausted', 'budget_exceeded', 'salesbot_not_delivered']::text[],
+    array['provider_credit_exhausted', 'budget_exceeded', 'salesbot_not_delivered']::text[], 10, 3);
+select pg_temp.expect('con 1000 filas sueltas más viejas, las 3 críticas salen en el primer barrido',
+  (select count(*) = 3 from flood2 where kind in ('provider_credit_exhausted', 'budget_exceeded', 'salesbot_not_delivered')));
+select pg_temp.expect('y el tipo inundado no pasa de su tope por barrido (3)', (select count(*) = 3 from flood2 where kind = 'webhook_rejected'));
+select pg_temp.expect('el barrido nunca supera el cupo total (10)', (select count(*) <= 10 from flood2));
+select pg_temp.expect('el resto de la inundación sigue pendiente (no se pierde ni se postea de golpe)',
+  (select count(*) = 997 from alerts where kind = 'webhook_rejected' and webhook_notified_at is null));
+
 -- 8) skip locked además del lock (no espera filas tomadas por otro escritor)
 select pg_temp.expect('el reclamo usa for update skip locked',
-  position('skip locked' in lower(pg_get_functiondef('claim_alerts_for_webhook(text[], int, interval, interval)'::regprocedure))) > 0);
+  position('skip locked' in lower(pg_get_functiondef('claim_alerts_for_webhook(text[], text[], int, int, interval, interval)'::regprocedure))) > 0);
 
 -- 9) permisos: solo service_role
 select pg_temp.expect('claim_alerts_for_webhook solo para service_role',
-  has_function_privilege('service_role', 'claim_alerts_for_webhook(text[], int, interval, interval)', 'execute')
-  and not has_function_privilege('anon', 'claim_alerts_for_webhook(text[], int, interval, interval)', 'execute')
-  and not has_function_privilege('authenticated', 'claim_alerts_for_webhook(text[], int, interval, interval)', 'execute')
-  and not has_function_privilege('public', 'claim_alerts_for_webhook(text[], int, interval, interval)', 'execute'));
+  has_function_privilege('service_role', 'claim_alerts_for_webhook(text[], text[], int, int, interval, interval)', 'execute')
+  and not has_function_privilege('anon', 'claim_alerts_for_webhook(text[], text[], int, int, interval, interval)', 'execute')
+  and not has_function_privilege('authenticated', 'claim_alerts_for_webhook(text[], text[], int, int, interval, interval)', 'execute')
+  and not has_function_privilege('public', 'claim_alerts_for_webhook(text[], text[], int, int, interval, interval)', 'execute'));
 select pg_temp.expect('no queda la firma vieja (int, interval, interval)',
   to_regprocedure('claim_alerts_for_webhook(int, interval, interval)') is null);
 
@@ -166,9 +216,9 @@ insert into alert_config (webhook_enabled, is_active, webhook_kinds) values (fal
 -- se re-aplica la migración REAL (dos veces: idempotente)
 \ir ../migrations/0076_alert_webhook_delivery.sql
 \ir ../migrations/0076_alert_webhook_delivery.sql
-select pg_temp.expect('la selección previa del operador se conserva y recibe SOLO los 5 tipos nuevos',
+select pg_temp.expect('la selección previa del operador se conserva y recibe SOLO los 6 tipos nuevos',
   (select webhook_kinds = array['draft_failed', 'outbound_blocked', 'webhook_unsigned', 'webhook_rejected',
-                                'salesbot_not_delivered', 'provider_credit_exhausted']::text[]
+                                'salesbot_not_delivered', 'provider_credit_exhausted', 'registro_abierto']::text[]
      from alert_config where is_active));
 select pg_temp.expect('una config con el default de producción queda igual al default nuevo (mismo conjunto)',
   (select (select array_agg(x order by x) from unnest(webhook_kinds) x)
@@ -176,7 +226,7 @@ select pg_temp.expect('una config con el default de producción queda igual al d
             'draft_failed', 'human_review_needed', 'outcomes_regression', 'inbound_silence', 'inbound_dropped',
             'kommo_webhook_disabled', 'budget_exceeded', 'outbound_blocked', 'salesbot_not_delivered',
             'provider_credit_exhausted', 'webhook_unsigned', 'webhook_rejected', 'kommo_webhook_caido',
-            'kommo_token', 'ingesta_detenida', 'cola_atascada']::text[]) x)
+            'kommo_token', 'ingesta_detenida', 'cola_atascada', 'registro_abierto']::text[]) x)
      from alert_config where not is_active));
 select pg_temp.expect('re-aplicar la migración no toca las alertas ya reclamadas (backfill único)',
   (select count(*) = 1 from alerts where title = 'No confirmado' and webhook_posted_at is not null));

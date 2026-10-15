@@ -24,34 +24,53 @@ export type AlertKindInfo = {
   table: "alerts" | "system_incidents";
   /** Por qué va (o no va) al webhook. */
   reason: string;
+  /**
+   * Severidad del tipo. Los `critical` tienen PRIORIDAD en el barrido del webhook: salen primero
+   * y nunca esperan detrás de warnings o infos aunque alguien inunde esos (claim_alerts_for_webhook).
+   */
+  severity: "critical" | "warning" | "info";
+  /**
+   * Tipos de alta frecuencia y origen EXTERNO (los puede disparar un tercero sin autenticar): se
+   * agregan en UNA fila por ventana (contador + último detalle) en el INSERT mismo
+   * (insert_alert_aggregated, 0076), para que ni la tabla ni el webhook crezcan con una inundación.
+   */
+  aggregateMinutes?: number;
 };
 
 export const ALERT_KINDS = {
-  draft_failed: { webhook: true, table: "alerts", reason: "una respuesta del agente falló y el cliente puede quedar sin contestación" },
-  human_review_needed: { webhook: true, table: "alerts", reason: "un mensaje requiere que una persona lo atienda (toxicidad, queja seria)" },
-  outcomes_regression: { webhook: true, table: "alerts", reason: "la calidad de las respuestas bajó de forma sostenida" },
-  inbound_silence: { webhook: true, table: "alerts", reason: "no entra ningún mensaje en horario laboral: síntoma de webhook deshabilitado" },
-  inbound_dropped: { webhook: true, table: "alerts", reason: "se perdió un payload de Kommo (Kommo no lo reintenta): mensaje de un cliente sin entrar" },
-  kommo_webhook_disabled: { webhook: true, table: "alerts", reason: "Kommo deshabilitó el webhook: el agente está mudo" },
-  budget_exceeded: { webhook: true, table: "alerts", reason: "el techo de gasto mensual frenó al agente" },
-  outbound_blocked: { webhook: true, table: "alerts", reason: "un texto con residuo interno se frenó antes de llegar al cliente: hay que revisarlo a mano" },
-  salesbot_not_delivered: { webhook: true, table: "alerts", reason: "no se pudo confirmar que un mensaje salió al cliente (y no se reenvía a ciegas): revisión humana" },
-  provider_credit_exhausted: { webhook: true, table: "alerts", reason: "se acabó el crédito del proveedor de IA: el agente deja de responder hasta recargar" },
-  webhook_unsigned: { webhook: true, table: "alerts", reason: "el webhook de Kommo llega sin secreto durante la transición: acción del operador (máx. una por 6 h)" },
-  webhook_rejected: { webhook: true, table: "alerts", reason: "se descartaron requests al webhook con secreto inválido (posible intento de falsificación; máx. una por 6 h)" },
-  kommo_webhook_caido: { webhook: true, table: "system_incidents", reason: "incidente de salud: el webhook de Kommo no responde" },
-  kommo_token: { webhook: true, table: "system_incidents", reason: "incidente de salud: el token de Kommo venció o fue revocado" },
-  ingesta_detenida: { webhook: true, table: "system_incidents", reason: "incidente de salud: dejó de entrar tráfico" },
-  cola_atascada: { webhook: true, table: "system_incidents", reason: "incidente de salud: la cola de entrada está atascada" },
+  draft_failed: { webhook: true, table: "alerts", severity: "warning", reason: "una respuesta del agente falló y el cliente puede quedar sin contestación" },
+  human_review_needed: { webhook: true, table: "alerts", severity: "warning", reason: "un mensaje requiere que una persona lo atienda (toxicidad, queja seria)" },
+  outcomes_regression: { webhook: true, table: "alerts", severity: "warning", reason: "la calidad de las respuestas bajó de forma sostenida" },
+  inbound_silence: { webhook: true, table: "alerts", severity: "critical", reason: "no entra ningún mensaje en horario laboral: síntoma de webhook deshabilitado" },
+  inbound_dropped: { webhook: true, table: "alerts", severity: "critical", reason: "se perdió un payload de Kommo (Kommo no lo reintenta): mensaje de un cliente sin entrar", aggregateMinutes: 15 },
+  kommo_webhook_disabled: { webhook: true, table: "alerts", severity: "critical", reason: "Kommo deshabilitó el webhook: el agente está mudo" },
+  budget_exceeded: { webhook: true, table: "alerts", severity: "critical", reason: "el techo de gasto mensual frenó al agente" },
+  outbound_blocked: { webhook: true, table: "alerts", severity: "warning", reason: "un texto con residuo interno se frenó antes de llegar al cliente: hay que revisarlo a mano" },
+  salesbot_not_delivered: { webhook: true, table: "alerts", severity: "critical", reason: "no se pudo confirmar que un mensaje salió al cliente (y no se reenvía a ciegas): revisión humana" },
+  provider_credit_exhausted: { webhook: true, table: "alerts", severity: "critical", reason: "se acabó el crédito del proveedor de IA: el agente deja de responder hasta recargar" },
+  webhook_unsigned: { webhook: true, table: "alerts", severity: "warning", reason: "el webhook de Kommo llega sin secreto durante la transición: acción del operador (agregada: una fila por 6 h con contador)", aggregateMinutes: 360 },
+  webhook_rejected: { webhook: true, table: "alerts", severity: "warning", reason: "se descartaron requests al webhook con secreto inválido (posible intento de falsificación; agregada: una fila por hora con contador)", aggregateMinutes: 60 },
+  kommo_webhook_caido: { webhook: true, table: "system_incidents", severity: "critical", reason: "incidente de salud: el webhook de Kommo no responde" },
+  kommo_token: { webhook: true, table: "system_incidents", severity: "critical", reason: "incidente de salud: el token de Kommo venció o fue revocado" },
+  ingesta_detenida: { webhook: true, table: "system_incidents", severity: "critical", reason: "incidente de salud: dejó de entrar tráfico" },
+  cola_atascada: { webhook: true, table: "system_incidents", severity: "critical", reason: "incidente de salud: la cola de entrada está atascada" },
+  registro_abierto: {
+    webhook: true,
+    table: "system_incidents",
+    severity: "critical",
+    reason: "incidente de seguridad: el registro público de Supabase Auth está abierto (cualquiera con la anon key podría darse de alta)",
+  },
   // Tipos propios de SuperCines (no existen en el template).
   media_processing_failed: {
     webhook: false,
     table: "alerts",
+    severity: "info",
     reason: "un adjunto (imagen, audio, documento) de un lead no se pudo leer: es por mensaje y puede repetirse muchas veces al día, así que queda en el panel de alertas y no en Slack",
   },
   dream_error: {
     webhook: false,
     table: "alerts",
+    severity: "info",
     reason: "es feedback de calidad del agente, no una caída: puede dispararse varias veces por corrida y se revisa en /dreams (donde se aprueba o descarta)",
   },
 } as const satisfies Record<string, AlertKindInfo>;
@@ -63,6 +82,17 @@ export type RegisteredKind = keyof typeof ALERT_KINDS;
 export type AlertKind = {
   [K in RegisteredKind]: (typeof ALERT_KINDS)[K]["table"] extends "alerts" ? K : never;
 }[RegisteredKind];
+
+/** Tipos `critical` (los que el barrido del webhook atiende primero). */
+export function criticalKinds(): string[] {
+  return Object.entries(ALERT_KINDS).filter(([, v]) => v.severity === "critical").map(([k]) => k);
+}
+
+/** Ventana de agregación (minutos) de un tipo de alta frecuencia y origen externo; undefined = no se agrega. */
+export function aggregateWindowMinutes(kind: string): number | undefined {
+  const info = (ALERT_KINDS as Record<string, AlertKindInfo>)[kind];
+  return info?.aggregateMinutes;
+}
 
 /** Tipos que salen por webhook, en el orden del registro. */
 export function webhookKindsDefault(): string[] {

@@ -20,7 +20,7 @@ import { authorizeInternal } from "../_shared/auth.ts";
 import { isBusinessHours, type BusinessHoursConfig, DEFAULT_TIMEZONE } from "../_shared/business-hours.ts";
 import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
-import { shouldSweep } from "../_shared/alert-kinds.ts";
+import { criticalKinds, shouldSweep } from "../_shared/alert-kinds.ts";
 import { type AlertInsert, insertAlert } from "../_shared/alerts.ts";
 import { buildWebhookPayload, isMissingClaimRpc, type WebhookAlert } from "../_shared/alert-webhook.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
@@ -103,6 +103,9 @@ async function notifyPendingAlerts(config: AlertConfig | null, created: AlertInp
   if (!shouldSweep(config)) return 0;
   const { data, error } = await supabase.rpc("claim_alerts_for_webhook", {
     p_kinds: config.webhook_kinds,
+    // Las críticas del registro salen primero y un tipo no crítico tiene tope por barrido
+    // (p_per_kind): una inundación de un tipo no puede tapar kommo_webhook_disabled & co.
+    p_critical_kinds: criticalKinds(),
     p_limit: SWEEP_LIMIT,
   });
   if (error) {
@@ -113,7 +116,7 @@ async function notifyPendingAlerts(config: AlertConfig | null, created: AlertInp
       console.warn("claim_alerts_for_webhook no existe (falta aplicar la migración 0076): envío directo");
       let direct = 0;
       for (const a of created) {
-        if (config.webhook_kinds.includes(a.kind) && (await postWebhook(config.webhook_url, a))) direct++;
+        if (config.webhook_kinds.includes(a.kind) && (await postWebhook(config.webhook_url, { ...a, severity: a.severity ?? "warning" }))) direct++;
       }
       return direct;
     }

@@ -79,18 +79,18 @@ begin
     update kommo_webhook_auth
        set last_rejected_at = now(), last_rejected_reason = left(p_rejected, 40), updated_at = now()
      where singleton;
-    if not exists (select 1 from alerts where kind = 'webhook_rejected' and created_at > now() - interval '6 hours') then
-      insert into alerts (kind, severity, title, description, ref_table, metadata)
-      values (
-        'webhook_rejected', 'warning',
-        'Se descartaron requests al webhook de Kommo',
-        'Llegaron requests al webhook con una clave incorrecta o sin clave en modo estricto, y se descartaron sin '
-        || 'encolar. Si es Kommo, su URL está desactualizada: pulsá «Actualizar en Kommo» en Configuración → Kommo '
-        || '(los mensajes descartados no se recuperan). Si no, alguien está probando la URL.',
-        'kommo_webhook_auth',
-        jsonb_build_object('mode', a.mode, 'motivo', left(p_rejected, 40))
-      );
-    end if;
+    -- UNA fila por ventana con contador (agregación, 0076): un tercero que inunda el webhook con
+    -- tokens falsos no puede llenar la tabla alerts ni el webhook de Slack.
+    perform public.insert_alert_aggregated(
+      'webhook_rejected', 'warning',
+      'Se descartaron requests al webhook de Kommo',
+      'Llegaron requests al webhook con una clave incorrecta o sin clave en modo estricto, y se descartaron sin '
+      || 'encolar. Si es Kommo, su URL está desactualizada: pulsá «Actualizar en Kommo» en Configuración → Kommo '
+      || '(los mensajes descartados no se recuperan). Si no, alguien está probando la URL.',
+      'kommo_webhook_auth',
+      jsonb_build_object('mode', a.mode, 'motivo', left(p_rejected, 40)),
+      interval '1 hour'
+    );
     return a.mode;
   end if;
 
@@ -109,16 +109,15 @@ begin
     end if;
   else
     update kommo_webhook_auth set last_unsigned_at = now(), updated_at = now() where singleton;
-    if a.mode = 'permissive'
-       and not exists (select 1 from alerts where kind = 'webhook_unsigned' and created_at > now() - interval '6 hours') then
-      insert into alerts (kind, severity, title, description, ref_table, metadata)
-      values (
+    if a.mode = 'permissive' then
+      perform public.insert_alert_aggregated(
         'webhook_unsigned', 'warning',
         'El webhook de Kommo llega sin secreto',
         'Kommo está llamando al webhook sin el ?token=. Mientras tanto se acepta (modo transición), pero cualquiera '
         || 'que conozca la URL podría falsificar eventos. Actualizá la URL en Kommo (Configuración → Kommo) y pasá a modo estricto.',
         'kommo_webhook_auth',
-        jsonb_build_object('mode', a.mode)
+        jsonb_build_object('mode', a.mode),
+        interval '6 hours'
       );
     end if;
   end if;

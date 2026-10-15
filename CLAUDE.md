@@ -657,6 +657,18 @@ publishing_enabled=false` (genera drafts sin publicarlos), revisar, y recién en
 
 ### Bitácora de despliegues
 
+**2026-10-15 (16:47–16:55 UTC) — inbox paginado en la base (`f79003e5`, migración 0085).** `/api/inbox/leads` traía
+los 8.431 leads de a 1.000 recalculando `inbox_lead_summaries()` en cada página (~2,4 s la primera en SQL) y filtraba en
+el navegador: 11–19 s y 5,5 MB por carga. Orden: push de `main` → Netlify `6ad1038c` (ready a las 16:48:46; la web
+nueva respondió 503 `migration_pending` mientras tanto) → 0085 por Management API a las 16:49:01 (0,66 s en el ensayo;
+registrada en `_migrations`; resumen con 8.431 filas). Medido en producción como `authenticated`: tablero 24–56 ms,
+stats 53–130 ms, lista 6–15 ms en SQL; API 0,45–0,86 s en caliente (1,2 s en frío), 78 KB el tablero. Verificado con un
+usuario temporal `operacion` (sesión cerrada con `signOut({scope:'local'})` y usuario borrado): tablero, «Ver más»,
+pestañas Con agente 7.436 / Apagadas 995 / Todas 8.431, lista con scroll y conversación, sin errores de JS. Nota: los
+deploys de Netlify de `0c159c48` y `c1d56248` figuran en `error` sin mensaje: solo tocaban `supabase/`/docs (fuera de
+`base=web`); la web publicada era `4db78862` hasta este deploy. Rollback de la web: exige recrear
+`inbox_lead_summaries()` (0061), que 0085 borra.
+
 **2026-10-15 (13:40–14:20 UTC) — deploy de `4db78862` (111 commits) a producción.** Autorizado por el dueño. Hecho fuera
 del panel (Management API + CLI `supabase` 2.121.0 + script con los mismos libs del panel). Respaldo lógico previo
 (`runtime_config`, `kommo_publish_config`, `alert_config`, `agent_tools`, `verticals`, `routing_assignees`, `_migrations`,

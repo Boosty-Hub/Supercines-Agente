@@ -248,6 +248,20 @@ select pg_temp.expect('q por nombre (sin mayúsculas)', pg_temp.nombres('{"q": "
 select pg_temp.expect('q por id de Kommo', pg_temp.nombres('{"q": "12"}') = array['Leo Empate']);
 select pg_temp.expect('q por último contenido', pg_temp.nombres('{"q": "urgente"}') = array['Caro Díaz']);
 select pg_temp.expect('q con comodines de LIKE no es un patrón', pg_temp.nombres('{"q": "%"}') = '{}');
+-- Un patrón de backtracking catastrófico se trata como texto literal y no tarda: la búsqueda
+-- es strpos (sin regex) y el término se corta a 200 caracteres.
+update leads set display_name = 'Nombre ' || repeat('a', 5000) || '!' where kommo_lead_id = 14;
+create temp table redos as select clock_timestamp() as t0,
+  pg_temp.nombres(jsonb_build_object('q', '(a+)+$')) as r1,
+  pg_temp.nombres(jsonb_build_object('q', repeat('(a*)*', 5000) || 'b')) as r2,
+  pg_temp.nombres(jsonb_build_object('q', '(a+)+')) as r3,
+  clock_timestamp() as t1;
+select pg_temp.expect('patrones de ReDoS = texto literal, sin coincidencias y en < 1 s',
+  (select r1 = '{}' and r2 = '{}' and r3 = '{}' and t1 - t0 < interval '1 second' from redos));
+select pg_temp.expect('el término se corta a 200 caracteres en SQL',
+  inbox_filter_sql(jsonb_build_object('q', repeat('x', 5000))) like '%''' || repeat('x', 200) || '''%'
+  and inbox_filter_sql(jsonb_build_object('q', repeat('x', 5000))) not like '%' || repeat('x', 201) || '%');
+update leads set display_name = 'Nico Nulo' where kommo_lead_id = 14;
 select pg_temp.expect('canal normalizado: whatsapp incluye waba y "WhatsApp Business"',
   pg_temp.nombres('{"channel": "whatsapp"}') @> array['Ana Pérez', 'Beto Ruiz']
   and not (pg_temp.nombres('{"channel": "whatsapp"}') && array['Dani Gómez', 'Eli Soto']));

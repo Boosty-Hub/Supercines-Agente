@@ -667,7 +667,8 @@ usuario temporal `operacion` (sesión cerrada con `signOut({scope:'local'})` y u
 pestañas Con agente 7.436 / Apagadas 995 / Todas 8.431, lista con scroll y conversación, sin errores de JS. Nota: los
 deploys de Netlify de `0c159c48` y `c1d56248` figuran en `error` sin mensaje: solo tocaban `supabase/`/docs (fuera de
 `base=web`); la web publicada era `4db78862` hasta este deploy. Rollback de la web: exige recrear
-`inbox_lead_summaries()` (0061), que 0085 borra.
+`inbox_lead_summaries()` (0061), que 0085 borra. **0086** (mismo día): la búsqueda —ya literal, `strpos`, sin regex— se acota a
+200 caracteres también en la base (defensa en profundidad tras una revisión de ReDoS; aplicada y verificada).
 
 **2026-10-15 (13:40–14:20 UTC) — deploy de `4db78862` (111 commits) a producción.** Autorizado por el dueño. Hecho fuera
 del panel (Management API + CLI `supabase` 2.121.0 + script con los mismos libs del panel). Respaldo lógico previo

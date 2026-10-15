@@ -97,7 +97,12 @@ select pg_temp.expect('internal_function_headers entrega el secreto al cron (sin
   public.internal_function_headers() ? 'x-internal-secret');
 
 -- ── 5) Una función nueva no nace abierta ─────────────────────────────────────
+-- Se crea como `postgres`: es el rol REAL que corre las migraciones en producción (Management
+-- API); los default privileges que importan son los de ESE rol (0070). Un superusuario distinto
+-- (supabase_admin) tiene los suyos y no es el que crea las funciones de un cliente.
+set local role postgres;
 create function public.zz_funcion_de_prueba() returns int language sql as 'select 1';
+reset role;
 select pg_temp.expect('función NUEVA: sin EXECUTE para anon, authenticated ni PUBLIC',
   not has_function_privilege('anon', 'public.zz_funcion_de_prueba()', 'execute')
   and not has_function_privilege('authenticated', 'public.zz_funcion_de_prueba()', 'execute')

@@ -285,7 +285,10 @@ exception when insufficient_privilege then
 end $$;
 grant execute on function pg_temp.rechaza(text) to authenticated;
 set local role authenticated;
+-- Sin rol en app_metadata = sin acceso (0078/0079, fail-closed); operacion+ lee.
 set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+insert into res select 'sin rol no lee', count(*) = 0 from follow_ups;
+set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","app_metadata":{"role":"operacion"}}';
 insert into res select 'lee', count(*) > 0 from follow_ups;
 -- Desde 0079 authenticated ni siquiera tiene el privilegio de tabla (antes: la RLS dejaba 0 filas).
 insert into res values ('no borra', pg_temp.rechaza($q$delete from follow_ups where status = 'claimed'$q$));
@@ -294,8 +297,8 @@ insert into res values ('no inserta',
   pg_temp.rechaza($q$insert into follow_ups (lead_id, step, status) values ('00000000-0000-0000-0000-00000000a004', 2, 'sent')$q$));
 reset role;
 reset request.jwt.claims;
-select pg_temp.expect('el panel lee follow_ups y no puede insertar, borrar ni actualizar',
-  (select count(*) = 4 and bool_and(ok) from res));
+select pg_temp.expect('el panel (operacion) lee follow_ups, sin rol no, y nadie puede insertar, borrar ni actualizar',
+  (select count(*) = 5 and bool_and(ok) from res));
 select pg_temp.expect('la reserva viva de lead cuatro sigue intacta',
   pg_temp.fid('00000000-0000-0000-0000-00000000a004') is not null);
 

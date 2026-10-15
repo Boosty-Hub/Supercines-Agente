@@ -1,5 +1,6 @@
--- Prueba de la migración 0078: escribir agent_tools exige alcance configuracion también en la RLS.
---   psql -v ON_ERROR_STOP=1 -f supabase/tests/agent_tools_scope.sql
+-- Prueba de la migración 0078: LEER y escribir agent_tools (URLs y headers con placeholders de
+-- secretos) exige alcance configuracion también en la RLS; sin rol = sin acceso.
+--   psql -v ON_ERROR_STOP=1 -f supabase/tests/agent_tools_scope.sql   (ver supabase/tests/README.md)
 begin;
 
 create temp table res (k text, v boolean);
@@ -45,7 +46,8 @@ select pg_temp.expect('editor (alias de contenido) NO puede', (select not v from
 select pg_temp.expect('un rol irreconocible cae CERRADO', (select not v from res where k = 'corrupto'));
 select pg_temp.expect('configuracion SÍ puede', (select v from res where k = 'configuracion'));
 select pg_temp.expect('admin (alias) SÍ puede', (select v from res where k = 'admin'));
-select pg_temp.expect('sin rol (maestro del first-run) SÍ puede', (select bool_and(v) from res where k in ('sin rol', 'sin app_meta')));
+select pg_temp.expect('sin rol / sin app_metadata NO puede (fail-closed; 0078 le fijó configuracion a los existentes)',
+  (select not bool_or(v) from res where k in ('sin rol', 'sin app_meta')));
 
 -- update y delete también exigen el alcance
 create or replace function pg_temp.try_update(p_claims text) returns int language plpgsql as $$
@@ -83,7 +85,7 @@ select pg_temp.expect('la tool sigue intacta', (select url_template = 'https://a
 select pg_temp.expect('configuracion: UPDATE sí',
   pg_temp.try_update('{"role":"authenticated","app_metadata":{"role":"configuracion"}}') = 1);
 
--- lectura: cualquier authenticated
+-- lectura: solo configuracion (W3: URLs internas y qué secreto usa cada header)
 create or replace function pg_temp.try_read(p_claims text) returns int language plpgsql as $$
 declare v_n int;
 begin
@@ -93,8 +95,19 @@ begin
   reset role;
   return v_n;
 end $$;
-select pg_temp.expect('operacion SÍ puede leer las tools',
-  pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"operacion"}}') >= 1);
+select pg_temp.expect('operacion, contenido, editor, irreconocible y sin rol NO ven ninguna tool',
+  pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"operacion"}}') = 0
+  and pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"contenido"}}') = 0
+  and pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"editor"}}') = 0
+  and pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"Admin "}}') = 0
+  and pg_temp.try_read('{"role":"authenticated","app_metadata":{}}') = 0
+  and pg_temp.try_read('{"role":"authenticated"}') = 0);
+select pg_temp.expect('configuracion y admin SÍ las leen',
+  pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"configuracion"}}') >= 1
+  and pg_temp.try_read('{"role":"authenticated","app_metadata":{"role":"admin"}}') >= 1);
+select pg_temp.expect('authenticated sin truncate/references/trigger sobre agent_tools',
+  not has_table_privilege('authenticated', 'agent_tools', 'truncate')
+  and not has_table_privilege('authenticated', 'agent_tools', 'trigger'));
 
 -- anon no puede ni leer ni escribir
 select pg_temp.expect('anon sin permisos sobre agent_tools',

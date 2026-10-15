@@ -9,7 +9,8 @@
     "test": "deno test --node-modules-dir=auto --allow-read --allow-net --allow-env supabase/tests supabase/functions/_shared/",
     "check": "deno check --node-modules-dir=auto supabase/functions/*/index.ts supabase/functions/_shared/*.ts",
     "build": "cd web && pnpm build",
-    "verify": "npm run test && npm run test:web && npm run check && npm run build",
-    "test:web": "cd web && pnpm test"
+    "verify": "npm run test && npm run test:web && npm run check && npm run verify:sql && npm run build",
+    "test:web": "cd web && pnpm test",
+    "verify:sql": "bash scripts/verify-sql.sh"
   }
 }

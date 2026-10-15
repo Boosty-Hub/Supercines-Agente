@@ -20,6 +20,13 @@ begin
   raise notice 'ok: %', p_desc;
 end $$;
 
+-- Usuarios reales (las columnas *_by / reviewer_id tienen FK a auth.users): así un rechazo es de
+-- la policy, no de la FK.
+insert into auth.users (id, email) values
+  ('11111111-1111-1111-1111-111111111111', 'zz-uno@test.local'),
+  ('22222222-2222-2222-2222-222222222222', 'zz-dos@test.local')
+  on conflict (id) do nothing;
+
 delete from drafts where true;
 delete from messages where true;
 delete from leads where true;
@@ -140,6 +147,19 @@ end $$;
 -- 7) El panel (petición con JWT de usuario) no toca un draft en vuelo ni des-envía uno enviado.
 update drafts set status = 'auto_sent', sent_at = now(), publish_owner = null, publish_lease_until = null
  where id = '00000000-0000-0000-0000-0000000000d5';
+-- Dos capas: (a) la RLS (0079) solo deja al panel tocar drafts pending/approved, y solo hacia
+-- approved/rejected a nombre propio; (b) el trigger drafts_guard_in_flight (0074) frena igual
+-- cualquier petición con JWT de usuario aunque alguien abriera la RLS (se prueba como dueño,
+-- que bypasea la RLS, con claims de usuario).
+create or replace function pg_temp.filas(p_sql text) returns int language plpgsql as $$
+declare v_n int;
+begin
+  execute p_sql;
+  get diagnostics v_n = row_count;
+  return v_n;
+exception when others then
+  return -1;
+end $$;
 create or replace function pg_temp.bloquea(p_sql text) returns boolean language plpgsql as $$
 begin
   execute p_sql;
@@ -147,26 +167,36 @@ begin
 exception when object_not_in_prerequisite_state then
   return true;
 end $$;
-grant execute on function pg_temp.bloquea(text) to authenticated;
-create temp table res (k text, ok boolean);
+grant execute on function pg_temp.filas(text) to authenticated;
+create temp table res (k text, n int);
 grant all on res to authenticated;
 
 set local role authenticated;
-set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","app_metadata":{"role":"operacion"}}';
 insert into res values ('aprobar publishing',
-  pg_temp.bloquea($q$update drafts set status = 'approved' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
+  pg_temp.filas($q$update drafts set status = 'approved', reviewer_id = '11111111-1111-1111-1111-111111111111' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
 insert into res values ('editar publishing',
-  pg_temp.bloquea($q$update drafts set edited_body = 'otro' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
+  pg_temp.filas($q$update drafts set edited_body = 'otro' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
 insert into res values ('rechazar publishing',
-  pg_temp.bloquea($q$update drafts set status = 'rejected' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
+  pg_temp.filas($q$update drafts set status = 'rejected', reviewer_id = '11111111-1111-1111-1111-111111111111' where id = '00000000-0000-0000-0000-0000000000d6'$q$));
 insert into res values ('re-aprobar auto_sent',
-  pg_temp.bloquea($q$update drafts set status = 'approved' where id = '00000000-0000-0000-0000-0000000000d5'$q$));
-insert into res values ('aprobar pending (permitido)',
-  not pg_temp.bloquea($q$update drafts set status = 'approved' where id = '00000000-0000-0000-0000-0000000000d3'$q$));
+  pg_temp.filas($q$update drafts set status = 'approved', reviewer_id = '11111111-1111-1111-1111-111111111111' where id = '00000000-0000-0000-0000-0000000000d5'$q$));
+insert into res values ('aprobar pending',
+  pg_temp.filas($q$update drafts set status = 'approved', reviewer_id = '11111111-1111-1111-1111-111111111111' where id = '00000000-0000-0000-0000-0000000000d3'$q$));
 reset role;
 reset request.jwt.claims;
-select pg_temp.expect('el trigger frena al panel en publishing/auto_sent y deja aprobar un pending',
-  (select count(*) = 5 and bool_and(ok) from res));
+select pg_temp.expect('RLS: el panel no toca un draft publishing ni auto_sent (0 filas) y sí aprueba un pending',
+  (select bool_and(n = 0) from res where k <> 'aprobar pending')
+  and (select n = 1 from res where k = 'aprobar pending'));
+
+-- (b) trigger: como dueño (bypasea la RLS) pero con claims de usuario.
+set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+select pg_temp.expect('trigger: una petición con JWT de usuario no aprueba, edita ni rechaza un publishing ni re-aprueba un auto_sent',
+  pg_temp.bloquea($q$update drafts set status = 'approved' where id = '00000000-0000-0000-0000-0000000000d6'$q$)
+  and pg_temp.bloquea($q$update drafts set edited_body = 'otro' where id = '00000000-0000-0000-0000-0000000000d6'$q$)
+  and pg_temp.bloquea($q$update drafts set status = 'rejected' where id = '00000000-0000-0000-0000-0000000000d6'$q$)
+  and pg_temp.bloquea($q$update drafts set status = 'approved' where id = '00000000-0000-0000-0000-0000000000d5'$q$));
+reset request.jwt.claims;
 select pg_temp.expect('d6 sigue publishing tras los intentos del panel',
   (select status = 'publishing' and edited_body is null from drafts where id = '00000000-0000-0000-0000-0000000000d6'));
 update drafts set status = 'auto_sent', sent_at = now(), publish_owner = null, publish_lease_until = null

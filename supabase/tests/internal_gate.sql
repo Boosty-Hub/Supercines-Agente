@@ -35,7 +35,12 @@ select pg_temp.expect('nadie fuera del cron ejecuta trigger_*',
 -- tabla nueva tampoco nace abierta.
 select pg_temp.expect('anon no tiene privilegios sobre ninguna tabla de public',
   not exists (select 1 from information_schema.role_table_grants where grantee = 'anon' and table_schema = 'public'));
+-- Se crea como `postgres`: es el rol con el que corren las migraciones en producción (Management
+-- API) y el único cuyos default privileges cierra 0079.
+set local role postgres;
 create table public.zz_tabla_de_prueba (id int);
-select pg_temp.expect('una tabla NUEVA no nace abierta a anon',
-  not has_table_privilege('anon', 'public.zz_tabla_de_prueba', 'SELECT'));
+reset role;
+select pg_temp.expect('una tabla NUEVA no nace abierta a anon ni a authenticated',
+  not has_table_privilege('anon', 'public.zz_tabla_de_prueba', 'SELECT')
+  and not has_table_privilege('authenticated', 'public.zz_tabla_de_prueba', 'SELECT'));
 rollback;

@@ -1,5 +1,25 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// La ruta coerciona con Number(): se aceptan número o string (y null, que el panel manda cuando
+// no hay días activos: Math.min() vacío → Infinity → null en JSON).
+const NumberLike = z.union([z.number(), z.string(), z.null()]);
+const IdList = z.array(z.union([z.number(), z.string()])).nullable();
+const FollowUpConfigBody = z.object({
+  enabled: z.boolean().optional(),
+  timezone: z.string().optional(),
+  business_hours_start: NumberLike.optional(),
+  business_hours_end: NumberLike.optional(),
+  active_days: z.array(z.number().int()).optional(),
+  business_hours: z.record(z.unknown()).nullable().optional(),
+  max_follow_ups: NumberLike.optional(),
+  min_gap_hours: NumberLike.optional(),
+  run_stage_ids: IdList.optional(),
+  run_user_ids: IdList.optional(),
+  notes: z.string().nullable().optional(),
+});
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
@@ -26,17 +46,14 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, FollowUpConfigBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   // Construir el patch — solo los campos presentes en el body
   const patch: Record<string, unknown> = {};
   if (body.enabled !== undefined) patch.enabled = body.enabled === true;
-  if (body.timezone !== undefined) patch.timezone = String(body.timezone).trim();
+  if (body.timezone !== undefined) patch.timezone = body.timezone.trim();
   if (body.business_hours_start !== undefined) patch.business_hours_start = Number(body.business_hours_start);
   if (body.business_hours_end !== undefined) patch.business_hours_end = Number(body.business_hours_end);
   if (body.active_days !== undefined) patch.active_days = body.active_days;
@@ -44,10 +61,10 @@ export async function POST(request: Request) {
     // Horario por día: { "1": {start:"09:00", end:"21:00"}, ... } o null.
     if (body.business_hours === null) {
       patch.business_hours = null;
-    } else if (typeof body.business_hours === "object") {
+    } else {
       const HHMM = /^\d{2}:\d{2}$/;
       const clean: Record<string, { start: string; end: string }> = {};
-      for (const [day, range] of Object.entries(body.business_hours as Record<string, unknown>)) {
+      for (const [day, range] of Object.entries(body.business_hours)) {
         const d = Number(day);
         const r = range as { start?: unknown; end?: unknown };
         if (
@@ -74,7 +91,7 @@ export async function POST(request: Request) {
     patch.run_stage_ids = Array.isArray(body.run_stage_ids)
       ? Array.from(
           new Set(
-            (body.run_stage_ids as unknown[])
+            body.run_stage_ids
               .map(Number)
               .filter((n) => Number.isFinite(n) && n > 0)
           )
@@ -86,14 +103,14 @@ export async function POST(request: Request) {
     patch.run_user_ids = Array.isArray(body.run_user_ids)
       ? Array.from(
           new Set(
-            (body.run_user_ids as unknown[])
+            body.run_user_ids
               .map(Number)
               .filter((n) => Number.isFinite(n) && n > 0)
           )
         )
       : [];
   }
-  if (body.notes !== undefined) patch.notes = body.notes ? String(body.notes) : null;
+  if (body.notes !== undefined) patch.notes = body.notes || null;
 
   // Upsert el singleton is_active=true
   // Primero intentar update; si no existe, insert.

@@ -134,9 +134,20 @@ test("authorizeScope: sin sesión 401; operacion/contenido 403 en config; config
     assert.equal(d.ok, false, String(role));
     if (!d.ok) assert.equal(d.status, 403);
   }
-  for (const role of ["configuracion", "admin", undefined, null]) {
+  for (const role of ["configuracion", "admin"]) {
     const d = authorizeScope(user(role), "configuracion");
     assert.equal(d.ok, true, String(role));
+  }
+  // Sin rol = SIN ACCESO: 403 incluso para el alcance más bajo (antes era configuracion).
+  for (const role of [undefined, null, ""]) {
+    for (const req of SCOPES) {
+      const d = authorizeScope(user(role), req);
+      assert.equal(d.ok, false, `${String(role)} → ${req}`);
+      if (!d.ok) {
+        assert.equal(d.status, 403);
+        assert.equal(d.sinAcceso, true);
+      }
+    }
   }
   assert.equal(authorizeScope(user("contenido"), "contenido").ok, true);
   assert.equal(authorizeScope(user("operacion"), "contenido").ok, false);

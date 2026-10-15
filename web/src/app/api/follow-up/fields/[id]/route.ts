@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const FieldPatchBody = z.object({
+  label: z.string().optional(),
+  kommo_field_id: z.union([z.number(), z.string()]).optional(),
+});
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -11,15 +18,12 @@ export async function PATCH(request: Request, props: Params) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, FieldPatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const patch: Record<string, unknown> = {};
-  if (body.label !== undefined) patch.label = String(body.label).trim();
+  if (body.label !== undefined) patch.label = body.label.trim();
   if (body.kommo_field_id !== undefined) {
     const id = Number(body.kommo_field_id);
     if (!Number.isFinite(id) || id <= 0) {

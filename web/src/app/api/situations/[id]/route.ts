@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const SituationPatchBody = z.object({
+  title: z.string().optional(),
+  content: z.string().optional(),
+  starts_at: z.string().nullable().optional(),
+  ends_at: z.string().nullable().optional(),
+  enabled: z.boolean().optional(),
+});
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -11,7 +21,9 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, SituationPatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
 
   if (typeof body.title === "string") {
@@ -29,8 +41,8 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   if ("starts_at" in body) {
     if (body.starts_at === null) {
       update.starts_at = null;
-    } else if (DATE_RE.test(String(body.starts_at))) {
-      update.starts_at = String(body.starts_at);
+    } else if (body.starts_at !== undefined && DATE_RE.test(body.starts_at)) {
+      update.starts_at = body.starts_at;
     } else {
       return NextResponse.json({ error: "Formato de fecha inválido para starts_at (debe ser YYYY-MM-DD)" }, { status: 400 });
     }
@@ -39,8 +51,8 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   if ("ends_at" in body) {
     if (body.ends_at === null) {
       update.ends_at = null;
-    } else if (DATE_RE.test(String(body.ends_at))) {
-      update.ends_at = String(body.ends_at);
+    } else if (body.ends_at !== undefined && DATE_RE.test(body.ends_at)) {
+      update.ends_at = body.ends_at;
     } else {
       return NextResponse.json({ error: "Formato de fecha inválido para ends_at (debe ser YYYY-MM-DD)" }, { status: 400 });
     }

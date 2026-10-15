@@ -18,16 +18,29 @@
 // getRuntimeConfig() / configValue() are called.
 
 import "server-only";
+import { isDbOnlySecretKey } from "@/lib/db-only-secret-keys";
 import { cache } from "react";
 import { createServiceClient } from "@/lib/supabase/service";
-import { configKeysDenied } from "@/lib/config-secrets";
+import { configKeysDenied, isSecretConfigKey } from "@/lib/config-secrets";
 import type { ConfigWriter } from "@/lib/auth/scope-guard";
+import { checkSecretBindings, keysToCheck, type SecretBindingViolation } from "@/lib/secret-bound-config";
 
 /** Se intentó escribir una clave que el alcance del que escribe no permite. */
 export class ConfigWriteForbiddenError extends Error {
   constructor(readonly keys: string[]) {
     super(`Sin alcance para escribir: ${keys.join(", ")}`);
     this.name = "ConfigWriteForbiddenError";
+  }
+}
+
+/**
+ * La escritura cambia el destino de un par destino + secreto sin reenviar el secreto
+ * (lib/secret-bound-config.ts). Las rutas la traducen a un 400.
+ */
+export class SecretBindingError extends Error {
+  constructor(readonly violations: SecretBindingViolation[]) {
+    super(violations.map((v) => v.message).join(" "));
+    this.name = "SecretBindingError";
   }
 }
 
@@ -59,6 +72,14 @@ export const getRuntimeConfig = cache(async (): Promise<Record<string, string>> 
 });
 
 /**
+ * Fallback al entorno de la web. Los secretos atados a un destino (KOMMO_ACCESS_TOKEN, SHOPIFY_*,
+ * BCV_RATE_APIKEY, TOOL_<X>) NO lo tienen: viven solo en runtime_config (lib/db-only-secret-keys.ts).
+ */
+function envFallback(key: string): string | undefined {
+  return isDbOnlySecretKey(key) ? undefined : process.env[key] ?? undefined;
+}
+
+/**
  * Resolves a single config key using DB-first / process.env fallback.
  * Returns undefined if absent in both sources.
  */
@@ -66,7 +87,7 @@ export async function configValue(key: string): Promise<string | undefined> {
   const map = await getRuntimeConfig();
   const dbValue = map[key];
   if (dbValue !== undefined && dbValue.trim() !== "") return dbValue;
-  return process.env[key] ?? undefined;
+  return envFallback(key);
 }
 
 /**
@@ -83,7 +104,7 @@ export async function configValues<K extends string>(
     out[key] =
       dbValue !== undefined && dbValue.trim() !== ""
         ? dbValue
-        : process.env[key] ?? undefined;
+        : envFallback(key);
   }
   return out;
 }
@@ -108,7 +129,34 @@ export async function configValuesFresh<K extends string>(
   const out = {} as Record<K, string | undefined>;
   for (const key of keys) {
     const v = db.get(key);
-    out[key] = v !== undefined && v !== null && v.trim() !== "" ? v : process.env[key] ?? undefined;
+    out[key] = v !== undefined && v !== null && v.trim() !== "" ? v : envFallback(key);
+  }
+  return out;
+}
+
+/**
+ * Valores de claves PÚBLICAS (lib/config-secrets.ts), SOLO de la tabla (sin fallback a env) y
+ * consultando únicamente esas filas: nunca trae un secreto a memoria. Pedir una clave secreta
+ * es un error de programación y lanza. Lo usa el probador de http tools, que no debe leer
+ * ningún secreto (los valores de prueba los teclea el operador).
+ */
+export async function publicConfigValues<K extends string>(
+  keys: readonly K[]
+): Promise<Partial<Record<K, string>>> {
+  const secret = keys.filter((k) => isSecretConfigKey(k));
+  if (secret.length > 0) throw new Error(`publicConfigValues: claves secretas pedidas: ${secret.join(", ")}`);
+  const out: Partial<Record<K, string>> = Object.create(null);
+  if (keys.length === 0) return out;
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("runtime_config")
+    .select("key, value")
+    .in("key", [...keys]);
+  if (error) throw new Error(`runtime_config read failed: ${error.message}`);
+  for (const row of (data ?? []) as ConfigRow[]) {
+    if ((keys as readonly string[]).includes(row.key) && row.value !== null && row.value.trim() !== "") {
+      out[row.key as K] = row.value;
+    }
   }
   return out;
 }
@@ -132,6 +180,29 @@ export async function setConfigValues(
   if (denied.length > 0) throw new ConfigWriteForbiddenError(denied);
   const updatedBy = writer.by;
   const supabase = createServiceClient();
+
+  // Pares destino + secreto: cambiar el destino exige reenviar (o borrar) el secreto en esta
+  // misma escritura. Se decide con los valores VIGENTES leídos ahora (base, o entorno si la
+  // base no tiene), no con la memoización por request.
+  const toCheck = keysToCheck(Object.keys(values));
+  if (toCheck.length > 0) {
+    const { data: currentRows, error: readErr } = await supabase
+      .from("runtime_config")
+      .select("key, value")
+      .in("key", toCheck);
+    if (readErr) throw new Error(`runtime_config read failed: ${readErr.message}`);
+    const db = new Map<string, string>();
+    for (const row of (currentRows ?? []) as ConfigRow[]) {
+      if (row.value !== null && row.value.trim() !== "") db.set(row.key, row.value);
+    }
+    const env = (k: string): string | undefined => {
+      const v = envFallback(k); // los secretos atados a un destino NO tienen fallback al entorno
+      return v !== undefined && v.trim() !== "" ? v : undefined;
+    };
+    const violations = checkSecretBindings(values, (k) => db.get(k) ?? env(k), env);
+    if (violations.length > 0) throw new SecretBindingError(violations);
+  }
+
   const updatedAt = new Date().toISOString();
   const rows = Object.entries(values).map(([key, value]) => ({
     key,

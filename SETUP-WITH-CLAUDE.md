@@ -178,9 +178,10 @@ git remote -v   # debe mostrar: origin <ORG>/<NOMBRE>.git
 
 ### Paso Crear usuario
 
-1. Ingresar email y contraseña para el único usuario del dashboard.
-2. El sistema bloquea automáticamente registros adicionales.
-3. Al crear el usuario, el wizard inicia sesión y te lleva directo al dashboard (`/inbox`). El onboarding de Anthropic + Kommo sigue como panel lateral (drawer), no bloqueante.
+1. Ingresar email y contraseña del usuario maestro del dashboard (nace con alcance **Administrador** = `configuracion`, explícito). Si recargaste la página desde el paso anterior, también te pide de nuevo el token `sbp_...`.
+2. Con ese token, el wizard **cierra el registro público de Supabase Auth** (`PATCH /v1/projects/{ref}/config/auth` con `disable_signup: true` vía Management API) y lo **verifica** leyendo la config de vuelta. Si no pudo, NO sigue en silencio: muestra el error y el paso manual (Supabase → Authentication → Sign In / Providers → desactivar «Allow new users to sign up») y espera tu confirmación. Además `health-scan` abre el incidente **«Registro público abierto»** (franja roja del panel) mientras siga abierto. Los usuarios siguientes se crean desde `/usuarios`, siempre con un alcance; una cuenta sin rol no ve nada del panel.
+3. El wizard vuelve a pedir/usar tu token `sbp_` (el del paso anterior) y lo valida contra la Management API: debe poder leer ESTE proyecto, o el usuario NO se crea (403). Es el secreto de arranque: solo lo tiene quien desplegó. Además deja el marcador `PROVISIONED_AT`; si algún día la instalación queda sin usuarios, el primer arranque NO se reabre desde la web (ver «Seguridad del primer arranque» en el README: recuperación desde Supabase Authentication → Users).
+4. Al crear el usuario, el wizard inicia sesión y te lleva directo al dashboard (`/inbox`). El onboarding de Anthropic + Kommo sigue como panel lateral (drawer), no bloqueante.
 
 **Checkpoint**:
 - El deploy exitoso. En supabase.com → Edge Functions aparecen las 8 deployadas con `verify_jwt = off`.

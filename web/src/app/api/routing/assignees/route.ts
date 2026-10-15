@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { parseTerms } from "@/lib/routing";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const AssigneeCreateBody = z.object({
+  kommo_user_id: z.number(),
+  display_name: z.string().nullable().optional(),
+  match_terms: z.union([z.string(), z.array(z.unknown())]).optional(),
+  enabled: z.boolean().optional(),
+  sort_order: z.number().optional(),
+});
 
 export const dynamic = "force-dynamic";
 
@@ -27,14 +37,16 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, AssigneeCreateBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const kommoUserId = Number(body.kommo_user_id);
   if (!Number.isFinite(kommoUserId) || kommoUserId <= 0) {
     return NextResponse.json({ error: "kommo_user_id inválido" }, { status: 400 });
   }
 
   // sort_order al final de la rueda si no lo mandan, para no empatar con otro.
-  let sortOrder = Number(body.sort_order);
+  let sortOrder = body.sort_order ?? Number.NaN;
   if (!Number.isFinite(sortOrder)) {
     const { data: last } = await supabase
       .from("routing_assignees")

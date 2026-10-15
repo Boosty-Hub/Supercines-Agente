@@ -4,6 +4,14 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { configValues } from "@/lib/runtime-config";
 import { generateWebhookSecret, maskDestination, strictModeBlocker, webhookDestination } from "@/lib/kommo-webhook";
 import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const WebhookAuthBody = z.object({
+  action: z.enum(["set_mode", "apply", "rotate"]),
+  mode: z.enum(["strict", "permissive"]).optional(),
+  force: z.boolean().optional(),
+});
 
 /**
  * Autenticidad del webhook de Kommo (secreto en la URL). Alcance `configuracion`: lo
@@ -91,12 +99,14 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.response;
   const base = baseUrl();
   if (!base) return NextResponse.json({ error: "Falta NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
-  const body = (await req.json().catch(() => ({}))) as { action?: string; mode?: string; force?: boolean };
+  const input = await readJson(req, WebhookAuthBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const svc = createServiceClient();
 
   try {
     if (body.action === "set_mode") {
-      if (body.mode !== "strict" && body.mode !== "permissive") {
+      if (body.mode === undefined) {
         return NextResponse.json({ error: "mode inválido" }, { status: 400 });
       }
       const strict = body.mode === "strict";

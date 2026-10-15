@@ -2,6 +2,19 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { createServiceClient } from "@/lib/supabase/service";
 import { setConfigValues } from "@/lib/runtime-config";
+import { normalizeHost } from "@/lib/http-tool-keys";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// accessToken es un secreto: los errores de forma nunca incluyen su valor.
+const KommoSetupBody = z.object({
+  subdomain: z.string().optional(),
+  apiDomain: z.string().optional(),
+  accessToken: z.string().optional(),
+  clientId: z.string().optional(),
+  responseCustomFieldId: z.string().optional(),
+  salesbotId: z.string().optional(),
+});
 
 // Run on Node (not Edge) for consistent fetch/runtime behavior on Netlify.
 export const runtime = "nodejs";
@@ -22,18 +35,15 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, KommoSetupBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const str = (k: string) => (typeof body[k] === "string" ? (body[k] as string).trim() : "");
+  const str = (k: keyof typeof body) => body[k]?.trim() ?? "";
   // Accept just the subdomain ("miempresa"); derive the api domain from it.
   // apiDomain is still accepted for back-compat but optional.
-  const subdomain = str("subdomain").replace(/\.kommo\.com.*$/i, "");
-  const apiDomain = str("apiDomain") || (subdomain ? `${subdomain}.kommo.com` : "");
+  const subdomain = str("subdomain").replace(/\.kommo\.com.*$/i, "").toLowerCase();
+  const rawApiDomain = str("apiDomain") || (subdomain ? `${subdomain}.kommo.com` : "");
   const accessToken = str("accessToken");
   const clientId = str("clientId") || "long-lived-token";
   // Optional response config (the wizard can set these here too). Persisted to
@@ -49,6 +59,15 @@ export async function POST(request: Request) {
       { ok: false, error: `Faltan: ${missing.join(", ")}` },
       { status: 400 }
     );
+  }
+  // El token viaja a KOMMO_API_DOMAIN (API, http tools): tiene que ser un dominio atable, el
+  // mismo que valida lib/http-tool-keys.ts (sin rutas, puertos, IPs ni caracteres ambiguos).
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subdomain)) {
+    return NextResponse.json({ ok: false, error: "Subdominio de Kommo inválido." }, { status: 400 });
+  }
+  const apiDomain = normalizeHost(rawApiDomain);
+  if (!apiDomain || apiDomain !== rawApiDomain.toLowerCase()) {
+    return NextResponse.json({ ok: false, error: "api_domain de Kommo inválido: debe ser un dominio (p. ej. miempresa.kommo.com)." }, { status: 400 });
   }
 
   // Decode claims.
@@ -75,6 +94,7 @@ export async function POST(request: Request) {
   try {
     const accountRes = await fetch(`https://${apiDomain}/api/v4/account`, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: "manual", // el token no sigue un 302 a otro host
     });
     if (!accountRes.ok) {
       return NextResponse.json(

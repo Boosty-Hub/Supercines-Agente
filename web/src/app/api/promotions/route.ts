@@ -1,5 +1,17 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const PromotionBody = z.object({
+  name: z.string().optional(),
+  content: z.string().optional(),
+  kind: z.enum(["promo", "evento"]).optional(),
+  starts_at: z.string().nullable().optional(),
+  ends_at: z.string().nullable().optional(),
+  weekdays: z.array(z.union([z.number(), z.string()])).nullable().optional(),
+  enabled: z.boolean().optional(),
+});
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -10,25 +22,24 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, PromotionBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   // Validar name y content
-  const name = String(body.name ?? "").trim();
+  const name = body.name?.trim() ?? "";
   if (!name) return NextResponse.json({ error: "El nombre es requerido" }, { status: 400 });
-  const content = String(body.content ?? "").trim();
+  const content = body.content?.trim() ?? "";
   if (!content) return NextResponse.json({ error: "El contenido es requerido" }, { status: 400 });
 
   // Validar kind
-  const kind = String(body.kind ?? "promo");
-  if (kind !== "promo" && kind !== "evento") {
-    return NextResponse.json({ error: "kind debe ser 'promo' o 'evento'" }, { status: 400 });
-  }
+  const kind = body.kind ?? "promo";
 
   // Validar starts_at / ends_at
   const starts_at: string | null =
-    body.starts_at && DATE_RE.test(String(body.starts_at)) ? String(body.starts_at) : null;
+    body.starts_at && DATE_RE.test(body.starts_at) ? body.starts_at : null;
   const ends_at: string | null =
-    body.ends_at && DATE_RE.test(String(body.ends_at)) ? String(body.ends_at) : null;
+    body.ends_at && DATE_RE.test(body.ends_at) ? body.ends_at : null;
 
   if (body.starts_at && !starts_at)
     return NextResponse.json({ error: "Formato de fecha inválido para starts_at (debe ser YYYY-MM-DD)" }, { status: 400 });
@@ -40,8 +51,8 @@ export async function POST(request: Request) {
 
   // Validar weekdays
   let weekdays: number[] | null = null;
-  if (Array.isArray(body.weekdays) && body.weekdays.length > 0) {
-    const days = (body.weekdays as unknown[]).map(Number);
+  if (body.weekdays && body.weekdays.length > 0) {
+    const days = body.weekdays.map(Number);
     if (days.some((d) => !Number.isInteger(d) || d < 1 || d > 7))
       return NextResponse.json({ error: "Los días de la semana deben ser valores entre 1 (lunes) y 7 (domingo)" }, { status: 400 });
     weekdays = Array.from(new Set(days)).sort((a, b) => a - b);

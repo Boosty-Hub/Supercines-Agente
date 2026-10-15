@@ -5,6 +5,21 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
 import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { readJson } from "@/lib/api/body";
+
+const GenerateBody = z.object({
+  instruction: z.string().optional(),
+  // El grader que se está editando (para refinarlo en vez de empezar de cero).
+  current: z
+    .object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      prompt: z.string().optional(),
+      scale: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+});
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -17,14 +32,11 @@ export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, GenerateBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+  const instruction = body.instruction?.trim() ?? "";
   if (!instruction) {
     return NextResponse.json(
       { ok: false, error: "Describí qué querés medir con este grader." },
@@ -33,12 +45,7 @@ export async function POST(request: Request) {
   }
 
   // Optional: the grader currently being edited (so the model refines it).
-  const current = (body.current ?? null) as {
-    name?: string;
-    description?: string;
-    prompt?: string;
-    scale?: string;
-  } | null;
+  const current = body.current ?? null;
 
   const [apiKey, systemPrompt, operatorName] = await Promise.all([
     configValue("ANTHROPIC_API_KEY"),

@@ -134,12 +134,13 @@ function NavGroups({
   alertsCount,
   onNavigate,
   collapsed = false,
-  scope = "configuracion",
+  scope,
 }: {
   alertsCount: number;
   onNavigate?: () => void;
   collapsed?: boolean;
-  scope?: Scope;
+  /** Obligatorio: sin default (un default acá era "menú completo" por omisión). */
+  scope: Scope;
 }) {
   const pathname = usePathname();
   const groups = NAV_GROUPS.filter((g) => scopeAlcanza(scope, g.scope));
@@ -243,13 +244,14 @@ export function SidebarNav({
   alertsCount,
   label,
   bcv,
-  scope = "configuracion",
+  scope,
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
-  scope?: Scope;
+  /** Obligatorio: sin default (un default acá era "menú completo" por omisión). */
+  scope: Scope;
 }) {
   const agentLabel = label || ENV_AGENT_LABEL;
   const initial = firstGrapheme(agentLabel).toUpperCase();
@@ -323,13 +325,14 @@ export function MobileNav({
   alertsCount,
   label,
   bcv,
-  scope = "configuracion",
+  scope,
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
-  scope?: Scope;
+  /** Obligatorio: sin default (un default acá era "menú completo" por omisión). */
+  scope: Scope;
 }) {
   const [open, setOpen] = useState(false);
   const agentLabel = label || ENV_AGENT_LABEL;

@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 import { MAX_MONTHLY_BUDGET_USD } from "@/lib/budget";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// monthlyBudgetUsd: número o null (0/null = sin techo); los rangos los valida la ruta.
+const BudgetBody = z.object({
+  monthlyBudgetUsd: z.number().nullable(),
+  excludeSpentSoFar: z.boolean().optional(),
+  safetyMarginPct: z.number().optional(),
+});
 
 export const runtime = "nodejs";
 
@@ -18,19 +27,13 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: { monthlyBudgetUsd?: unknown; excludeSpentSoFar?: unknown; safetyMarginPct?: unknown } = {};
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "JSON inválido" }, { status: 400 });
-  }
+  const input = await readJson(request, BudgetBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const raw = body.monthlyBudgetUsd;
-  if (raw === undefined) {
-    return NextResponse.json({ ok: false, error: "Falta monthlyBudgetUsd (número o null)" }, { status: 400 });
-  }
   const remove = raw === null || raw === 0;
-  if (!remove && (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > MAX_MONTHLY_BUDGET_USD)) {
+  if (!remove && (raw < 0 || raw > MAX_MONTHLY_BUDGET_USD)) {
     return NextResponse.json(
       { ok: false, error: `El techo debe ser un número entre 0 y ${MAX_MONTHLY_BUDGET_USD} (0 o vacío = sin techo)` },
       { status: 400 }
@@ -38,7 +41,7 @@ export async function POST(request: Request) {
   }
 
   const margin = body.safetyMarginPct;
-  if (margin !== undefined && (typeof margin !== "number" || !Number.isFinite(margin) || margin < 0 || margin > 50)) {
+  if (margin !== undefined && (margin < 0 || margin > 50)) {
     return NextResponse.json({ ok: false, error: "El margen de seguridad debe estar entre 0 y 50 (%)" }, { status: 400 });
   }
 

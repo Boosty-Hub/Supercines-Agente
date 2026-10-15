@@ -11,11 +11,12 @@ const ENV_AGENT_LABEL = process.env.NEXT_PUBLIC_AGENT_LABEL || "Agente";
 export function EmbedTabsNav({
   label,
   alertsCount,
-  scope = "configuracion",
+  scope,
 }: {
   label?: string;
   alertsCount: number;
-  scope?: Scope;
+  /** Obligatorio: sin default (un default acá era "menú completo" por omisión). */
+  scope: Scope;
 }) {
   const pathname = usePathname();
   const agentLabel = label || ENV_AGENT_LABEL;

@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { createDream, listDreams, triggerDigestRebuild } from "@/lib/memory-list";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Export de /dreams: un array de { path, content } o { dreams: [...] }. Las entradas sueltas
+// inválidas se descartan en la ruta (import tolerante); el contenedor tiene que ser uno de los dos.
+const DreamsImportBody = z.union([z.array(z.unknown()), z.object({ dreams: z.array(z.unknown()) })], {
+  errorMap: () => ({ message: "Formato esperado: { dreams: [{ path, content }] } o un array" }),
+});
 
 type DreamEntry = { path: string; content: string };
 
@@ -12,22 +20,9 @@ export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "JSON inválido" }, { status: 400 });
-  }
-
-  const rawDreams: unknown = Array.isArray(body)
-    ? body
-    : (body as { dreams?: unknown })?.dreams;
-  if (!Array.isArray(rawDreams)) {
-    return NextResponse.json(
-      { error: "Formato esperado: { dreams: [{ path, content }] } o un array" },
-      { status: 400 }
-    );
-  }
+  const input = await readJson(request, DreamsImportBody);
+  if (!input.ok) return input.response;
+  const rawDreams = Array.isArray(input.data) ? input.data : input.data.dreams;
 
   const entries: DreamEntry[] = [];
   for (const d of rawDreams) {

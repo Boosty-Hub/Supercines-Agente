@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { HTTP_TOOL_DATA_KEYS, HTTP_TOOL_KOMMO_SECRET } from "@/lib/http-tool-keys";
+import { HTTP_TOOL_DATA_KEYS, HTTP_TOOL_KOMMO_SECRET, secretKeysInHeaders } from "@/lib/http-tool-keys";
 import { Modal, Button, ConfirmDialog, Badge, SegmentedControl, type SegmentedItem } from "@/components/ui";
 
 // El tipo vivía en la vieja tools/page.tsx (hoy un redirect a Ajustes), así que
@@ -266,6 +266,11 @@ function TestPanel({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingRun, setConfirmingRun] = useState(false);
+  // Secretos que usan los headers ({{KOMMO_ACCESS_TOKEN}}, {{TOOL_X}}): la prueba NUNCA usa el
+  // valor guardado; el operador pega uno de prueba. Viven solo en este estado (no se guardan en
+  // la tool, ni en el navegador, ni el servidor los persiste o loguea).
+  const secretKeys = secretKeysInHeaders(tool.headers);
+  const [testSecrets, setTestSecrets] = useState<Record<string, string>>({});
 
   async function runRequest() {
     setBusy(true);
@@ -285,6 +290,7 @@ function TestPanel({
             timeout_ms: tool.timeout_ms,
           },
           sampleInputs: inputs,
+          testSecrets: Object.fromEntries(secretKeys.map((k) => [k, testSecrets[k] ?? ""])),
         }),
       });
       const j = await res.json();
@@ -326,6 +332,31 @@ function TestPanel({
         <p className="text-xs text-neutral-400 italic">
           Esta tool no tiene parámetros.
         </p>
+      )}
+      {secretKeys.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs text-neutral-600">
+            Los headers usan secretos. La prueba no usa los guardados: pegá un valor de prueba
+            (no se guarda en la tool ni en el navegador).
+          </p>
+          {secretKeys.map((k) => (
+            <div key={k} className="flex items-center gap-2">
+              <label htmlFor={`test-secret-${k}`} className="w-32 shrink-0 truncate text-xs font-mono text-neutral-600" title={k}>
+                {`{{${k}}}`}
+              </label>
+              <input
+                id={`test-secret-${k}`}
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={testSecrets[k] ?? ""}
+                onChange={(e) => setTestSecrets((prev) => ({ ...prev, [k]: e.target.value }))}
+                placeholder="valor de prueba"
+                className="flex-1 rounded-lg border border-neutral-300 px-2 py-1.5 text-xs focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
+              />
+            </div>
+          ))}
+        </div>
       )}
       <div className="flex items-center gap-2">
         <Button

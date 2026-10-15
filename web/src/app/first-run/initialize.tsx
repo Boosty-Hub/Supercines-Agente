@@ -46,7 +46,8 @@ export function Initialize({
   onComplete,
 }: {
   initialStatus: ProvisionStatus;
-  onComplete: () => void;
+  /** Recibe el token que se usó: el paso Crear usuario lo necesita para cerrar el registro público. */
+  onComplete: (accessToken: string) => void;
 }) {
   const [accessToken, setAccessToken] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -128,7 +129,7 @@ export function Initialize({
     }
 
     setPhase("done");
-    onComplete();
+    onComplete(token);
   }
 
   const migState: "pending" | "running" | "done" =

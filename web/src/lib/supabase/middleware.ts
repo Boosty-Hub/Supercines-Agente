@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { getScope, rutaPermitida, scopeRequeridoPara } from "@/lib/auth/roles";
+import { getScope, inicioPara, rutaPermitida, scopeRequeridoPara, SIN_ACCESO } from "@/lib/auth/roles";
+import { jwtRoleDesfasado } from "@/lib/auth/jwt-role";
 import { EMBED_COOKIE_OPTIONS } from "./cookie-options";
 
 export async function updateSession(request: NextRequest) {
@@ -59,6 +60,19 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  // El rol del JWT (el que usa la RLS) puede haber quedado viejo: la migración que asigna
+  // `configuracion` a los usuarios viejos sin rol, o un alcance subido en /usuarios. getUser() trae
+  // el rol ACTUAL; si difiere del token, se refresca la sesión para no mostrar páginas vacías hasta
+  // que el token expire (lib/auth/jwt-role.ts). Solo se refresca si difieren; un fallo no corta nada.
+  if (user) {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (jwtRoleDesfasado(session?.access_token, user.app_metadata?.role)) {
+      await supabase.auth.refreshSession().catch(() => {});
+    }
+  }
+
   // Rutas públicas (post-connection)
   const isPublic =
     pathname === "/login" ||
@@ -74,9 +88,11 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  if (user && pathname === "/login") {
+  const alcance = user ? getScope(user) : null;
+
+  if (alcance && pathname === "/login") {
     const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/inbox";
+    redirectUrl.pathname = inicioPara(alcance);
     return NextResponse.redirect(redirectUrl);
   }
 
@@ -85,20 +101,20 @@ export async function updateSession(request: NextRequest) {
   // alcance pertenece cada ruta lo decide PATH_SCOPES en roles.ts — pura y
   // centralizada; acá solo se aplica. Vale para páginas Y para /api/*: ocultar
   // un ítem del menú no es un permiso, la ruta se sigue alcanzando escribiendo
-  // la URL. Los usuarios sin rol explícito (el maestro del first-run) alcanzan
-  // "configuracion" por default.
-  if (user) {
-    const scope = getScope(user);
-    if (!rutaPermitida(scope, pathname)) {
+  // la URL. Un usuario SIN rol no alcanza nada (SIN_ACCESO): solo /sin-acceso y
+  // /auth/* (cerrar sesión). Vale también para las rutas "públicas" de arriba
+  // (/first-run, /api/provision): con sesión, decide el alcance.
+  if (alcance) {
+    if (!rutaPermitida(alcance, pathname)) {
       if (pathname.startsWith("/api/")) {
-        const requerido = scopeRequeridoPara(pathname);
-        return NextResponse.json(
-          { error: `forbidden: requiere alcance ${requerido ?? "superior"}` },
-          { status: 403 }
-        );
+        const error =
+          alcance === SIN_ACCESO
+            ? "forbidden: usuario sin alcance asignado"
+            : `forbidden: requiere alcance ${scopeRequeridoPara(pathname) ?? "superior"}`;
+        return NextResponse.json({ error }, { status: 403 });
       }
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/inbox";
+      redirectUrl.pathname = inicioPara(alcance);
       return NextResponse.redirect(redirectUrl);
     }
   }

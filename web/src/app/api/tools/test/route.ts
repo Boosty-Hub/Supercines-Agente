@@ -1,13 +1,29 @@
 import { NextResponse } from "next/server";
 import { internalHeadersForUrl } from "@/lib/internal-call";
 import { requireScope } from "@/lib/auth/require-scope";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { publicConfigValues } from "@/lib/runtime-config";
 import { truncateGraphemes } from "@/lib/text-safe";
-import { isToolConfigKey, resolveToolHeaders } from "@/lib/http-tool-keys";
+import {
+  isToolSecretKey,
+  publicKeysForHeaders,
+  resolveToolHeaders,
+  secretKeysInHeaders,
+} from "@/lib/http-tool-keys";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
-// nodejs runtime — runs the HTTP tool executor server-side (resolves secrets
-// from runtime_config, never exposes resolved values back to the client).
+// nodejs runtime — ejecuta la tool de prueba del lado del servidor.
+//
+// SEGURIDAD: el probador NO resuelve NINGÚN secreto guardado. Lee de runtime_config solo
+// claves PÚBLICAS (KOMMO_API_DOMAIN, KOMMO_SUBDOMAIN y los TOOL_<X>_HOSTS que atan cada
+// secreto a su host) y los {{KOMMO_ACCESS_TOKEN}} / {{TOOL_<X>}} se sustituyen por los
+// valores de prueba que el operador TECLEA en el propio probador (`testSecrets` del body):
+// no se persisten, no se loguean y nunca se devuelven. Sin valor tecleado, la prueba falla
+// con un mensaje claro. El único que resuelve secretos guardados es el runtime
+// (generate-response), con el mismo `resolveToolHeaders` y el mismo atado a hosts.
 export const runtime = "nodejs";
+
+const MAX_TEST_SECRET_LENGTH = 8192;
 
 const MAX_RESPONSE_CHARS = 8192;
 
@@ -47,52 +63,40 @@ function substituteBody(
   return template;
 }
 
+// La tool tal como está en el editor (puede venir de la fila: campos en null). sampleInputs y
+// testSecrets son datos del cliente: la ruta los lee solo como propiedades PROPIAS (abajo), y
+// los valores de prueba de secretos nunca aparecen en un mensaje de error.
+const ToolTestBody = z.object({
+  tool: z.object({
+    http_method: z.string().nullish(),
+    url_template: z.string().nullish(),
+    headers: z.array(z.object({ name: z.string(), value: z.string() })).nullish(),
+    body_template: z.unknown().optional(),
+    input_schema: z.object({ required: z.array(z.string()).optional() }).passthrough().nullish(),
+    timeout_ms: z.number().nullish(),
+  }),
+  // z.record descarta una clave "__proto__" (sin contaminación de prototipo).
+  sampleInputs: z.record(z.unknown()).optional(),
+  testSecrets: z.record(z.unknown()).optional(),
+});
+
 /** POST /api/tools/test — dry-run an http tool with sample inputs. */
 export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
-  // El probador ejecuta un fetch con secretos resueltos: solo alcance `configuracion`
+  // El probador ejecuta un fetch saliente desde el servidor: solo alcance `configuracion`
   // (el middleware ya lo exige para /api/tools; requireScope lo repite como defensa en profundidad).
   if (!auth.ok) return auth.response;
 
-  let body: {
-    tool: {
-      http_method: string;
-      url_template: string;
-      headers: Array<{ name: string; value: string }>;
-      body_template: unknown;
-      input_schema: {
-        type: string;
-        properties: Record<string, unknown>;
-        required?: string[];
-      };
-      timeout_ms: number;
-    };
-    sampleInputs: Record<string, unknown>;
-  };
-
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
-  }
+  const input = await readJson(request, ToolTestBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const { tool } = body;
   // Datos del cliente: se leen solo como propiedades PROPIAS (nada heredado de Object.prototype).
-  const sampleInputs: Record<string, unknown> =
-    body.sampleInputs && typeof body.sampleInputs === "object" && !Array.isArray(body.sampleInputs)
-      ? body.sampleInputs
-      : {};
+  const sampleInputs: Record<string, unknown> = body.sampleInputs ?? {};
 
   if (!tool?.url_template) {
     return NextResponse.json({ error: "tool.url_template es requerido" }, { status: 400 });
-  }
-
-  // HTTPS-only assert.
-  if (!tool.url_template.startsWith("https://")) {
-    return NextResponse.json(
-      { error: "url_template debe ser https://" },
-      { status: 400 }
-    );
   }
 
   // Validate required input fields.
@@ -105,28 +109,43 @@ export async function POST(request: Request) {
     }
   }
 
-  // Claves para los headers ({{CLAVE}}): SOLO de runtime_config, SOLO las permitidas y cada
-  // secreto ATADO a sus hosts (lib/http-tool-keys.ts). Nunca process.env. Los valores
-  // resueltos jamás se devuelven al cliente.
-  // getRuntimeConfig = mapa SOLO de la DB (sin fallback a env), leído con service_role.
-  const dbConfig = await getRuntimeConfig();
-  const resolveConfigKey = (k: string): string | undefined =>
-    isToolConfigKey(k) && Object.hasOwn(dbConfig, k) ? dbConfig[k] : undefined;
+  // Valores de prueba de los secretos: solo strings PROPIOS del body y solo para los secretos
+  // que estos headers usan. Viven en memoria durante esta request y nada más.
+  const neededSecrets = secretKeysInHeaders(tool.headers);
+  const rawSecrets = body.testSecrets ?? {};
+  const testSecrets: Record<string, string> = Object.create(null);
+  for (const k of neededSecrets) {
+    const v = Object.hasOwn(rawSecrets, k) ? rawSecrets[k] : undefined;
+    if (typeof v === "string" && v.trim() !== "" && v.length <= MAX_TEST_SECRET_LENGTH) testSecrets[k] = v.trim();
+  }
+
+  // Claves públicas (dominio de Kommo, hosts declarados de cada TOOL_<X>): SOLO de la tabla,
+  // sin process.env y sin traer ningún secreto (publicConfigValues lanza si se le pide uno).
+  const publicValues: Record<string, string | undefined> = await publicConfigValues(publicKeysForHeaders(tool.headers));
+  const lookup = (k: string): string | undefined =>
+    isToolSecretKey(k)
+      ? Object.hasOwn(testSecrets, k) ? testSecrets[k] : undefined
+      : Object.hasOwn(publicValues, k) ? publicValues[k] : undefined;
 
   // Substitute {{param}} in url_template (URL-encode values).
-  const url = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
+  const interpolatedUrl = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
     encodeURIComponent(String(Object.hasOwn(sampleInputs, p) ? sampleInputs[p] ?? "" : ""))
   );
 
-  // Resolve {{CLAVE}} en los headers con la URL FINAL (ya interpolada) y los secretos atados a sus hosts.
+  // Resolve {{CLAVE}} en los headers con la URL FINAL (ya interpolada) y los secretos atados a
+  // sus hosts: la misma validación que el runtime, pero con los valores de prueba tecleados.
   const resolved = resolveToolHeaders({
     headers: tool.headers,
     urlTemplate: tool.url_template,
-    finalUrl: url,
-    lookup: resolveConfigKey,
+    finalUrl: interpolatedUrl,
+    lookup,
+    missingSecret: (k) =>
+      `En el probador pegá el valor de prueba de {{${k}}}: la prueba nunca usa el secreto guardado (no se guarda ni se registra).`,
   });
   if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: 400 });
   const headers = resolved.headers;
+  // El fetch va a la URL que se VALIDÓ (parseada una vez), nunca a la cadena original.
+  const url = resolved.url;
 
   // Tool que apunta a una Edge Function propia: se llama con el secreto interno
   // (nunca se devuelve al cliente), igual que hace el agente.

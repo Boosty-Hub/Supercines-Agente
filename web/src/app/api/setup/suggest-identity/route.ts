@@ -5,6 +5,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
 import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { readJson } from "@/lib/api/body";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -13,18 +14,17 @@ export const runtime = "nodejs";
 // the operator name and the dashboard label from a business description, so the
 // AI assistant can fill those fields too (the prompt itself is built by the
 // streaming /generate-agent route).
+const SuggestIdentityBody = z.object({ description: z.string().optional() });
+
 export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, SuggestIdentityBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const description = typeof body.description === "string" ? body.description.trim() : "";
+  const description = body.description?.trim() ?? "";
   if (!description) {
     return NextResponse.json({ ok: false, error: "Falta la descripción." }, { status: 400 });
   }

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button, Modal, ConfirmDialog } from "@/components/ui";
 import { Plus, Trash } from "@/components/ui/icons";
 import type { ManagedUser } from "@/lib/users/admin";
-import { SCOPES, SCOPE_LABEL, SCOPE_DESC, type Scope } from "@/lib/auth/roles";
+import { SCOPES, SCOPE_LABEL, SCOPE_DESC, SIN_ACCESO, SIN_ACCESO_LABEL, type Scope } from "@/lib/auth/roles";
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
@@ -60,6 +60,8 @@ export default function UsersTable({
       router.refresh();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
+      // El cambio pudo aplicarse aunque fallara la revocación de sesiones: mostrar el estado real.
+      router.refresh();
     } finally {
       setBusyId(null);
     }
@@ -121,6 +123,7 @@ export default function UsersTable({
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
       setDelUser(null);
+      router.refresh();
     } finally {
       setDelBusy(false);
     }
@@ -169,9 +172,14 @@ export default function UsersTable({
                         value={u.scope}
                         disabled={busyId === u.id}
                         onChange={(e) => changeScope(u, e.target.value as Scope)}
-                        title={SCOPE_DESC[u.scope]}
+                        title={u.scope === SIN_ACCESO ? "Sin rol: no entra a nada del panel hasta que le asignes un alcance." : SCOPE_DESC[u.scope]}
                         className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-800 focus:border-neutral-900 focus:outline-none focus:ring-1 focus:ring-neutral-900 disabled:opacity-50"
                       >
+                        {u.scope === SIN_ACCESO && (
+                          <option value={SIN_ACCESO} disabled>
+                            {SIN_ACCESO_LABEL}
+                          </option>
+                        )}
                         {SCOPES.map((s) => (
                           <option key={s} value={s}>
                             {SCOPE_LABEL[s]}

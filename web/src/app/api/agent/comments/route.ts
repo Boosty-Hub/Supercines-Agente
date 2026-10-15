@@ -1,5 +1,18 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// IDs de Kommo: número o string numérico; null/"" = quitar (la ruta valida que sea > 0).
+const KommoIdInput = z.union([z.number(), z.string(), z.null()]).optional();
+const CommentsBody = z.object({
+  comment_reply_enabled: z.boolean().optional(),
+  respond_to_comments: z.boolean().optional(),
+  comment_salesbot_id: KommoIdInput,
+  comment_field_id: KommoIdInput,
+  comment_reply_rules: z.string().nullable().optional(),
+  comment_instructions: z.string().nullable().optional(),
+});
 
 // Configuración de comentarios de Instagram en kommo_publish_config.
 // Patrón: auth → validar → update kommo_publish_config where is_active.
@@ -10,12 +23,9 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, CommentsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const update: Record<string, unknown> = {};
 

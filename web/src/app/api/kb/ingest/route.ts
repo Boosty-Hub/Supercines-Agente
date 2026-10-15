@@ -1,21 +1,30 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { requireScope } from "@/lib/auth/require-scope";
 import { parseDocument, chunkText } from "@/lib/kb-parsers";
 import { embedTexts } from "@/lib/embed";
+import { MAX_UPLOAD_BODY_BYTES, readForm, uploadFile } from "@/lib/api/body";
 
 export const maxDuration = 60;
 
 const ACCEPTED = new Set(["pdf", "docx", "txt", "md", "srt", "vtt"]);
+
+const KbForm = z.object({
+  title: z.string().optional(),
+  content: z.string().optional(),
+  file: uploadFile.optional(),
+});
 
 export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
 
-  const form = await request.formData();
-  const file = form.get("file") as File | null;
-  const title = (form.get("title") as string | null)?.trim();
-  const inlineContent = form.get("content") as string | null;
+  const parsed = await readForm(request, KbForm, { maxBytes: MAX_UPLOAD_BODY_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const file = parsed.data.file ?? null;
+  const title = parsed.data.title?.trim();
+  const inlineContent = parsed.data.content ?? null;
 
   if (!title) return NextResponse.json({ error: "title requerido" }, { status: 400 });
 

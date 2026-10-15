@@ -22,8 +22,18 @@ function validate(email: string, password: string, confirm: string) {
   return errors;
 }
 
-export function CreateUser({ onComplete }: { onComplete: () => void }) {
+export function CreateUser({
+  accessToken: tokenFromInitialize,
+  onComplete,
+}: {
+  /** Token sbp_ del paso Inicializar ("" si se recargó la página: se pide acá). */
+  accessToken: string;
+  onComplete: () => void;
+}) {
   const router = useRouter();
+  const [token, setToken] = useState(tokenFromInitialize);
+  // Si el registro público no se pudo cerrar solo: el aviso con el paso manual, antes de seguir.
+  const [signupWarning, setSignupWarning] = useState<{ error: string; manualStep: string } | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -36,6 +46,7 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
     setServerError(null);
 
     const errs = validate(email, password, confirm);
+    if (!token.trim()) errs.accessToken = "Pegá tu token de Supabase (sbp_…).";
     setFieldErrors(errs);
     if (Object.keys(errs).length > 0) return;
 
@@ -45,12 +56,15 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
       const res = await fetch("/api/provision/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password, confirm }),
+        body: JSON.stringify({ email, password, confirm, accessToken: token.trim() }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
         fieldErrors?: Record<string, string>;
+        signupDisabled?: boolean;
+        signupError?: string;
+        manualStep?: string;
       };
 
       if (res.status === 400 && data.fieldErrors) {
@@ -82,7 +96,15 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
         return;
       }
 
-      // 3. Session is in cookies now → continue the flow to /setup.
+      // 3. Session is in cookies now. Si el registro público quedó ABIERTO, se avisa y se espera
+      // a que la persona lo confirme: no se sigue en silencio.
+      if (res.ok && data.signupDisabled === false) {
+        setSignupWarning({
+          error: data.signupError ?? "No se pudo cerrar el registro público.",
+          manualStep: data.manualStep ?? "",
+        });
+        return;
+      }
       router.refresh();
       onComplete();
     } catch (err) {
@@ -90,6 +112,34 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
     } finally {
       setRunning(false);
     }
+  }
+
+  if (signupWarning) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-lg font-semibold text-neutral-900">Usuario creado — falta un paso</h2>
+          <p className="mt-1 text-sm text-neutral-500">
+            No pudimos cerrar el registro público de tu proyecto de Supabase. Mientras siga abierto,
+            cualquiera puede crearse una cuenta (sin acceso al panel, pero una cuenta que nadie dio de alta).
+          </p>
+        </div>
+        <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-medium">Cerralo a mano:</p>
+          <p>{signupWarning.manualStep}</p>
+          <p className="font-mono text-xs text-amber-800">{signupWarning.error}</p>
+        </div>
+        <Button
+          type="button"
+          onClick={() => {
+            router.refresh();
+            onComplete();
+          }}
+        >
+          Ya lo cerré, continuar
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -161,6 +211,30 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
             <p className="text-xs text-red-600">{fieldErrors.confirm}</p>
           )}
         </div>
+
+        {(!tokenFromInitialize || fieldErrors.accessToken) && (
+          <div className="space-y-2">
+            <label className={labelCls} htmlFor="fr-token">
+              Token de Supabase
+            </label>
+            <input
+              id="fr-token"
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="sbp_..."
+              className={inputCls + " font-mono"}
+              disabled={running}
+              autoComplete="off"
+            />
+            <p className="text-xs text-neutral-500">
+              El mismo del paso anterior: con él cerramos el registro público de tu proyecto.
+            </p>
+            {fieldErrors.accessToken && (
+              <p className="text-xs text-red-600">{fieldErrors.accessToken}</p>
+            )}
+          </div>
+        )}
 
         {serverError && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

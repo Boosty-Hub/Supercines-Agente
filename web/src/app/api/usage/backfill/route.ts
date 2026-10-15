@@ -5,6 +5,11 @@ import { configValue } from "@/lib/runtime-config";
 import { costUsd, parsePricingOverride } from "@/lib/ai-pricing";
 import { MODEL_KEYS } from "@/lib/model-config";
 import { sessionModelId } from "@/lib/model-capabilities";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Sin cuerpo = primera página; `cursor` = created_at del último draft procesado.
+const BackfillBody = z.object({ cursor: z.string().nullable().optional() });
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // backfill puede tomar varios minutos
@@ -20,13 +25,9 @@ export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
 
-  let body: { cursor?: string } = {};
-  try {
-    const text = await request.text();
-    if (text) body = JSON.parse(text);
-  } catch { /* cursor es opcional */ }
-
-  const cursor = typeof body.cursor === "string" ? body.cursor : null;
+  const input = await readJson(request, BackfillBody, { optional: true });
+  if (!input.ok) return input.response;
+  const cursor = input.data.cursor || null;
 
   const supabase = createServiceClient();
   const pricingOverrideRaw = await configValue("AI_PRICING_OVERRIDES");

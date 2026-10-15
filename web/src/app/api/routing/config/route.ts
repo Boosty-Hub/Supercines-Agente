@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const RoutingConfigBody = z.object({
+  routing_enabled: z.boolean().optional(),
+  routing_min_confidence: z.number().optional(),
+  routing_takeover_user_ids: z.array(z.unknown()).optional(),
+});
 
 // Switches del ruteo de leads (singleton kommo_publish_config, 0052):
 //   routing_enabled            → kill switch del módulo
@@ -15,10 +23,12 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, RoutingConfigBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
 
-  if (typeof body.routing_enabled === "boolean") {
+  if (body.routing_enabled !== undefined) {
     update.routing_enabled = body.routing_enabled;
   }
   if (body.routing_min_confidence !== undefined) {
@@ -32,9 +42,7 @@ export async function POST(request: Request) {
     update.routing_min_confidence = Math.round(n * 100) / 100;
   }
   if (body.routing_takeover_user_ids !== undefined) {
-    const ids = Array.isArray(body.routing_takeover_user_ids)
-      ? body.routing_takeover_user_ids
-      : [];
+    const ids = body.routing_takeover_user_ids;
     update.routing_takeover_user_ids = Array.from(
       new Set(ids.map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0))
     );

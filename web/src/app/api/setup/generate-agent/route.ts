@@ -4,6 +4,8 @@ import { buildCrmActionsContext } from "@/lib/crm-context";
 import { streamText } from "ai";
 import { recordWebUsage } from "@/lib/usage";
 import { DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -59,25 +61,22 @@ ${END}`;
 const CONTINUE_RULES = `Continuá EXACTAMENTE desde donde termina el texto que te paso, SIN repetir ni una palabra y SIN agregar introducción. Mantené el formato markdown. Terminá con la línea exacta:
 ${END}`;
 
-interface Body {
-  mode?: "create" | "section" | "edit" | "continue";
-  instruction?: string;
-  partial?: string;
-  title?: string;
-  currentSection?: string;
-  existingSections?: string[];
-}
+const GenerateAgentBody = z.object({
+  mode: z.enum(["create", "section", "edit", "continue"]).optional(),
+  instruction: z.string().optional(),
+  partial: z.string().optional(),
+  title: z.string().optional(),
+  currentSection: z.string().optional(),
+  existingSections: z.array(z.string()).optional(),
+});
 
 export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Body;
-  try {
-    body = (await request.json()) as Body;
-  } catch {
-    return new Response("invalid JSON body", { status: 400 });
-  }
+  const input = await readJson(request, GenerateAgentBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const apiKey = await configValue("ANTHROPIC_API_KEY");
   if (!apiKey) {
@@ -87,10 +86,10 @@ export async function POST(request: Request) {
   }
 
   const mode = body.mode ?? "create";
-  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
-  const partial = typeof body.partial === "string" ? body.partial : "";
-  const title = typeof body.title === "string" ? body.title.trim() : "";
-  const currentSection = typeof body.currentSection === "string" ? body.currentSection : "";
+  const instruction = body.instruction?.trim() ?? "";
+  const partial = body.partial ?? "";
+  const title = body.title?.trim() ?? "";
+  const currentSection = body.currentSection ?? "";
 
   let system: string;
   let prompt: string;
@@ -118,9 +117,7 @@ export async function POST(request: Request) {
     prompt = `Sección actual:\n\n${currentSection}\n\n--- Cambio pedido ---\n${instruction}`;
   } else if (mode === "section") {
     if (!instruction) return new Response("Falta la información a agregar.", { status: 400 });
-    const titles = Array.isArray(body.existingSections)
-      ? body.existingSections.filter((s) => typeof s === "string")
-      : [];
+    const titles = body.existingSections ?? [];
     const ctx = titles.length
       ? `\n\nSecciones ya existentes (no las dupliques): ${titles.join(" · ")}`
       : "";

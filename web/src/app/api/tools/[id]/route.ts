@@ -1,6 +1,21 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const ToolPatchBody = z.object({
+  description: z.string().optional(),
+  enabled: z.boolean().optional(),
+  http_method: z.string().optional(),
+  url_template: z.string().optional(),
+  // Los valores pueden referenciar secretos ({{TOOL_X}}): nunca se repiten en un error.
+  headers: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
+  // JSON libre (objeto/array/valor) o null.
+  body_template: z.unknown().optional(),
+  input_schema: z.record(z.unknown()).optional(),
+  timeout_ms: z.number().optional(),
+});
 
 // nodejs runtime — calls Anthropic via syncAgentTools.
 export const runtime = "nodejs";
@@ -11,6 +26,11 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
+
+  // El body se valida antes de tocar la base: un body inválido no cuesta una consulta.
+  const input = await readJson(request, ToolPatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   // Fetch the target row first to enforce the system-tool guard.
   const { data: existing, error: fetchErr } = await supabase
@@ -29,20 +49,12 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
     );
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
-  }
-
   // Build partial update — only accept writable fields.
   const update: Record<string, unknown> = {};
-  if (typeof body.description === "string") update.description = body.description;
-  if (typeof body.enabled === "boolean") update.enabled = body.enabled;
-  if (typeof body.http_method === "string")
-    update.http_method = String(body.http_method).toUpperCase();
-  if (typeof body.url_template === "string") {
+  if (body.description !== undefined) update.description = body.description;
+  if (body.enabled !== undefined) update.enabled = body.enabled;
+  if (body.http_method !== undefined) update.http_method = body.http_method.toUpperCase();
+  if (body.url_template !== undefined) {
     if (!body.url_template.startsWith("https://")) {
       return NextResponse.json(
         { error: "url_template debe comenzar con https://" },
@@ -54,7 +66,7 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   if (body.headers !== undefined) update.headers = body.headers;
   if (body.body_template !== undefined) update.body_template = body.body_template;
   if (body.input_schema !== undefined) update.input_schema = body.input_schema;
-  if (typeof body.timeout_ms === "number")
+  if (body.timeout_ms !== undefined)
     update.timeout_ms = Math.min(30000, Math.max(1000, Math.round(body.timeout_ms)));
 
   if (Object.keys(update).length === 0) {

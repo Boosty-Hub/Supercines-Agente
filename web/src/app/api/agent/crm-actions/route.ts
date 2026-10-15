@@ -2,6 +2,23 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Acepta { field, value } o un objeto { campo: bool, ... } con varios flags (+ claves de handoff).
+const CrmActionsBody = z.object({
+  field: z.string().optional(),
+  value: z.boolean().optional(),
+  crm_actions_enabled: z.boolean().optional(),
+  crm_can_move_stage: z.boolean().optional(),
+  crm_can_update_lead: z.boolean().optional(),
+  crm_can_update_contact: z.boolean().optional(),
+  crm_can_add_note: z.boolean().optional(),
+  crm_can_handoff: z.boolean().optional(),
+  crm_can_tag: z.boolean().optional(),
+  HANDOFF_STAGE_NAME: z.string().optional(),
+  HANDOFF_PIPELINE_NAME: z.string().optional(),
+});
 
 // nodejs runtime — syncAgentTools llama a Anthropic.
 export const runtime = "nodejs";
@@ -34,12 +51,9 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, CrmActionsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   // Acepta { field, value } o un objeto { campo: bool, ... } con varios flags.
   const patch: Record<string, boolean> = {};
@@ -56,7 +70,7 @@ export async function POST(request: Request) {
   // hace que el runtime no invente ninguna etapa).
   const configPatch: Record<string, string> = {};
   CONFIG_FIELDS.forEach((key) => {
-    const v = body[key];
+    const v = body[key as "HANDOFF_STAGE_NAME" | "HANDOFF_PIPELINE_NAME"];
     if (typeof v === "string") configPatch[key] = v.trim();
   });
 

@@ -1,6 +1,22 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { syncAgentTools } from "@/lib/sync-agent-tools";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const ToolBody = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+  enabled: z.boolean().optional(),
+  http_method: z.string().optional(),
+  url_template: z.string().optional(),
+  // Los valores pueden referenciar secretos ({{TOOL_X}}): nunca se repiten en un error.
+  headers: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
+  // JSON libre (objeto/array/valor) o null.
+  body_template: z.unknown().optional(),
+  input_schema: z.record(z.unknown()).optional(),
+  timeout_ms: z.number().optional(),
+});
 
 // nodejs runtime — calls Anthropic via syncAgentTools.
 export const runtime = "nodejs";
@@ -30,15 +46,12 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
-  }
+  const input = await readJson(request, ToolBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   // Validate name: snake_case only [a-z0-9_], non-empty.
-  const name = String(body.name ?? "").trim();
+  const name = body.name?.trim() ?? "";
   if (!name) return NextResponse.json({ error: "name es requerido" }, { status: 400 });
   if (!/^[a-z0-9_]+$/.test(name)) {
     return NextResponse.json(
@@ -54,7 +67,7 @@ export async function POST(request: Request) {
   }
 
   // Validate url_template: must start with https://
-  const urlTemplate = String(body.url_template ?? "").trim();
+  const urlTemplate = body.url_template?.trim() ?? "";
   if (!urlTemplate) {
     return NextResponse.json({ error: "url_template es requerido" }, { status: 400 });
   }
@@ -68,10 +81,10 @@ export async function POST(request: Request) {
   // Build the row to insert.
   const row: Record<string, unknown> = {
     name,
-    description: String(body.description ?? "").trim(),
+    description: body.description?.trim() ?? "",
     tool_type: "http",
     enabled: body.enabled !== false,
-    http_method: String(body.http_method ?? "GET").toUpperCase(),
+    http_method: (body.http_method ?? "GET").toUpperCase(),
     url_template: urlTemplate,
     headers: body.headers ?? [],
     body_template: body.body_template ?? null,
@@ -83,7 +96,7 @@ export async function POST(request: Request) {
     // Clamp server-side (the UI also clamps) so a crafted request can't set an
     // absurd timeout that would hang the agent session.
     timeout_ms:
-      typeof body.timeout_ms === "number"
+      body.timeout_ms !== undefined
         ? Math.min(30000, Math.max(1000, Math.round(body.timeout_ms)))
         : 8000,
   };

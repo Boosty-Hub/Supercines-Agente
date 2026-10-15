@@ -65,11 +65,17 @@ El wizard te guia por tres pasos:
 
 1. **Conectar** — instrucciones para configurar las variables (ya las configuraste en el paso 3). El wizard detecta la conexión automáticamente y avanza.
 2. **Inicializar** — pegás tu Personal Access Token de Supabase (`sbp_...`, de `supabase.com/dashboard/account/tokens`) y el wizard aplica todas las migraciones SQL y deploya las Edge Functions en tu proyecto. Todo con barra de progreso por unidad.
-3. **Crear usuario** — email + contraseña para el único usuario del dashboard. El sistema bloquea registros adicionales automáticamente.
+3. **Crear usuario** — email + contraseña del usuario maestro (alcance Administrador). Con tu token `sbp_` el wizard **cierra el registro público de Supabase Auth** (`disable_signup` vía Management API) y lo verifica; si no puede, te muestra el paso manual (Supabase → Authentication → Sign In / Providers → desactivar «Allow new users to sign up») antes de seguir, y el chequeo de salud avisa con el incidente «Registro público abierto» mientras siga abierto. Los demás usuarios se crean desde `/usuarios`, siempre con un alcance.
 
 Tras crear el usuario, el wizard te lleva directo al dashboard (`/inbox`). El onboarding de Anthropic + Kommo **NO es obligatorio para entrar**: continúa como un panel lateral (drawer) que se abre solo la primera vez.
 
 ### Paso 5 — Wizard de provisioning Anthropic + Kommo (panel lateral)
+
+> **Seguridad del primer arranque.**
+> - **Quién puede crear al maestro:** el `/first-run` exige tu token `sbp_` también al **crear el usuario**, y lo valida contra la Management API: tiene que poder **leer ESTE proyecto** (el `ref` sale de `NEXT_PUBLIC_SUPABASE_URL`, nunca del formulario). Así, aunque alguien conozca la URL de un despliegue recién creado, no puede registrarse como maestro antes que vos: no tiene un token de la cuenta dueña del proyecto.
+> - **El primer arranque no se reabre:** el register deja un marcador persistente `PROVISIONED_AT` (tabla `_app_secrets`, solo servidor; la migración 0083 lo escribe también en instalaciones que ya tienen usuarios). Si en una instalación provisionada se borran todos los usuarios, el provisioner **no** vuelve a aceptar peticiones sin sesión: responde 403 con el procedimiento de recuperación.
+> - **Recuperación (provisionada sin usuarios):** en Supabase → Authentication → Users creá un usuario (email confirmado) con `app_metadata` `{"role":"configuracion"}` (o por la Admin API) y entrá con él. Solo si necesitás volver a correr el wizard completo, borrá el marcador desde el SQL editor: `delete from _app_secrets where clave = 'PROVISIONED_AT';`.
+> - **Si no se puede contar usuarios** (Admin API o base caída) el provisioner responde 503: nunca queda abierto.
 
 Ya dentro del dashboard, un **panel lateral derecho** ("Configurá tu agente") te guía paso a paso. No bloquea: podés cerrarlo y usar la plataforma, y reabrirlo cuando quieras desde el botón flotante abajo a la derecha (o visitando `/setup`, que lo abre). El progreso se muestra en una barra (N de 5) y podés retomar desde donde lo dejaste. Provisiona:
 
@@ -107,6 +113,14 @@ En `/settings`: `agent_enabled = true`, `publishing_enabled = false` (shadow al 
 ---
 
 ## Actualizar un cliente ya desplegado
+
+> **Antes de aplicar la migración 0078 (alcances fail-closed):** «sin rol» pasa a ser SIN ACCESO. La
+> migración promueve a `configuracion` SOLO al usuario maestro (el creado primero: el del `/first-run`)
+> si no tiene rol. **Asigná un rol explícito (`/usuarios`, o `app_metadata.role` por la Admin API) a los
+> demás usuarios legítimos existentes ANTES de actualizar**: quien no tenga rol queda «Sin acceso»
+> (aparece en `/usuarios` con un aviso). Revisá además `auth.users`: si el proyecto tuvo el registro
+> público abierto, borrá las cuentas que no reconozcas. Al actualizar, el panel cierra el registro
+> público (`disable_signup`) y lo verifica.
 
 Cuando publicás código nuevo (un fix, una migración, una Edge Function), el **dashboard** (Netlify/Vercel) se redespliega solo con el `git push`. Pero la **base de datos** (migraciones) y las **Edge Functions** viven en el Supabase del cliente y **NO** se actualizan con el deploy del front — hay que **sincronizarlas**. Eso se hace desde el navegador, sin CLI ni tocar Supabase a mano.
 

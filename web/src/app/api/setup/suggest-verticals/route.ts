@@ -6,6 +6,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
 import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { readJson } from "@/lib/api/body";
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -16,19 +17,17 @@ export const maxDuration = 60;
 // who the agent is) and proposes 3-5 message categories specific to the
 // business. The three generic verticals (general, engagement_social,
 // hate_sarcasmo) are already seeded, so we tell the model NOT to repeat them.
+const SuggestVerticalsBody = z.object({ description: z.string().optional() });
+
 export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
   // Optional extra context the client may pass (the business description typed
   // in the agent step). The saved system prompt is the primary source of truth.
-  let body: Record<string, unknown> = {};
-  try {
-    body = await request.json();
-  } catch {
-    /* body is optional */
-  }
-  const extra = typeof body.description === "string" ? body.description.trim() : "";
+  const input = await readJson(request, SuggestVerticalsBody, { optional: true });
+  if (!input.ok) return input.response;
+  const extra = input.data.description?.trim() ?? "";
 
   const [apiKey, systemPrompt, operatorName] = await Promise.all([
     configValue("ANTHROPIC_API_KEY"),

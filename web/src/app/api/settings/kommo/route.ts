@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { readForm } from "@/lib/api/body";
+
+// IDs de Kommo: vacío = sin configurar; si viene, entero positivo (antes "abc" → NaN → 500).
+const KommoId = z.string().trim().regex(/^\d*$/).optional();
+const KommoForm = z.object({ response_custom_field_id: KommoId, salesbot_id: KommoId });
 
 // Publicación Kommo (Config → Kommo): campo destino + salesbot del reply principal.
 // Los switches de encendido/publicación/revisión viven en el Panel de control
@@ -12,9 +18,10 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const form = await request.formData();
-  const fieldId = form.get("response_custom_field_id")?.toString().trim();
-  const botId = form.get("salesbot_id")?.toString().trim();
+  const parsed = await readForm(request, KommoForm);
+  if (!parsed.ok) return parsed.response;
+  const fieldId = parsed.data.response_custom_field_id;
+  const botId = parsed.data.salesbot_id;
 
   const update: Record<string, unknown> = {
     response_custom_field_id: fieldId ? Number(fieldId) : null,

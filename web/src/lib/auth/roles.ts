@@ -25,11 +25,31 @@
 // un dato corrupto, un alcance que este módulo todavía no conoce— REGALABA
 // ACCESO TOTAL. Un fallo abierto en el punto exacto donde no puede haberlo.
 //
-// Ahora un valor presente pero irreconocible cae al alcance MÁS RESTRICTIVO.
-// Lo único que abre del todo es la AUSENCIA de rol, y eso es deliberado y
-// acotado: es el usuario maestro que crea el wizard `/first-run`, anterior a
-// este módulo. Crear un usuario desde `/usuarios` SIEMPRE fija un alcance, así
-// que "sin rol" nunca es el estado de un usuario nuevo.
+// Ahora un valor presente pero irreconocible cae CERRADO (SIN_ACCESO), igual que la
+// RLS (0078/0079): ninguna capa abre nada con un valor que no reconoce.
+//
+// ── SIN ROL = SIN ACCESO ─────────────────────────────────────────────────
+//
+// Hasta acá la AUSENCIA de rol abría TODO ("es el maestro del /first-run"). Era
+// un fallo abierto con disparador externo: con el registro público de Supabase
+// Auth habilitado (el default de un proyecto nuevo), cualquiera con la anon key
+// (pública) hacía `signUp` y nacía SIN rol → alcance configuracion → panel
+// entero, credenciales y usuarios incluidos. Ahora:
+//
+//   - Sin rol ⇒ SIN_ACCESO: el middleware no le deja ver NADA del panel salvo
+//     /sin-acceso (aviso + cerrar sesión) y las rutas de sesión (/auth/*).
+//     Ninguna ruta de API le responde, ni las que no tienen alcance declarado.
+//   - Se eligió SIN_ACCESO y no `operacion`: un usuario sin rol no es un dato
+//     corrupto de alguien legítimo, es alguien que nadie dio de alta (o un
+//     alta a medias). `operacion` igual le mostraría todos los leads y las
+//     conversaciones (PII de clientes). Lo legítimo siempre tiene rol: el
+//     /first-run crea al maestro con `configuracion` explícito, `/usuarios`
+//     rechaza crear sin alcance, y la migración de datos que acompaña a este
+//     cambio asigna `configuracion` a los usuarios que ya existían sin rol
+//     (deploy: esa migración ANTES que esta web, o el maestro viejo se queda
+//     afuera hasta que corra).
+//   - La RLS dice lo mismo (sin rol = sin acceso): el mismo contrato en las
+//     dos capas.
 //
 // ── DOS FRONTERAS DISTINTAS, NO CONFUNDIR UNA CON LA OTRA ────────────────
 //
@@ -43,16 +63,19 @@
 //      kommo_credentials y alert_config son solo del servidor (service_role), y
 //      las tablas de config/contenido exigen el alcance en la policy con la
 //      condición INLINE sobre `app_metadata.role` que copia EXACTAMENTE
-//      `getScope`/`scopeAlcanza` de acá (sin rol → configuracion; admin/editor
-//      como alias; irreconocible → cerrado). Si cambia esta regla, cambia la de
+//      `getScope`/`scopeAlcanza` de acá (sin rol → sin acceso; admin/editor
+//      como alias; irreconocible → sin acceso). Si cambia esta regla, cambia la de
 //      las policies en una migración nueva: una discrepancia entre las dos capas
 //      es peor que no tener la segunda. Matriz tabla × alcance en CLAUDE.md;
 //      la prueba es supabase/tests/runtime_config_lockdown.sql.
 
 export type Scope = "operacion" | "contenido" | "configuracion";
 
-/** Los dos alias heredados. Se siguen leyendo; ya no se escriben. */
-export type Role = "admin" | "editor";
+/** Usuario autenticado SIN rol asignado: no entra a nada del panel. No es un `Scope`. */
+export const SIN_ACCESO = "sin_acceso" as const;
+
+/** Lo que resuelve `getScope`: un alcance real o SIN_ACCESO. */
+export type Alcance = Scope | typeof SIN_ACCESO;
 
 export const SCOPES: readonly Scope[] = ["operacion", "contenido", "configuracion"];
 
@@ -82,15 +105,24 @@ export function isScope(v: unknown): v is Scope {
   return v === "operacion" || v === "contenido" || v === "configuracion";
 }
 
+/** Etiqueta de un usuario sin rol en /usuarios (no es un alcance que se pueda elegir). */
+export const SIN_ACCESO_LABEL = "Sin acceso";
+
 /**
- * El alcance real de este usuario. Única fuente de verdad — `getRole` se
- * deriva de esto, nunca al revés.
+ * El alcance real de este usuario. Única fuente de verdad.
+ *
+ * Sin rol (ausente, null o "") ⇒ SIN_ACCESO. Ver «SIN ROL = SIN ACCESO» arriba.
  */
-export function getScope(user: UserLike): Scope {
+/** ¿El usuario NO tiene rol (ausente, null o "")? Distinto de un rol presente pero irreconocible. */
+export function esSinRol(user: UserLike): boolean {
+  const r = user?.app_metadata?.role;
+  return r === null || r === undefined || r === "";
+}
+
+export function getScope(user: UserLike): Alcance {
   const r = user?.app_metadata?.role;
 
-  // Sin rol explícito: el maestro del first-run. Acceso total, a propósito.
-  if (r === null || r === undefined) return "configuracion";
+  if (r === null || r === undefined || r === "") return SIN_ACCESO;
 
   // Alias heredados.
   if (r === "admin") return "configuracion";
@@ -98,22 +130,26 @@ export function getScope(user: UserLike): Scope {
 
   if (isScope(r)) return r;
 
-  // Presente pero irreconocible: cae CERRADO. Ver la nota de arriba — un
-  // valor corrupto no es lo mismo que un valor ausente.
-  return "operacion";
+  // Presente pero irreconocible: cae CERRADO, igual que en SQL (las policies de 0078/0079 solo
+  // abren con valores reconocidos). Un valor corrupto no abre NADA, ni siquiera `operacion`:
+  // TS y RLS en desacuerdo darían páginas vacías o acceso a medias.
+  return SIN_ACCESO;
+}
+
+/** ¿El alcance de este usuario alcanza para lo que se le pide? Acumulativo. SIN_ACCESO nunca. */
+export function scopeAlcanza(deUsuario: Alcance, requerido: Scope): boolean {
+  if (deUsuario === SIN_ACCESO) return false;
+  return SCOPE_RANK[deUsuario] >= SCOPE_RANK[requerido];
 }
 
 /**
- * Compat hacia atrás para código que todavía razona en admin/editor.
- * Derivado de `getScope`: "configuracion" es admin, todo lo demás editor.
+ * ¿Pasar de `antes` a `despues` le QUITA acceso? (Al bajar el alcance se revocan las sesiones
+ * del usuario: un JWT ya emitido seguiría valiendo con el alcance viejo hasta expirar.)
+ * Subir desde SIN_ACCESO no es una baja; el mismo alcance tampoco.
  */
-export function getRole(user: UserLike): Role {
-  return getScope(user) === "configuracion" ? "admin" : "editor";
-}
-
-/** ¿El alcance de este usuario alcanza para lo que se le pide? Acumulativo. */
-export function scopeAlcanza(deUsuario: Scope, requerido: Scope): boolean {
-  return SCOPE_RANK[deUsuario] >= SCOPE_RANK[requerido];
+export function esBajaDeAlcance(antes: Alcance, despues: Scope): boolean {
+  if (antes === SIN_ACCESO) return false;
+  return SCOPE_RANK[despues] < SCOPE_RANK[antes];
 }
 
 // Alcance mínimo por prefijo de ruta. Reemplaza la lista binaria que existía
@@ -226,10 +262,28 @@ export function scopeRequeridoPara(pathname: string): Scope | null {
 }
 
 /**
+ * Lo único que ve un usuario autenticado SIN_ACCESO: el aviso y las rutas de sesión (cerrar
+ * sesión, callback). Todo lo demás —páginas, API, incluso lo que no tiene alcance declarado— no.
+ *
+ * Excepción de TRANSICIÓN: `/api/provision/migrate` pasa el middleware para que el maestro sin
+ * rol de un despliegue anterior pueda aplicar la migración que le asigna el rol (SuperCines no
+ * tiene `/api/provision/updates`). La ruta decide (lib/provision/gate.ts): solo mientras esa migración (0078) no
+ * esté aplicada; después responde 403 como a cualquier otro sin rol.
+ */
+export const RUTA_SIN_ACCESO = "/sin-acceso";
+const PERMITIDAS_SIN_ACCESO = [RUTA_SIN_ACCESO, "/auth", "/api/provision/migrate"];
+
+/**
  * ¿Este alcance alcanza para esta ruta? La pregunta que hace cumplir el
  * middleware — pura y sin depender de la sesión ni del request.
  */
-export function rutaPermitida(scope: Scope, pathname: string): boolean {
+export function rutaPermitida(alcance: Alcance, pathname: string): boolean {
+  if (alcance === SIN_ACCESO) return PERMITIDAS_SIN_ACCESO.some((p) => coincide(pathname, p));
   const requerido = scopeRequeridoPara(pathname);
-  return requerido === null || scopeAlcanza(scope, requerido);
+  return requerido === null || scopeAlcanza(alcance, requerido);
+}
+
+/** A dónde mandar a un usuario con sesión cuando una página no le corresponde. */
+export function inicioPara(alcance: Alcance): string {
+  return alcance === SIN_ACCESO ? RUTA_SIN_ACCESO : "/inbox";
 }

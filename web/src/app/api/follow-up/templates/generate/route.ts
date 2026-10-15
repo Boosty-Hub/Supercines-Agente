@@ -5,6 +5,13 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
 import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { readJson } from "@/lib/api/body";
+
+const GenerateBody = z.object({
+  instruction: z.string().optional(),
+  // Nombres de campos custom existentes en Kommo.
+  fields: z.array(z.string()).optional(),
+});
 
 // nodejs runtime: el SDK oficial de Anthropic da 401 spurios en Netlify Edge.
 // Usar generateObject (Vercel AI SDK) vía dashboardModel, como en /api/verticales/generate.
@@ -15,14 +22,11 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, GenerateBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+  const instruction = body.instruction?.trim() ?? "";
   if (!instruction) {
     return NextResponse.json(
       { ok: false, error: "Describí qué plantilla de seguimiento querés crear." },
@@ -33,9 +37,7 @@ export async function POST(request: Request) {
   // Nombres de los campos custom que ya existen en Kommo (entidad leads). Se los
   // pasamos a la IA para que, cuando una variable corresponda a un campo existente,
   // la nombre IGUAL y haga match automático en el dashboard (sin crear duplicados).
-  const existingFields = Array.isArray(body.fields)
-    ? (body.fields as unknown[]).map((f) => String(f)).filter(Boolean).slice(0, 80)
-    : [];
+  const existingFields = (body.fields ?? []).filter(Boolean).slice(0, 80);
 
   const [apiKey, systemPrompt, operatorName] = await Promise.all([
     configValue("ANTHROPIC_API_KEY"),

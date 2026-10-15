@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { fromReviewMode, asReviewMode } from "@/lib/review-mode";
 import { truncateGraphemes } from "@/lib/text-safe";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
 // Los interruptores críticos del Panel de control (Ajustes → arriba de las
 // pestañas), cada uno se guarda al toque desde el cliente — sin formulario
@@ -14,13 +16,17 @@ import { truncateGraphemes } from "@/lib/text-safe";
 // aplicó en este proyecto, el resto del panel (agente/publicación/revisión)
 // tiene que seguir funcionando — el switch de Apagado total ya llega
 // deshabilitado desde el server component (ver settings/page.tsx).
-const BOOL_FIELDS = ["system_halted", "agent_enabled", "publishing_enabled"] as const;
-type BoolField = (typeof BOOL_FIELDS)[number];
-type Field = BoolField | "review_mode";
-
-function isBoolField(value: unknown): value is BoolField {
-  return typeof value === "string" && (BOOL_FIELDS as readonly string[]).includes(value);
-}
+const ControlPanelBody = z.discriminatedUnion("field", [
+  z.object({
+    field: z.literal("system_halted"),
+    value: z.boolean(),
+    // Motivo opcional al detener el sistema.
+    reason: z.string().optional(),
+  }),
+  z.object({ field: z.literal("agent_enabled"), value: z.boolean() }),
+  z.object({ field: z.literal("publishing_enabled"), value: z.boolean() }),
+  z.object({ field: z.literal("review_mode"), value: z.enum(["todo", "normal", "sin"]) }),
+]);
 
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
@@ -29,14 +35,12 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json().catch(() => null);
-  const field = body?.field as Field | undefined;
-  const value = body?.value;
+  const input = await readJson(request, ControlPanelBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  if (field === "system_halted") {
-    if (typeof value !== "boolean") {
-      return NextResponse.json({ error: "payload inválido" }, { status: 400 });
-    }
+  if (body.field === "system_halted") {
+    const value = body.value;
     const update: Record<string, unknown> = { system_halted: value };
     // halted_at/halted_by se estampan solo al PRENDER — se conservan después
     // de reactivar (columna comentada en la migración) para reconstruir el
@@ -44,7 +48,7 @@ export async function POST(request: Request) {
     if (value) {
       update.halted_at = new Date().toISOString();
       update.halted_by = user.id;
-      const reason = typeof body?.reason === "string" ? truncateGraphemes(body.reason.trim(), 500) : "";
+      const reason = body.reason ? truncateGraphemes(body.reason.trim(), 500) : "";
       update.halted_reason = reason || null;
     }
     const { error } = await supabase.from("kommo_publish_config").update(update).eq("is_active", true);
@@ -52,11 +56,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  if (field === "review_mode") {
-    if (typeof value !== "string" || !["todo", "normal", "sin"].includes(value)) {
-      return NextResponse.json({ error: "payload inválido" }, { status: 400 });
-    }
-    const mode = asReviewMode(value);
+  if (body.field === "review_mode") {
+    const mode = asReviewMode(body.value);
 
     const { data: current, error: readError } = await supabase
       .from("kommo_publish_config")
@@ -79,11 +80,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  if (!isBoolField(field) || typeof value !== "boolean") {
-    return NextResponse.json({ error: "payload inválido" }, { status: 400 });
-  }
+  const value = body.value;
 
-  if (field === "agent_enabled") {
+  if (body.field === "agent_enabled") {
     const { error } = await supabase
       .from("kommo_publish_config")
       .update({ agent_enabled: value })

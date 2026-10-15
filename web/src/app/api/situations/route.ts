@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const SituationBody = z.object({
+  title: z.string().optional(),
+  content: z.string().optional(),
+  starts_at: z.string().nullable().optional(),
+  ends_at: z.string().nullable().optional(),
+  enabled: z.boolean().optional(),
+});
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -10,17 +20,19 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, SituationBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const title = String(body.title ?? "").trim();
+  const title = body.title?.trim() ?? "";
   if (!title) return NextResponse.json({ error: "El título es requerido" }, { status: 400 });
-  const content = String(body.content ?? "").trim();
+  const content = body.content?.trim() ?? "";
   if (!content) return NextResponse.json({ error: "El contenido es requerido" }, { status: 400 });
 
   const starts_at: string | null =
-    body.starts_at && DATE_RE.test(String(body.starts_at)) ? String(body.starts_at) : null;
+    body.starts_at && DATE_RE.test(body.starts_at) ? body.starts_at : null;
   const ends_at: string | null =
-    body.ends_at && DATE_RE.test(String(body.ends_at)) ? String(body.ends_at) : null;
+    body.ends_at && DATE_RE.test(body.ends_at) ? body.ends_at : null;
 
   if (body.starts_at && !starts_at)
     return NextResponse.json({ error: "Formato de fecha inválido para starts_at (debe ser YYYY-MM-DD)" }, { status: 400 });

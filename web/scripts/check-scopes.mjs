@@ -25,9 +25,10 @@ const WEB = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const APP = join(WEB, "src", "app");
 const ROLES = join(WEB, "src", "lib", "auth", "roles.ts");
 
-// Rutas públicas por diseño: no exigen sesión, así que tampoco alcance.
+// Rutas públicas por diseño: no exigen alcance (/sin-acceso pide sesión, pero es justo
+// la página de quien no tiene ninguno).
 // El middleware las deja pasar antes de llegar al gate (ver `isPublic`).
-const PUBLICAS = ["/login", "/first-run", "/auth", "/update-password"];
+const PUBLICAS = ["/login", "/first-run", "/auth", "/update-password", "/sin-acceso"];
 
 function walk(dir, out = []) {
   if (!existsSync(dir)) return out;

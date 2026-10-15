@@ -1,5 +1,20 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const VerticalPatchBody = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+  system_prompt: z.string().optional(),
+  auto_reply: z.boolean().optional(),
+  requires_review: z.boolean().optional(),
+  ignore: z.boolean().optional(),
+  // Ruteo al equipo comercial (0052).
+  auto_assign: z.boolean().optional(),
+  kommo_field_name: z.string().optional(),
+  kommo_field_value: z.string().optional(),
+});
 
 export async function PATCH(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -9,21 +24,23 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, VerticalPatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
-  if (typeof body.name === "string") update.name = body.name;
-  if (typeof body.description === "string") update.description = body.description;
-  if (typeof body.system_prompt === "string") update.system_prompt = body.system_prompt;
-  if (typeof body.auto_reply === "boolean") update.auto_reply = body.auto_reply;
-  if (typeof body.requires_review === "boolean") update.requires_review = body.requires_review;
-  if (typeof body.ignore === "boolean") update.ignore = body.ignore;
+  if (body.name !== undefined) update.name = body.name;
+  if (body.description !== undefined) update.description = body.description;
+  if (body.system_prompt !== undefined) update.system_prompt = body.system_prompt;
+  if (body.auto_reply !== undefined) update.auto_reply = body.auto_reply;
+  if (body.requires_review !== undefined) update.requires_review = body.requires_review;
+  if (body.ignore !== undefined) update.ignore = body.ignore;
   // Ruteo al equipo comercial (0052). Los campos de Kommo aceptan "" como
   // "borrar la config" → se guardan NULL, que es lo que lee la Edge Function.
-  if (typeof body.auto_assign === "boolean") update.auto_assign = body.auto_assign;
-  if (typeof body.kommo_field_name === "string") {
+  if (body.auto_assign !== undefined) update.auto_assign = body.auto_assign;
+  if (body.kommo_field_name !== undefined) {
     update.kommo_field_name = body.kommo_field_name.trim() || null;
   }
-  if (typeof body.kommo_field_value === "string") {
+  if (body.kommo_field_value !== undefined) {
     update.kommo_field_value = body.kommo_field_value.trim() || null;
   }
 

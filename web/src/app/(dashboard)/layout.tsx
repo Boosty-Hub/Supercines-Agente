@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { getBcvRateCached } from "@/lib/exchange";
-import { getScope } from "@/lib/auth/roles";
+import { redirect } from "next/navigation";
+import { getScope, RUTA_SIN_ACCESO, SIN_ACCESO } from "@/lib/auth/roles";
 import { getSetupState } from "@/lib/setup-state";
 import { MobileNav, SidebarNav } from "./nav";
 import { BoostySupportWidget } from "./boosty-widget";
@@ -23,6 +24,12 @@ export default async function DashboardLayout({
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  // El middleware ya no deja pasar a nadie sin alcance; esto es la segunda capa (y estrecha el
+  // tipo: de acá para abajo `scope` es un alcance real).
+  const alcance = getScope(user);
+  if (!user) redirect("/login");
+  if (alcance === SIN_ACCESO) redirect(RUTA_SIN_ACCESO);
+  const scope = alcance;
   const [{ count: alertsCount }, { data: pubCfg }, { data: haltCfg }] = await Promise.all([
     supabase
       .from("alerts")
@@ -49,7 +56,6 @@ export default async function DashboardLayout({
   };
   const email = user?.email ?? "";
   const alerts = alertsCount ?? 0;
-  const scope = getScope(user);
   // Resolve the branding label DB-first (editable from /agent) with env
   // fallback. Resolved server-side so it does NOT depend on the build-time
   // NEXT_PUBLIC_AGENT_LABEL inlining.

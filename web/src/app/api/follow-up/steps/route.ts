@@ -1,5 +1,20 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// La secuencia COMPLETA (reemplaza los pasos existentes). Sin `steps` es 400: antes un body
+// sin la lista borraba la secuencia entera.
+const StepsBody = z.object({
+  steps: z.array(
+    z.object({
+      step_number: z.union([z.number(), z.string()]).optional(),
+      delay_hours: z.union([z.number(), z.string()]).optional(),
+      template_id: z.union([z.string(), z.number(), z.null()]).optional(),
+      enabled: z.boolean().optional(),
+    })
+  ),
+});
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
@@ -25,16 +40,11 @@ export async function PUT(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, StepsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const steps = Array.isArray(body.steps)
-    ? (body.steps as Array<Record<string, unknown>>)
-    : [];
+  const { steps } = body;
 
   // Validar unicidad de step_number en el payload
   const stepNumbers = steps.map((s) => Number(s.step_number));

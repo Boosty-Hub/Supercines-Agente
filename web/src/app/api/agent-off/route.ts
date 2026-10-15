@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// fieldId inválido o null = desactivar el interruptor por lead (semántica de la ruta).
+const AgentOffBody = z.object({
+  fieldId: z.union([z.number(), z.string(), z.null()]).optional(),
+  fieldName: z.string().nullable().optional(),
+});
 
 // Configura el campo "Apagar Agente": guarda el id (+ nombre) del campo de Kommo
 // que actúa como interruptor por lead. null = desactivado.
@@ -10,7 +18,9 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, AgentOffBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const id = Number(body.fieldId);
   const valid = Number.isFinite(id) && id > 0;
 

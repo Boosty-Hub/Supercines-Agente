@@ -8,7 +8,7 @@ import { NextResponse } from "next/server";
 import { redirect } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { Scope } from "@/lib/auth/roles";
+import { RUTA_SIN_ACCESO, type Scope } from "@/lib/auth/roles";
 import { authorizeScope, configWriterFor, type ConfigWriter } from "@/lib/auth/scope-guard";
 
 type SessionClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
@@ -37,13 +37,16 @@ export async function requireScope(
   return { ok: true, supabase, user: user!, scope: decision.scope, writer: configWriterFor(user, decision.scope) };
 }
 
-/** Páginas de servidor: sin sesión → /login; sin alcance → /inbox (lo que todo alcance ve). */
+/**
+ * Páginas de servidor: sin sesión → /login; sin rol → /sin-acceso; sin alcance suficiente →
+ * /inbox (lo que todo alcance ve).
+ */
 export async function requirePageScope(required: Scope): Promise<ScopeGranted> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   const decision = authorizeScope(user, required);
-  if (!decision.ok) redirect(decision.status === 401 ? "/login" : "/inbox");
+  if (!decision.ok) redirect(decision.status === 401 ? "/login" : decision.sinAcceso ? RUTA_SIN_ACCESO : "/inbox");
   return { ok: true, supabase, user: user!, scope: decision.scope, writer: configWriterFor(user, decision.scope) };
 }

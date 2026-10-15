@@ -1,7 +1,17 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { requireScope } from "@/lib/auth/require-scope";
 import { configValues, setConfigValues } from "@/lib/runtime-config";
 import { renameAgent, syncAgentTools } from "@/lib/sync-agent-tools";
+import { readForm } from "@/lib/api/body";
+
+// Formulario HTML de /agent (application/x-www-form-urlencoded).
+const AgentForm = z.object({
+  system_prompt: z.string().optional(),
+  operator_name: z.string().optional(),
+  agent_name: z.string().optional(),
+  agent_label: z.string().optional(),
+});
 
 // nodejs runtime + raw fetch (lib/anthropic-managed) — the official SDK 401s on
 // Netlify. The /agent "Guardar y sincronizar" pushes the prompt via this route.
@@ -44,11 +54,13 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  const form = await request.formData();
-  const systemPrompt = form.get("system_prompt")?.toString() ?? "";
-  const operatorName = form.get("operator_name")?.toString().trim() ?? "";
-  let agentName = form.get("agent_name")?.toString().trim() ?? "";
-  const agentLabel = form.get("agent_label")?.toString().trim() ?? "";
+  const parsed = await readForm(request, AgentForm);
+  if (!parsed.ok) return parsed.response;
+  const form = parsed.data;
+  const systemPrompt = form.system_prompt ?? "";
+  const operatorName = form.operator_name?.trim() ?? "";
+  let agentName = form.agent_name?.trim() ?? "";
+  const agentLabel = form.agent_label?.trim() ?? "";
 
   // 0. Si el nombre del agente cambió y ya está aprovisionado, renombrarlo en
   //    Anthropic ANTES de persistir. El wizard /setup resuelve por nombre

@@ -43,22 +43,23 @@ export async function readDeployedHashes(
   }
 }
 
-/** Record (upsert) the deployed hash for one function slug. Tolerates absence. */
+/**
+ * Record (upsert) the deployed hash for one function slug. LANZA si no pudo: el /first-run
+ * (vía /api/provision/status) y el centro de updates deciden «desplegada en esta versión» con
+ * este registro, así que perderlo en silencio dejaba al wizard sin avanzar.
+ */
 export async function saveDeployedHash(
   supabaseUrl: string,
   serviceRoleKey: string,
   slug: string,
   hash: string
 ): Promise<void> {
-  try {
-    const current = await readDeployedHashes(supabaseUrl, serviceRoleKey);
-    current[slug] = hash;
-    const supabase = makeClient(supabaseUrl, serviceRoleKey);
-    await supabase.from("runtime_config").upsert(
-      { key: KEY, value: JSON.stringify(current), updated_by: "update-center" },
-      { onConflict: "key" }
-    );
-  } catch {
-    // best-effort
-  }
+  const current = await readDeployedHashes(supabaseUrl, serviceRoleKey);
+  current[slug] = hash;
+  const supabase = makeClient(supabaseUrl, serviceRoleKey);
+  const { error } = await supabase.from("runtime_config").upsert(
+    { key: KEY, value: JSON.stringify(current), updated_by: "update-center" },
+    { onConflict: "key" }
+  );
+  if (error) throw new Error(`No se pudo registrar la versión desplegada de ${slug}: ${error.message}`);
 }

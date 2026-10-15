@@ -5,6 +5,13 @@ import { retrieveAgent, updateAgent } from "@/lib/anthropic-managed";
 import { checkAgentPromptConflict } from "@/lib/sync-agent-tools";
 import { ALLOWED_MODELS, MODEL_KEYS } from "@/lib/model-config";
 import { agentModelMatches, agentModelParam } from "@/lib/model-capabilities";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Una clave por componente del pipeline (MODEL_KEYS), cada una con un modelo permitido.
+const ModelsBody = z.object(
+  Object.fromEntries(Object.keys(MODEL_KEYS).map((k) => [k, z.enum(ALLOWED_MODELS).optional()]))
+);
 
 export const runtime = "nodejs";
 
@@ -16,21 +23,14 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown> = {};
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "JSON inválido" }, { status: 400 });
-  }
+  const input = await readJson(request, ModelsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
   const updates: Record<string, string> = {};
   for (const key of Object.keys(MODEL_KEYS)) {
     const v = body[key];
-    if (v === undefined) continue;
-    if (typeof v !== "string" || !(ALLOWED_MODELS as readonly string[]).includes(v)) {
-      return NextResponse.json({ ok: false, error: `Modelo inválido para ${key}` }, { status: 400 });
-    }
-    updates[key] = v;
+    if (v !== undefined) updates[key] = v;
   }
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ ok: false, error: "Nada para actualizar" }, { status: 400 });

@@ -1,5 +1,21 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const VerticalBody = z.object({
+  slug: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+  system_prompt: z.string().optional(),
+  auto_reply: z.boolean().optional(),
+  requires_review: z.boolean().optional(),
+  ignore: z.boolean().optional(),
+  // Ruteo al equipo comercial (0052).
+  auto_assign: z.boolean().optional(),
+  kommo_field_name: z.string().nullable().optional(),
+  kommo_field_value: z.string().nullable().optional(),
+});
 
 /** "" y espacios en blanco valen NULL: un campo vacío no debe escribirse en Kommo. */
 function strOrNull(v: unknown): string | null {
@@ -15,15 +31,17 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
-  const slug = String(body.slug ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+  const input = await readJson(request, VerticalBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
+  const slug = (body.slug ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
   if (!slug) return NextResponse.json({ error: "slug requerido" }, { status: 400 });
 
   const { error } = await supabase.from("verticals").insert({
     slug,
-    name: String(body.name ?? slug),
+    name: body.name ?? slug,
     description: body.description ?? null,
-    system_prompt: String(body.system_prompt ?? ""),
+    system_prompt: body.system_prompt ?? "",
     auto_reply: body.auto_reply === true,
     requires_review: body.requires_review === true,
     ignore: body.ignore === true,

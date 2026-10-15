@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { parseTerms } from "@/lib/routing";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const AssigneePatchBody = z.object({
+  display_name: z.string().nullable().optional(),
+  match_terms: z.union([z.string(), z.array(z.unknown())]).optional(),
+  enabled: z.boolean().optional(),
+  sort_order: z.number().optional(),
+});
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const params = await ctx.params;
@@ -10,14 +19,16 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, AssigneePatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
   if (typeof body.display_name === "string") {
     update.display_name = body.display_name.trim() || null;
   }
   if (body.match_terms !== undefined) update.match_terms = parseTerms(body.match_terms);
-  if (typeof body.enabled === "boolean") update.enabled = body.enabled;
-  if (Number.isFinite(Number(body.sort_order))) update.sort_order = Number(body.sort_order);
+  if (body.enabled !== undefined) update.enabled = body.enabled;
+  if (body.sort_order !== undefined && Number.isFinite(body.sort_order)) update.sort_order = body.sort_order;
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "nada para actualizar" }, { status: 400 });

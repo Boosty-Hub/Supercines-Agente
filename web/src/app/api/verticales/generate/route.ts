@@ -6,6 +6,20 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { recordWebUsage } from "@/lib/usage";
 import { aiErrorMessage, DASHBOARD_MODEL, DASHBOARD_TASKS, dashboardModel } from "@/lib/dashboard-ai";
+import { readJson } from "@/lib/api/body";
+
+const GenerateBody = z.object({
+  instruction: z.string().optional(),
+  // La vertical que se está editando (para refinarla en vez de empezar de cero).
+  current: z
+    .object({
+      name: z.string().nullish(),
+      description: z.string().nullish(),
+      system_prompt: z.string().nullish(),
+    })
+    .nullable()
+    .optional(),
+});
 
 // nodejs runtime: the Anthropic path returns spurious 401s on Netlify's Edge.
 export const runtime = "nodejs";
@@ -20,14 +34,11 @@ export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, GenerateBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+  const instruction = body.instruction?.trim() ?? "";
   if (!instruction) {
     return NextResponse.json(
       { ok: false, error: "Describí qué vertical querés crear." },
@@ -50,11 +61,7 @@ export async function POST(request: Request) {
 
   // Optional: the vertical currently being edited, so the model refines it
   // instead of starting from scratch.
-  const current = (body.current ?? null) as {
-    name?: string;
-    description?: string;
-    system_prompt?: string;
-  } | null;
+  const current = body.current ?? null;
 
   // La IA necesita saber qué puede HACER el agente (operar el CRM + tienda
   // y con qué nombres reales, para escribir esas instrucciones en el

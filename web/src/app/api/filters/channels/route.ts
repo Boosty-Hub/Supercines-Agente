@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const ChannelsBody = z.object({
+  channels: z.array(z.string()),
+  classifyOnly: z.array(z.string()).optional(),
+});
 
 function normalizeList(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -26,7 +33,9 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, ChannelsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const channels = normalizeList(body.channels);
 
   const ignoredSet = new Set(channels);

@@ -17,6 +17,9 @@ export function FirstRunWizard() {
   const [status, setStatus] = useState<ProvisionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Token sbp_ del paso Inicializar, solo en memoria: Crear usuario lo manda para cerrar el registro
+  // público. Si se recargó la página, CreateUser lo vuelve a pedir.
+  const [accessToken, setAccessToken] = useState("");
 
   const fetchStatus = useCallback(async () => {
     setFetchError(null);
@@ -54,6 +57,15 @@ export function FirstRunWizard() {
     // Re-fetch status to get next step
     void fetchStatus();
   }, [fetchStatus]);
+
+  const handleInitializeComplete = useCallback(
+    (token: string) => {
+      setAccessToken(token);
+      setLoading(true);
+      void fetchStatus();
+    },
+    [fetchStatus]
+  );
 
   const handleCreateUserComplete = useCallback(() => {
     // Usuario creado y logueado → entrá al dashboard; el onboarding (Anthropic,
@@ -122,12 +134,12 @@ export function FirstRunWizard() {
           {step === "initialize" && (
             <Initialize
               initialStatus={status}
-              onComplete={handleStepComplete}
+              onComplete={handleInitializeComplete}
             />
           )}
 
           {step === "create-user" && (
-            <CreateUser onComplete={handleCreateUserComplete} />
+            <CreateUser accessToken={accessToken} onComplete={handleCreateUserComplete} />
           )}
 
           {/* anthropic / kommo / done should redirect — show fallback */}

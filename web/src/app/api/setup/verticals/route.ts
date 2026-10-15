@@ -1,16 +1,22 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const VerticalsBody = z.object({
+  verticals: z.array(
+    z.object({
+      slug: z.string().optional(),
+      name: z.string().optional(),
+      description: z.string().nullable().optional(),
+      system_prompt: z.string().optional(),
+      auto_reply: z.boolean().optional(),
+      requires_review: z.boolean().optional(),
+    })
+  ),
+});
 
 export const runtime = "nodejs";
-
-type VerticalInput = {
-  slug?: unknown;
-  name?: unknown;
-  description?: unknown;
-  system_prompt?: unknown;
-  auto_reply?: unknown;
-  requires_review?: unknown;
-};
 
 // Bulk-save the verticals the user accepted in the wizard. Upsert by slug so
 // re-running the step (or accepting on top of the seeded generics) never errors
@@ -22,14 +28,11 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  let body: { verticals?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, VerticalsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const list = Array.isArray(body.verticals) ? (body.verticals as VerticalInput[]) : [];
+  const list = body.verticals;
   const rows = list
     .map((v) => {
       const slug = String(v.slug ?? "")

@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// openaiKey es un secreto: el mensaje de error de un body inválido nunca incluye su valor.
+const MediaBody = z.object({
+  images: z.boolean().optional(),
+  documents: z.boolean().optional(),
+  audio: z.boolean().optional(),
+  openaiKey: z.string().optional(),
+});
 
 // Habilita/deshabilita que el agente responda a adjuntos del lead.
 // images/documents son nativos en Claude. audio requiere transcripción
@@ -11,7 +21,9 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
 
-  const body = await request.json();
+  const input = await readJson(request, MediaBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
   if (typeof body.images === "boolean") update.respond_to_images = body.images;
   if (typeof body.documents === "boolean") update.respond_to_documents = body.documents;
@@ -19,7 +31,7 @@ export async function POST(request: Request) {
   if (typeof body.audio === "boolean") {
     if (body.audio === true) {
       // Guardar la key si vino en el request; si no, exigir que ya exista.
-      const incomingKey = typeof body.openaiKey === "string" ? body.openaiKey.trim() : "";
+      const incomingKey = body.openaiKey?.trim() ?? "";
       if (incomingKey) {
         if (!incomingKey.startsWith("sk-")) {
           return NextResponse.json(

@@ -121,7 +121,10 @@ export function BcvPanel({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-neutral-600">API key (opcional)</label>
+            <label className="text-xs font-medium text-neutral-600">
+              API key (opcional). Queda atada a esta URL: al cambiarla, si no la volvés a
+              pegar, se quita.
+            </label>
             <input
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}

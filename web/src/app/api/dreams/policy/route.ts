@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { setConfigValues } from "@/lib/runtime-config";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
 const POLICIES = ["all", "error", "none"] as const;
+const PolicyBody = z.object({ policy: z.enum(POLICIES) });
 
 // Política de activación de Dreams (runtime_config DREAMS_AUTO_ACTIVATE):
 //   all   → todo aprendizaje se activa al instante (default)
@@ -12,20 +15,9 @@ export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
 
-  let body: { policy?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
-
-  const policy = String(body.policy ?? "");
-  if (!POLICIES.includes(policy as (typeof POLICIES)[number])) {
-    return NextResponse.json(
-      { error: `policy debe ser uno de: ${POLICIES.join(", ")}` },
-      { status: 400 }
-    );
-  }
+  const input = await readJson(request, PolicyBody);
+  if (!input.ok) return input.response;
+  const { policy } = input.data;
 
   await setConfigValues({ DREAMS_AUTO_ACTIVATE: policy }, auth.writer);
   return NextResponse.json({ ok: true, policy });

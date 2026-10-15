@@ -1,30 +1,32 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { requireScope } from "@/lib/auth/require-scope";
 import { autoParse } from "@/lib/parsers";
 import { chunkBlocks } from "@/lib/chunking";
 import { getMemoryClient } from "@/lib/memory";
+import { MAX_UPLOAD_BODY_BYTES, readForm, uploadFile } from "@/lib/api/body";
 
-const VALID_TYPES = ["chat_export", "transcript", "rule", "example_response"] as const;
-type SampleType = (typeof VALID_TYPES)[number];
+const VozForm = z.object({
+  type: z.enum(["chat_export", "transcript", "rule", "example_response"]),
+  title: z.string().optional(),
+  file: uploadFile.optional(),
+  content: z.string().optional(),
+  operator_name: z.string().optional(),
+});
 
 export async function POST(request: Request) {
   const auth = await requireScope("contenido");
   if (!auth.ok) return auth.response;
   const { supabase } = auth;
 
-  const form = await request.formData();
-  const type = form.get("type") as SampleType | null;
-  const title = (form.get("title") as string | null)?.trim();
-  const file = form.get("file") as File | null;
-  const inlineContent = form.get("content") as string | null;
-  const operatorName =
-    (form.get("operator_name") as string | null)?.trim() ||
-    process.env.OPERATOR_NAME ||
-    "";
+  const parsed = await readForm(request, VozForm, { maxBytes: MAX_UPLOAD_BODY_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const { type } = parsed.data;
+  const title = parsed.data.title?.trim();
+  const file = parsed.data.file ?? null;
+  const inlineContent = parsed.data.content ?? null;
+  const operatorName = parsed.data.operator_name?.trim() || process.env.OPERATOR_NAME || "";
 
-  if (!type || !VALID_TYPES.includes(type)) {
-    return NextResponse.json({ error: "type inválido" }, { status: 400 });
-  }
   if (!title) {
     return NextResponse.json({ error: "title requerido" }, { status: 400 });
   }

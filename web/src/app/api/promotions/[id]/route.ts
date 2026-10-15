@@ -1,5 +1,17 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const PromotionPatchBody = z.object({
+  name: z.string().optional(),
+  content: z.string().optional(),
+  kind: z.enum(["promo", "evento"]).optional(),
+  starts_at: z.string().nullable().optional(),
+  ends_at: z.string().nullable().optional(),
+  weekdays: z.array(z.union([z.number(), z.string()])).nullable().optional(),
+  enabled: z.boolean().optional(),
+});
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -11,7 +23,9 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, PromotionPatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
 
   if (typeof body.name === "string") {
@@ -26,18 +40,14 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
     update.content = content;
   }
 
-  if (body.kind !== undefined) {
-    if (body.kind !== "promo" && body.kind !== "evento")
-      return NextResponse.json({ error: "kind debe ser 'promo' o 'evento'" }, { status: 400 });
-    update.kind = body.kind;
-  }
+  if (body.kind !== undefined) update.kind = body.kind;
 
   // starts_at / ends_at — aceptar null explícito o string YYYY-MM-DD
   if ("starts_at" in body) {
     if (body.starts_at === null) {
       update.starts_at = null;
-    } else if (DATE_RE.test(String(body.starts_at))) {
-      update.starts_at = String(body.starts_at);
+    } else if (body.starts_at !== undefined && DATE_RE.test(body.starts_at)) {
+      update.starts_at = body.starts_at;
     } else {
       return NextResponse.json({ error: "Formato de fecha inválido para starts_at (debe ser YYYY-MM-DD)" }, { status: 400 });
     }
@@ -46,8 +56,8 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   if ("ends_at" in body) {
     if (body.ends_at === null) {
       update.ends_at = null;
-    } else if (DATE_RE.test(String(body.ends_at))) {
-      update.ends_at = String(body.ends_at);
+    } else if (body.ends_at !== undefined && DATE_RE.test(body.ends_at)) {
+      update.ends_at = body.ends_at;
     } else {
       return NextResponse.json({ error: "Formato de fecha inválido para ends_at (debe ser YYYY-MM-DD)" }, { status: 400 });
     }
@@ -62,8 +72,8 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   if ("weekdays" in body) {
     if (body.weekdays === null) {
       update.weekdays = null;
-    } else if (Array.isArray(body.weekdays)) {
-      const days = (body.weekdays as unknown[]).map(Number);
+    } else if (body.weekdays !== undefined) {
+      const days = body.weekdays.map(Number);
       if (days.some((d) => !Number.isInteger(d) || d < 1 || d > 7))
         return NextResponse.json({ error: "Los días de la semana deben ser valores entre 1 (lunes) y 7 (domingo)" }, { status: 400 });
       update.weekdays = Array.from(new Set(days)).sort((a, b) => a - b);

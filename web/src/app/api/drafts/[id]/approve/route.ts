@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { triggerInternalFunction } from "@/lib/internal-call";
 import { DRAFT_APPROVABLE_STATUSES, DRAFT_NOT_ACTIONABLE } from "@/lib/draft-status";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Sin cuerpo = aprobar tal cual; `body` = texto editado por el operador.
+const ApproveBody = z.object({ body: z.string().nullable().optional() });
 
 export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -9,13 +14,9 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
 
-  let body: string | undefined;
-  try {
-    const json = await request.json();
-    if (typeof json?.body === "string" && json.body.trim()) body = json.body.trim();
-  } catch {
-    // sin body es OK
-  }
+  const input = await readJson(request, ApproveBody, { optional: true });
+  if (!input.ok) return input.response;
+  const body = input.data.body?.trim() || undefined;
 
   const update: Record<string, unknown> = {
     status: "approved",

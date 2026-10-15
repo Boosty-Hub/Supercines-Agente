@@ -4,6 +4,7 @@
 // mismo cache de 6h en module scope. Nunca lanza: si la fuente falla devuelve
 // null y el dashboard simplemente no muestra el badge.
 import { configValues } from "@/lib/runtime-config";
+import { parseToolUrl } from "@/lib/http-tool-keys";
 
 export type BcvRate = { rate: number; source: string; fetchedAt: string };
 
@@ -29,14 +30,21 @@ function parseRate(body: any): { rate: number; source: string } | null {
 async function fetchRate(url: string, apiKey?: string): Promise<BcvRate | null> {
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
+    let target = url;
     if (apiKey) {
+      // Misma regla que el resolver de las Edge Functions: la key solo va a una URL apta para
+      // secretos (lib/http-tool-keys.ts#parseToolUrl), a la href parseada y sin seguir redirects.
+      const parsed = parseToolUrl(url, { strict: true });
+      if (!parsed.ok) return null;
+      target = parsed.url.href;
       headers["apikey"] = apiKey;
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
-    const res = await fetch(url, {
+    const res = await fetch(target, {
       headers,
       cache: "no-store",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      ...(apiKey ? { redirect: "manual" as const } : {}),
     });
     if (!res.ok) return null;
     const parsed = parseRate(await res.json());

@@ -2,6 +2,21 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
 import { truncateGraphemes } from "@/lib/text-safe";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// anthropicApiKey es un secreto: los errores de forma nunca incluyen su valor.
+const CredentialsBody = z.object({
+  anthropicApiKey: z.string().optional(),
+  operatorName: z.string().optional(),
+  agentName: z.string().optional(),
+  agentLabel: z.string().optional(),
+  agentEnvironmentName: z.string().optional(),
+  agentModel: z.string().optional(),
+  masterStoreName: z.string().optional(),
+  leadsStoreName: z.string().optional(),
+  systemPrompt: z.string().optional(),
+});
 
 export const runtime = "nodejs";
 
@@ -12,14 +27,11 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, CredentialsBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const str = (k: string) => (typeof body[k] === "string" ? (body[k] as string).trim() : "");
+  const str = (k: keyof typeof body) => body[k]?.trim() ?? "";
   const anthropicApiKey = str("anthropicApiKey");
   const operatorName = str("operatorName");
   const agentName = str("agentName");
@@ -28,7 +40,7 @@ export async function POST(request: Request) {
   const agentModel = str("agentModel");
   const masterStoreName = str("masterStoreName");
   const leadsStoreName = str("leadsStoreName");
-  const systemPrompt = typeof body.systemPrompt === "string" ? (body.systemPrompt as string) : "";
+  const systemPrompt = body.systemPrompt ?? "";
 
   // The key is required only if none is configured yet. On a re-run the user
   // can leave it blank to keep the stored key (the wizard hints this). When a

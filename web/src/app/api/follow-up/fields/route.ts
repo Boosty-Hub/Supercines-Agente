@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const FieldBody = z.object({
+  label: z.string().optional(),
+  kommo_field_id: z.union([z.number(), z.string()]).optional(),
+});
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
@@ -23,14 +30,11 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, FieldBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const label = String(body.label ?? "").trim();
+  const label = body.label?.trim() ?? "";
   if (!label) return NextResponse.json({ error: "label requerido" }, { status: 400 });
 
   const kommoFieldId = Number(body.kommo_field_id);

@@ -3,8 +3,17 @@ import { requireScope } from "@/lib/auth/require-scope";
 import { trustedActorName } from "@/lib/auth/actor";
 import { moveLeadInKommo } from "@/lib/kommo";
 import { createServiceClient } from "@/lib/supabase/service";
-import { parseExpected, type ExpectedPosition } from "@/lib/move-position";
+import { parseExpected } from "@/lib/move-position";
 import { MOVE_CLAIM_TTL_SECONDS } from "@/lib/move-claim";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// stage_id/pipeline_id: la ruta coerciona con Number(); expected lo valida parseExpected.
+const StageBody = z.object({
+  stage_id: z.union([z.number(), z.string()]).optional(),
+  pipeline_id: z.union([z.number(), z.string()]).optional(),
+  expected: z.unknown().optional(),
+});
 
 export const dynamic = "force-dynamic";
 
@@ -23,19 +32,12 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   if (!auth.ok) return auth.response;
   const { supabase, user } = auth;
 
-  let stageId: number;
-  let pipelineId: number;
-  let expected: ExpectedPosition | undefined;
-  try {
-    const body = await request.json();
-    stageId = Number(body?.stage_id);
-    pipelineId = Number(body?.pipeline_id);
-    const parsed = parseExpected(body?.expected);
-    if (parsed === null) return NextResponse.json({ error: "expected inválido." }, { status: 400 });
-    expected = parsed;
-  } catch {
-    return NextResponse.json({ error: "Cuerpo inválido." }, { status: 400 });
-  }
+  const input = await readJson(request, StageBody);
+  if (!input.ok) return input.response;
+  const stageId = Number(input.data.stage_id);
+  const pipelineId = Number(input.data.pipeline_id);
+  const expected = parseExpected(input.data.expected);
+  if (expected === null) return NextResponse.json({ error: "expected inválido." }, { status: 400 });
   if (!Number.isFinite(stageId) || !Number.isFinite(pipelineId)) {
     return NextResponse.json({ error: "Faltan stage_id y pipeline_id." }, { status: 400 });
   }

@@ -1,5 +1,18 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+const TemplateBody = z.object({
+  name: z.string().optional(),
+  body: z.string().optional(),
+  description: z.string().nullable().optional(),
+  variables: z.array(z.record(z.unknown())).optional(),
+  salesbot_id: z.union([z.number(), z.string(), z.null()]).optional(),
+  enabled: z.boolean().optional(),
+  // Si viene, la plantilla se agrega como paso nuevo de la secuencia.
+  delay_hours: z.union([z.number(), z.string(), z.null()]).optional(),
+});
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
@@ -23,24 +36,21 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const input = await readJson(request, TemplateBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
 
-  const name = String(body.name ?? "").trim();
+  const name = body.name?.trim() ?? "";
   if (!name) return NextResponse.json({ error: "name requerido" }, { status: 400 });
 
-  const templateBody = String(body.body ?? "").trim();
+  const templateBody = body.body?.trim() ?? "";
   if (!templateBody) return NextResponse.json({ error: "body requerido" }, { status: 400 });
 
   // Warnings (no-blocking) en la respuesta para el dashboard
   const warnings: string[] = [];
   if (!body.salesbot_id) warnings.push("salesbot_id no configurado — la plantilla no puede enviarse hasta mapearlo.");
-  const variables = Array.isArray(body.variables) ? body.variables : [];
-  for (const v of variables as Array<Record<string, unknown>>) {
+  const variables = body.variables ?? [];
+  for (const v of variables) {
     // Se considera "mapeada" si tiene un campo de Kommo directo (kommo_field_id);
     // field_id es el shape legacy (tabla follow_up_fields) que el edge resuelve por compat.
     if (!v.kommo_field_id && !v.field_id) {
@@ -52,7 +62,7 @@ export async function POST(request: Request) {
     .from("follow_up_templates")
     .insert({
       name,
-      description: body.description ? String(body.description) : null,
+      description: body.description || null,
       body: templateBody,
       variables: variables,
       salesbot_id: body.salesbot_id ? Number(body.salesbot_id) : null,

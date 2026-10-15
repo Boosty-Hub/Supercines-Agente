@@ -1,16 +1,19 @@
 // INVARIANT: this route MUST NOT import @/lib/runtime-config or
 // @/lib/supabase/service. It uses the provision lib layer only.
+//
+// Ruta PÚBLICA (la consulta el /first-run antes de que exista ningún usuario): NO usa el token
+// sbp_ guardado. Ese token es de la cuenta de Supabase y solo se usa con sesión `configuracion`
+// (o, en el primer arranque, el que el wizard manda en el body): ver lib/provision/gate-logic.ts.
+// El estado sale de la propia base con la service-role del env: `_migrations` (lo que aplicó el
+// wizard) y DEPLOYED_FUNCTION_HASHES (lo que desplegó, en esta versión).
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { MIGRATIONS } from "@/lib/provision/migrations.generated";
 import { FUNCTIONS } from "@/lib/provision/functions.generated";
-import { getRef } from "@/lib/provision/ref";
-import { runQuery } from "@/lib/provision/management";
-import { listFunctions } from "@/lib/provision/management";
 import { listUsersHead } from "@/lib/provision/admin";
-import { readAccessToken } from "@/lib/provision/config-token";
+import { readDeployedHashes } from "@/lib/provision/function-hashes";
 import { createClient } from "@supabase/supabase-js";
 
 type NextStep =
@@ -54,59 +57,29 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json(status);
   }
 
-  let dbInitialized = false;
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
+  });
+
+  // ── Step 1: migrations (tabla _migrations, con la service-role) ──────────
   let appliedCount = 0;
-  let pendingMigrations: string[] = [];
-
-  // ── Step 1: migrations check ─────────────────────────────────────────────
-  try {
-    const ref = getRef(supabaseUrl);
-    // Read the stored access token (may be null if not yet persisted)
-    const token = await readAccessToken(supabaseUrl, serviceRoleKey);
-
-    if (token) {
-      const result = await runQuery(
-        ref,
-        token,
-        "SELECT filename FROM _migrations ORDER BY filename"
-      ) as Array<{ filename: string }>;
-
-      const applied = new Set(result.map((r) => r.filename));
-      appliedCount = applied.size;
-      pendingMigrations = MIGRATIONS.map((m) => m.filename).filter(
-        (f) => !applied.has(f)
-      );
-      dbInitialized = appliedCount > 0;
-    } else {
-      // No token yet → can't check migrations
-      pendingMigrations = MIGRATIONS.map((m) => m.filename);
+  let pendingMigrations = MIGRATIONS.map((m) => m.filename);
+  {
+    const { data, error } = await supabase.from("_migrations").select("filename");
+    if (!error && data) {
+      // Solo cuentan las del bundle: una fila vieja de una migración renombrada no completa nada.
+      const applied = new Set((data as Array<{ filename: string }>).map((r) => r.filename));
+      pendingMigrations = MIGRATIONS.map((m) => m.filename).filter((f) => !applied.has(f));
+      appliedCount = total - pendingMigrations.length;
     }
-  } catch {
-    // _migrations doesn't exist or query failed → DB not initialized
-    dbInitialized = false;
-    appliedCount = 0;
-    pendingMigrations = MIGRATIONS.map((m) => m.filename);
+    // error = la tabla todavía no existe (o PostgREST no la ve aún) → todo pendiente.
   }
+  const dbInitialized = appliedCount > 0;
 
-  // ── Step 2: functions check ───────────────────────────────────────────────
-  let deployedCount = 0;
-  let missingFunctions = FUNCTIONS.map((f) => f.slug);
-
-  try {
-    const ref = getRef(supabaseUrl);
-    const token = await readAccessToken(supabaseUrl, serviceRoleKey);
-
-    if (token) {
-      const deployed = await listFunctions(ref, token);
-      const deployedSlugs = new Set(deployed.map((f) => f.slug));
-      missingFunctions = FUNCTIONS.map((f) => f.slug).filter(
-        (s) => !deployedSlugs.has(s)
-      );
-      deployedCount = FUNCTIONS.length - missingFunctions.length;
-    }
-  } catch {
-    // Token absent or Management API call failed → treat as none deployed
-  }
+  // ── Step 2: functions (desplegadas por el wizard EN ESTA VERSIÓN) ───────────
+  const hashes = dbInitialized ? await readDeployedHashes(supabaseUrl, serviceRoleKey) : {};
+  const missingFunctions = FUNCTIONS.filter((f) => hashes[f.slug] !== f.hash).map((f) => f.slug);
+  const deployedCount = totalFunctions - missingFunctions.length;
 
   // ── Step 3: user check ────────────────────────────────────────────────────
   let hasUser = false;
@@ -123,9 +96,6 @@ export async function GET(): Promise<NextResponse> {
 
   if (dbInitialized) {
     try {
-      const supabase = createClient(supabaseUrl, serviceRoleKey, {
-        auth: { persistSession: false },
-      });
       const { data } = await supabase
         .from("runtime_config")
         .select("key, value")
@@ -146,8 +116,11 @@ export async function GET(): Promise<NextResponse> {
   }
 
   // ── Compute nextStep ──────────────────────────────────────────────────────
+  // Con un usuario creado, el first-run terminó: inicializar ya no es un paso del wizard (las
+  // migraciones/funciones nuevas las aplica el centro de updates del panel, con sesión). Antes se
+  // volvía a «initialize» y esas rutas ahora exigen sesión `configuracion`.
   let nextStep: NextStep;
-  if (!dbInitialized || pendingMigrations.length > 0 || missingFunctions.length > 0) {
+  if (!hasUser && (!dbInitialized || pendingMigrations.length > 0 || missingFunctions.length > 0)) {
     nextStep = "initialize";
   } else if (!hasUser) {
     nextStep = "create-user";

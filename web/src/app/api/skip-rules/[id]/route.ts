@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
-const MATCH_TYPES = ["contains", "regex", "mention_tag"];
+const SkipRulePatchBody = z.object({
+  pattern: z.string().optional(),
+  match_type: z.enum(["contains", "regex", "mention_tag"]).optional(),
+  case_sensitive: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  description: z.string().optional(),
+});
 
 export async function PATCH(request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -11,15 +19,15 @@ export async function PATCH(request: Request, props: { params: Promise<{ id: str
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await request.json();
+  const input = await readJson(request, SkipRulePatchBody);
+  if (!input.ok) return input.response;
+  const body = input.data;
   const update: Record<string, unknown> = {};
-  if (typeof body.pattern === "string") update.pattern = body.pattern.trim();
-  if (typeof body.match_type === "string" && MATCH_TYPES.includes(body.match_type))
-    update.match_type = body.match_type;
-  if (typeof body.case_sensitive === "boolean") update.case_sensitive = body.case_sensitive;
-  if (typeof body.enabled === "boolean") update.enabled = body.enabled;
-  if (typeof body.description === "string")
-    update.description = body.description.trim() || null;
+  if (body.pattern !== undefined) update.pattern = body.pattern.trim();
+  if (body.match_type !== undefined) update.match_type = body.match_type;
+  if (body.case_sensitive !== undefined) update.case_sensitive = body.case_sensitive;
+  if (body.enabled !== undefined) update.enabled = body.enabled;
+  if (body.description !== undefined) update.description = body.description.trim() || null;
 
   // Validaciones: regex válida y patrón requerido salvo en mention_tag.
   const effectiveType = (update.match_type as string) ?? undefined;

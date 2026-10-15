@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { checkAgentPromptConflict, syncAgentTools, type ConflictResolution } from "@/lib/sync-agent-tools";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
+
+// Sin cuerpo = sincronización normal; con conflicto de prompt, la resolución elegida.
+const SyncBody = z.object({
+  resolve: z.enum(["overwrite", "import_live"]).optional(),
+  expectedLiveHash: z.string().optional(),
+});
 
 export const runtime = "nodejs";
 
@@ -23,15 +31,10 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let resolve: ConflictResolution | undefined;
-  let expectedLiveHash: string | undefined;
-  try {
-    const body = await request.json();
-    if (body?.resolve === "overwrite" || body?.resolve === "import_live") resolve = body.resolve;
-    if (typeof body?.expectedLiveHash === "string" && body.expectedLiveHash) expectedLiveHash = body.expectedLiveHash;
-  } catch {
-    // sin cuerpo = sincronización normal
-  }
+  const input = await readJson(request, SyncBody, { optional: true });
+  if (!input.ok) return input.response;
+  const resolve: ConflictResolution | undefined = input.data.resolve;
+  const expectedLiveHash = input.data.expectedLiveHash || undefined;
   if (resolve && !expectedLiveHash) {
     return NextResponse.json(
       { ok: false, error: "Falta expectedLiveHash: recargá la página y volvé a elegir." },

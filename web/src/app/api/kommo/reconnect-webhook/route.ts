@@ -24,7 +24,6 @@ import { applyWebhookDestination } from "@/lib/kommo-webhook-apply";
 export async function POST() {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
-  const { supabase } = auth;
 
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   if (!base) {
@@ -32,7 +31,8 @@ export async function POST() {
   }
   try {
     // El destino lleva el secreto (?token=): sin él, en modo estricto la función rechaza todo.
-    const { data: sec, error: secErr } = await createServiceClient()
+    const service = createServiceClient();
+    const { data: sec, error: secErr } = await service
       .from("_app_secrets")
       .select("valor")
       .eq("clave", "KOMMO_WEBHOOK_SECRET")
@@ -47,12 +47,25 @@ export async function POST() {
       return NextResponse.json({ error: r.error }, { status: sinConexion ? 400 : 502 });
     }
 
-    // Recién con el webhook verificado como habilitado se cierra el incidente.
-    await supabase
+    // Recién con el webhook verificado como habilitado se cierra el incidente. Con el cliente
+    // de SERVICIO: la RLS de system_incidents no deja a la sesión escribir `resolved_at` (solo
+    // silenciar), así que con la sesión el update no cerraba nada y nadie se enteraba. Si falla,
+    // se dice: el webhook quedó reconectado y health-scan lo cierra en su próximo barrido.
+    const { error: incErr } = await service
       .from("system_incidents")
       .update({ resolved_at: new Date().toISOString() })
       .eq("kind", "kommo_webhook_caido")
       .is("resolved_at", null);
+    if (incErr) {
+      return NextResponse.json(
+        {
+          error: `Webhook reconectado, pero no se pudo cerrar el incidente: ${incErr.message}. Se cierra solo en el próximo barrido de salud.`,
+          reconnected: true,
+          destination: maskDestination(destination),
+        },
+        { status: 500 }
+      );
+    }
 
     // La respuesta NO devuelve el secreto: la URL completa solo la muestra el panel.
     return NextResponse.json({ ok: true, destination: maskDestination(destination), settings: r.settings, removed: r.removed });

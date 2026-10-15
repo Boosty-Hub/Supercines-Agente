@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { requireScope } from "@/lib/auth/require-scope";
 import { callInternalFunction, INTERNAL_401_HINT } from "@/lib/internal-call";
 import { parseRetryBody } from "@/lib/follow-up-retry";
+import { z } from "zod";
+import { readJson } from "@/lib/api/body";
 
 export const runtime = "nodejs";
 // La sesión CMA del seguimiento tarda; no cortar antes que la Edge Function.
@@ -30,13 +32,10 @@ export async function POST(request: Request) {
   const auth = await requireScope("configuracion");
   if (!auth.ok) return auth.response;
 
-  let raw: unknown;
-  try {
-    raw = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
-  }
-  const parsed = parseRetryBody(raw);
+  // La forma la valida parseRetryBody (lib/follow-up-retry.ts, con sus tests): acá solo JSON.
+  const input = await readJson(request, z.unknown());
+  if (!input.ok) return input.response;
+  const parsed = parseRetryBody(input.data);
   if (!parsed.ok) return NextResponse.json({ ok: false, error: parsed.error }, { status: 400 });
   const body = parsed.value;
 

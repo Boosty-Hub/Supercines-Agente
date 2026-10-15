@@ -90,7 +90,7 @@ Resiliencia: `pg_cron` barre cada minuto `process-inbound`, `generate-response`,
 
 ### Invariantes críticos (romperlos rompe producción)
 
-1. **`verify_jwt = false` para TODAS las Edge Functions.** Kommo postea sin JWT; con `verify_jwt=true` da 401 y nada entra. En deploys por CLI, está fijado en `supabase/config.toml` bajo `[functions.*]`. En deploys desde el browser (wizard `/first-run`), se fuerza vía la metadata del API call: `{ verify_jwt: false }` en cada llamada a `POST /v1/projects/{ref}/functions/deploy` (ver `web/src/lib/provision/management.ts`). **Nunca quitar ninguno de los dos mecanismos.** `verify_jwt=false` NO significa «sin autenticación»: **todas las funciones salvo `kommo-webhook` exigen el header `x-internal-secret`** (`_shared/auth.ts` → `authorizeInternal`, comparación en tiempo constante, 401 genérico, fail-closed). El secreto es `INTERNAL_FUNCTION_SECRET` en la tabla protegida `_app_secrets` (0061: sin policies, sin grants a anon/authenticated; se genera por despliegue, nunca vive en el repo ni en el SQL). Lo mandan: pg_cron (las funciones `trigger_*`, SECURITY DEFINER, leen `internal_function_headers()`; 0069), las funciones entre sí (`callInternal`) y el servidor del panel (`lib/internal-call.ts`; ninguna ruta web lo expone al navegador ni usa la service key como Bearer). `kommo-webhook` es pública porque Kommo no firma sus webhooks ni puede presentar el secreto; sus mitigaciones están en el encabezado de su `index.ts`. **Toda función nueva** debe llamar a `authorizeInternal` (el test `gate-coverage.test.ts` falla si no) y figurar en `DEPLOY_ORDER`. **Orden de despliegue sin downtime** (lo hace el centro de actualizaciones): migraciones → funciones en `DEPLOY_ORDER` (invocadores antes que invocados: cuando una función empieza a exigir el secreto, quienes la llaman ya lo mandan) → web (si el secreto aún no existe llama sin header y la función vieja responde igual). Una llamada que caiga entre dos despliegues recibe 401 y la repone el barrido de pg_cron.
+1. **`verify_jwt = false` para TODAS las Edge Functions.** Kommo postea sin JWT; con `verify_jwt=true` da 401 y nada entra. En deploys por CLI, está fijado en `supabase/config.toml` bajo `[functions.*]`. En deploys desde el browser (wizard `/first-run`), se fuerza vía la metadata del API call: `{ verify_jwt: false }` en cada llamada a `POST /v1/projects/{ref}/functions/deploy` (ver `web/src/lib/provision/management.ts`). **Nunca quitar ninguno de los dos mecanismos.** `verify_jwt=false` NO significa «sin autenticación»: **todas las funciones salvo `kommo-webhook` exigen el header `x-internal-secret`** (`_shared/auth.ts` → `authorizeInternal`, comparación en tiempo constante, 401 genérico, fail-closed). El secreto es `INTERNAL_FUNCTION_SECRET` en la tabla protegida `_app_secrets` (0061: sin policies, sin grants a anon/authenticated; se genera por despliegue, nunca vive en el repo ni en el SQL). Lo mandan: pg_cron (las funciones `trigger_*`, SECURITY DEFINER, leen `internal_function_headers()`; 0069), las funciones entre sí (`callInternal`) y el servidor del panel (`lib/internal-call.ts`; ninguna ruta web lo expone al navegador ni usa la service key como Bearer). `kommo-webhook` es pública porque Kommo no firma sus webhooks ni puede presentar el secreto; sus mitigaciones están en el encabezado de su `index.ts`. **Toda función nueva** debe llamar a `authorizeInternal` (el test `gate-coverage.test.ts` falla si no) y figurar en `DEPLOY_ORDER`. **Orden de despliegue sin downtime** (en SuperCines lo hace el operador con el PAT temporal, ver el runbook del final): migraciones → funciones en `DEPLOY_ORDER` (invocadores antes que invocados: cuando una función empieza a exigir el secreto, quienes la llaman ya lo mandan) → web (si el secreto aún no existe llama sin header y la función vieja responde igual). Una llamada que caiga entre dos despliegues recibe 401 y la repone el barrido de pg_cron.
 
 2. **El trabajo lento del agente va dentro de `EdgeRuntime.waitUntil()`.** `generate-response` crea el draft `pending`, devuelve **202 de inmediato**, y corre el agente (~60-80s) en `waitUntil`. Si se hiciera antes de responder, el runtime mata la función al desconectarse el cliente (pg_net/fire-and-forget) → draft `pending` eterno. Mismo patrón en `kommo-webhook`→`process-inbound` y `process-inbound`→`generate-response`. **`process-inbound` también responde 202 y drena en `waitUntil`** (`drainQueue`: hasta 5 lotes / 60s por invocación) — ver el invariante 6. **`publish-to-kommo` también** (desde 0074): responde 202 `{accepted, run_id}` y publica en `waitUntil`; los conteos quedan en el log, no en la respuesta (ver «Publicación a Kommo» abajo). Regla general para todo destino de un disparo con timeout corto (panel: `triggerInternalFunction` 4 s; pg_net: 20-120 s; `callInternal` entre funciones): **o responde 202 y trabaja en `waitUntil`, o es idempotente ante la muerte a mitad**. Cuando el llamador SÍ necesita el resultado (reintento manual de seguimiento, corrida manual de Dreams) el trabajo se envuelve en `keepAlive()` (`_shared/keep-alive.ts`: `waitUntil` + se espera la misma promesa) para que un corte del llamador no lo deje a medias.
 
@@ -383,8 +383,6 @@ así que adoptar este módulo no le cambia el acceso a ningún usuario existente
   (`request.jwt.claim.sub` o `request.jwt.claims ->> 'sub'`). Cambiar la regla en `roles.ts`
   exige una migración nueva con la misma regla: dos capas en desacuerdo son peores que una.
 
-  | Tabla | anon | operacion | contenido | configuracion |
-  |---|---|---|---|---|
   | Tabla | anon / sin rol | operacion | contenido | configuracion |
   |---|---|---|---|---|
   | `runtime_config`, `kommo_credentials`, `alert_config`, `_migrations`, `_app_secrets`, `inbound_queue`, `kommo_backfill_seen`, `kommo_sync_state`, `lead_move_claims`, `lead_position_seen` | — | — | — | — (solo servidor: service_role tras `requireScope`) |
@@ -487,7 +485,11 @@ inválidos: 400/413, y sin sesión 401; si una ruta toca la base o la red con un
 - UI en español, light theme. Sistema de diseño: tarjetas `rounded-xl border border-neutral-200 bg-white shadow-sm`, botón primario `bg-neutral-900 text-white rounded-lg`, badges `rounded-full text-[11px]`, tablas con `overflow-x-auto min-w-[640px]`, responsive a 375px (sidebar → drawer móvil en `(dashboard)/nav.tsx`).
 - Migraciones: numeradas `00NN_nombre.sql`, idempotentes (`if not exists`), registradas en tabla `_migrations`, aplicadas en orden LÉXICO del nombre (`embed-provision.mjs`). URLs absolutas usan `${SUPABASE_URL}` que sustituye el route handler de migrate en runtime. Tabla nueva: RLS + grants explícitos + clasificarla en `supabase/tests/rls_coverage.sql` (nace sin privilegios para anon/authenticated).
 - **Tests SQL** (`supabase/tests/*.sql`, cómo correrlos en `supabase/tests/README.md`): contra un Postgres DESECHABLE con la imagen de Supabase (`public.ecr.aws/supabase/postgres:17.11.0.004`) y TODAS las migraciones aplicadas (dos veces: idempotencia), como superusuario (`supabase_admin`), con `psql -v ON_ERROR_STOP=1 -f <archivo>` desde un árbol con `migrations/` al lado de `tests/` (algunos hacen `\ir ../migrations/...`; por stdin no resuelve la ruta). Cada test corre en una transacción con `rollback`.
-- **Numeración de migraciones (SuperCines)**: hay DOS archivos `0058_*` (`claim_inbound_batch_created_at` y `salesbot_funnel`); `_migrations` registra por NOMBRE DE ARCHIVO (PK `filename`) y el orden es léxico, así que conviven sin colisión — **no renombrar ninguno ya aplicado** (se reaplicaría). Las portadas del template van con el siguiente número libre. Mapa SuperCines ← template: `0060_budget_gate` ← 0066, `0061_kommo_pipelines_board` ← 0065, `0069_internal_function_gate` ← 0067, `0070_function_execute_hardening` ← 0068, `0071_system_incidents` ← 0062 (el del template), `0064_claim_message_batch` ← 0060, `0065_alert_kinds_webhook` ← 0057, `0066_retention_and_indexes` ← 0055+0056, `0067_crm_tools_extra` ← 0058, `0068_alert_kind_outbound_blocked` ← 0069, `0073_kommo_webhook_auth` ← 0070, `0074_draft_publish_claim` ← 0071, `0075_follow_up_claim` ← 0072, `0076_alert_webhook_delivery` ← 0073, `0077_follow_up_retry_attempt` ← 0074, `0078_agent_tools_scope` ← 0075, `0079_runtime_config_lockdown` ← 0076, `0082_revoke_user_sessions` ← 0077, `0083_provisioned_marker` ← 0078. Propias de SuperCines (sin equivalente en el template): `0080_supercines_table_scopes` y `0081_supercines_alert_kinds_existing_config`. Propias de SuperCines: `0062_funnel_sync_positions`, `0063_revoke_anon_functions`, `0072_revoke_anon_tables`. Al sincronizar con el template, mapear a mano. Las migraciones 0006 y 0053 no son re-aplicables (cambian el tipo de retorno de una función): se aplican UNA vez, que es lo que hace el migrador.
+- **Numeración de migraciones (SuperCines)**: hay DOS archivos `0058_*` (`claim_inbound_batch_created_at` y `salesbot_funnel`); `_migrations` registra por NOMBRE DE ARCHIVO (PK `filename`) y el orden es léxico, así que conviven sin colisión — **no renombrar ninguno ya aplicado** (se reaplicaría). Las portadas del template van con el siguiente número libre. Mapa SuperCines ← template: `0060_budget_gate` ← 0066, `0061_kommo_pipelines_board` ← 0065, `0069_internal_function_gate` ← 0067, `0070_function_execute_hardening` ← 0068, `0071_system_incidents` ← 0062 (el del template), **Primero `0060_budget_gate`, `0061_kommo_pipelines_board` (crea `_app_secrets`, `internal_function_headers()`,
+`end_user_request()`, `inbox_lead_summaries()` y el tablero) y `0062_funnel_sync_positions`** (aplicarlas después de la 0063
+funciona; las posteriores dependen de ellas: sin 0061 los `trigger_*` reescritos por 0069 fallan y el cron queda muerto). Luego:
+
+`0064_claim_message_batch` ← 0060, `0065_alert_kinds_webhook` ← 0057, `0066_retention_and_indexes` ← 0055+0056, `0067_crm_tools_extra` ← 0058, `0068_alert_kind_outbound_blocked` ← 0069, `0073_kommo_webhook_auth` ← 0070, `0074_draft_publish_claim` ← 0071, `0075_follow_up_claim` ← 0072, `0076_alert_webhook_delivery` ← 0073, `0077_follow_up_retry_attempt` ← 0074, `0078_agent_tools_scope` ← 0075, `0079_runtime_config_lockdown` ← 0076, `0082_revoke_user_sessions` ← 0077, `0083_provisioned_marker` ← 0078. Propias de SuperCines (sin equivalente en el template): `0080_supercines_table_scopes` y `0081_supercines_alert_kinds_existing_config`. Propias de SuperCines: `0062_funnel_sync_positions`, `0063_revoke_anon_functions`, `0072_revoke_anon_tables`. Al sincronizar con el template, mapear a mano. Las migraciones 0006 y 0053 no son re-aplicables (cambian el tipo de retorno de una función): se aplican UNA vez, que es lo que hace el migrador.
 - **Seguridad de la base y de las funciones**: `anon` (clave pública) no tiene EXECUTE sobre ninguna función de `public` (0063/0070) ni privilegios sobre ninguna tabla (0072), ni las futuras (default privileges). TODAS las Edge Functions salvo `kommo-webhook` exigen `x-internal-secret` (incluidas `kommo-funnel-sync`, `cartelera` y `health-scan`); `cartelera` es una tool http del agente y `generate-response` adjunta el secreto solo cuando la URL apunta a `/functions/v1/` propio (nunca queda en `agent_tools.headers`, que lee cualquier usuario del panel). Las pruebas SQL de `supabase/tests/` y `gate-coverage.test.ts` fallan si algo vuelve a quedar abierto.
 - **Salud de plataforma** (`health-scan`, 0071): incidentes que dejan al agente MUDO (webhook de Kommo caído, token inválido, ingesta detenida, cola atascada) en `system_incidents`; franja arriba de todo (`system-banner.tsx`) y panel «Torre de control» (`torre-de-control.tsx`, bandeja de alertas). VER lo hace cualquiera; ACTUAR (reconectar el webhook, omitir la cola, silenciar) exige `configuracion` (`/api/incidents`, `/api/kommo`). `/seguimiento` suma «Envíos recientes» con reintento puntual (`POST /api/follow-up/retry` → `follow-up-scan {lead_id, force}`).
 - **Dashboard en Next 15 / React 19 / ai@5**: `params`, `searchParams`, `cookies()`, `headers()` y `createSupabaseServerClient()` son asíncronos (`tsc` NO detecta los `searchParams`/`params` síncronos de páginas y rutas: lo valida `pnpm build`). `packageManager` pnpm@10.32.1 + `PNPM_VERSION` y `NODE_VERSION=22` en `netlify.toml` (con pnpm < 10.6 el install frozen falla). Los overrides de dependencias transitivas viven en `web/pnpm-workspace.yaml` (pnpm ≥ 10 ignora `pnpm.overrides` de package.json). `maxOutputTokens` explícito en toda ruta AI (el provider v2 no conoce Haiku 5.5 y manda 128000). `pnpm audit --prod` debe dar 0.
@@ -510,16 +512,19 @@ inválidos: 400/413, y sin sesión 401; si una ruta toca la base o la red con un
 
 ## Runbook de despliegue a producción (SuperCines)
 
-Estado de partida de producción: migraciones aplicadas hasta **0063** (0063 corrió por Management API),
+Estado de partida de producción: lo desplegado es `origin/main`, que llega a **0059 y a 0063** (0063 corrió por Management
+API, fuera de orden). **`0060`, `0061` y `0062` NUNCA salieron del repo local: NO están en producción** (el pre-vuelo 1
+lo confirma con `_migrations`),
 `disable_signup=true`, todos los usuarios con `app_metadata.role` explícito, `SUPABASE_ACCESS_TOKEN` borrado de
-`runtime_config`. El código (esta rama) lleva **20 migraciones pendientes**: `0064` … `0083` (lista exacta abajo).
+`runtime_config`. El código (esta rama) lleva **23 migraciones pendientes**: `0060`, `0061`, `0062` y `0064` … `0083` (lista exacta abajo;
+**manda lo que diga `_migrations`**, no esta lista).
 Todo se aplica **desde fuera del panel** (Management API con un PAT temporal del operador, o el SQL editor), porque el
 panel ya no guarda el token. Nada de esto se ejecutó contra producción: es el procedimiento.
 
 ### 0. Pre-vuelo (solo lectura; si algo falla, NO seguir)
 
 1. **Qué hay aplicado de verdad** (la lista de pendientes sale de acá, no de memoria):
-   `select filename from _migrations order by filename;`. Todas las migraciones **≥ 0060 son idempotentes** (el test
+   `select filename from _migrations order by filename;` y restar lo ya registrado. Todas las migraciones **≥ 0060 son idempotentes** (el test
    `verify:sql` las aplica dos veces): si alguna de las que siguen ya estaba aplicada, volver a correrla es inocuo.
    Las **anteriores a 0060 NO** son re-ejecutables (0006 y 0053 cambian el tipo de retorno de una función).
    Producción NO tiene registradas `0057`, `0058_claim_inbound_batch_created_at` ni `0059` aunque sus efectos están
@@ -529,8 +534,13 @@ panel ya no guarda el token. Nada de esto se ejecutó contra producción: es el 
    `select email, raw_app_meta_data->>'role' as rol from auth.users order by created_at;` → cada fila en
    `operacion|contenido|configuracion` (o los alias `admin|editor`). Un NULL/`""`/valor raro queda **afuera**. Borrar lo
    que no se reconozca. 0078 solo promueve al maestro (el primero creado) si no tuviera rol.
-3. **`KOMMO_ACCESS_TOKEN` (y `BCV_RATE_APIKEY`, `TOOL_*` si existen) deben estar en `runtime_config`**:
+3. **`KOMMO_ACCESS_TOKEN`, `KOMMO_API_DOMAIN` (y `BCV_RATE_APIKEY`, `TOOL_*` si existen) deben estar en `runtime_config`**:
    `select key, (value is not null and value <> '') as cargado from runtime_config where key in ('KOMMO_ACCESS_TOKEN','BCV_RATE_APIKEY') or key like 'TOOL\_%';`.
+   Además, toda tool http con `{{TOOL_X}}` en sus headers necesita su `TOOL_X_HOSTS` (hosts exactos, coma) en `runtime_config`, y
+   `{{KOMMO_ACCESS_TOKEN}}` solo viaja al host de `KOMMO_API_DOMAIN`: cruzar
+   `select name, headers from agent_tools where headers::text like '%{{%';` con
+   `select key from runtime_config where key = 'KOMMO_API_DOMAIN' or key like 'TOOL\_%\_HOSTS';`. Sin eso la tool se
+   rechaza (`ERROR_CONFIG_TOOL`) al desplegar `generate-response`.
    Estos secretos **ya no caen al entorno** (ni de la web ni de las Edge): si estaban solo como secret de Supabase /
    variable de Netlify, **cargarlos primero** desde Ajustes → Conexiones → Kommo, o el agente queda sin token.
 4. `disable_signup` sigue en `true` (`GET /v1/projects/{ref}/config/auth`). Las env del host siguen siendo solo las 3
@@ -542,12 +552,12 @@ panel ya no guarda el token. Nada de esto se ejecutó contra producción: es el 
 ### 1. Ventana
 
 Madrugada local de menor tráfico (confirmar con el histograma de mensajes entrantes de las últimas semanas en `/consumo`/`/status`). Duración total estimada
-**30–45 min**; el agente sigue contestando todo el tiempo salvo el hueco del paso 3 (panel degradado unos minutos, el
+**30–45 min**; el agente sigue contestando todo el tiempo salvo el hueco del paso 4 (panel degradado unos minutos, el
 pipeline Edge NO se interrumpe porque corre con `service_role`).
 
 - **Pausar el cron de seguimientos** durante toda la ventana (0075 cambia la reserva de `follow_ups`; un barrido
-  viejo a mitad lo ensuciaría): `select cron.alter_job(jobid, active => false) from cron.job where command ilike '%follow-up-scan%';`
-  y reactivar con `active => true` al final (paso 7).
+  viejo a mitad lo ensuciaría): `select cron.alter_job(jobid, active => false) from cron.job where jobname = 'follow-up-scan-sweep';`
+  y reactivar con `active => true` al final (paso 7); confirmar con `select jobname, active from cron.job where jobname = 'follow-up-scan-sweep';`.
 - No tocar `agent_enabled`/`publishing_enabled` salvo que se quiera validar en sombra (ver paso 8).
 
 ### 2. Fase A de migraciones — aditivas, sin riesgo para la web vieja (en orden léxico, una por una, registrando cada una en `_migrations`)
@@ -555,8 +565,7 @@ pipeline Edge NO se interrumpe porque corre con `service_role`).
 `0064_claim_message_batch` · `0065_alert_kinds_webhook` · `0066_retention_and_indexes` (crea índices y una retención en
 lotes; en producción `cron.job_run_details` ronda las 680 k filas y `inbound_queue` 47 k: la primera purga puede tardar,
 correr con la ventana ya abierta) · `0067_crm_tools_extra` · `0068_alert_kind_outbound_blocked` · `0069_internal_function_gate`
-(reescribe los `trigger_*` del cron para que manden `x-internal-secret`; el secreto ya existe desde `0061`, que está
-aplicada, y las funciones viejas lo ignoran hasta el paso 4) · `0070_function_execute_hardening` · `0071_system_incidents` · `0072_revoke_anon_tables` ·
+(reescribe los `trigger_*` del cron para que manden `x-internal-secret`; el secreto lo crea `0061`, y las funciones viejas lo ignoran hasta el paso 3) · `0070_function_execute_hardening` · `0071_system_incidents` · `0072_revoke_anon_tables` ·
 `0073_kommo_webhook_auth` (**crea el secreto del webhook; modo transición/`permissive`**: el webhook sigue aceptando sin
 clave y alerta `webhook_unsigned`) · `0074_draft_publish_claim` · `0075_follow_up_claim` (`follow_ups` está vacía en
 producción: no choca con datos) · `0076_alert_webhook_delivery` · `0077_follow_up_retry_attempt`.
@@ -565,7 +574,15 @@ Sustituir `${SUPABASE_URL}` por `https://<ref>.supabase.co` en el SQL antes de e
 a mano hay que hacerlo: `sed 's#${SUPABASE_URL}#https://<ref>.supabase.co#g'`). Ejecutar como `postgres` (el rol del
 Management API), nunca como superusuario distinto: los default privileges que importan son los de ese rol.
 
-### 3. Fase B de migraciones + web — **sin pausa entre una y otra**
+### 3. Edge Functions (orden `DEPLOY_ORDER`; invocadores antes que invocados, `verify_jwt=false` en todas), ANTES de la fase B y de la web
+
+`kommo-webhook` → `process-inbound` → `generate-response` → `publish-to-kommo` → `follow-up-scan` → `dreams-run` →
+`alerts-scan` → `health-scan` → `sync-pipelines` → `kommo-funnel-sync` → `evaluate-outcomes` → `embed` → `cartelera`.
+Se despliegan con `supabase functions deploy <fn> --project-ref <ref> --no-verify-jwt` y el PAT temporal (SuperCines no tiene centro de actualizaciones). Las funciones nuevas funcionan con la base ya en fase A; desplegarlas antes que la web evita que el botón «Reintentar» de la web nueva le pegue a un `follow-up-scan` viejo que ignora el body y barre sin reserva. Validar cada una con una
+llamada real: `kommo-webhook` responde 200 siempre; las demás exigen `x-internal-secret` (401 sin él). Una llamada que caiga
+entre dos despliegues recibe 401 y la repone el barrido del cron.
+
+### 4. Fase B de migraciones + web — **sin pausa entre una y otra**
 
 Las policies de `0079` quitan a `authenticated` el acceso a `runtime_config`; la web VIEJA lee esa tabla con la sesión,
 así que entre `0079` y el deploy de la web nueva el panel muestra la configuración vacía. El pipeline (Edge) no se afecta.
@@ -583,14 +600,6 @@ Verificación inmediata: abrir el panel con un usuario `configuracion` (carga Aj
 `operacion` (inbox sí, Ajustes no → redirige), y probar con la anon key real que las tablas/RPC sensibles dan **401/403**
 (`curl` a `/rest/v1/runtime_config`, `/rest/v1/leads`, `/rest/v1/rpc/claim_inbound_batch`). Los JWT ya emitidos de usuarios
 sin rol efectivo se refrescan solos (el middleware hace `refreshSession()` si el rol del token difiere del actual).
-
-### 4. Edge Functions (orden `DEPLOY_ORDER`; invocadores antes que invocados, `verify_jwt=false` en todas)
-
-`kommo-webhook` → `process-inbound` → `generate-response` → `publish-to-kommo` → `follow-up-scan` → `dreams-run` →
-`alerts-scan` → `health-scan` → `sync-pipelines` → `kommo-funnel-sync` → `evaluate-outcomes` → `embed` → `cartelera`.
-Se despliegan desde el centro de actualizaciones o `supabase functions deploy` con el PAT temporal. Validar cada una con una
-llamada real: `kommo-webhook` responde 200 siempre; las demás exigen `x-internal-secret` (401 sin él). Una llamada que caiga
-entre dos despliegues recibe 401 y la repone el barrido del cron.
 
 ### 5. Sincronizar el agente vivo
 
@@ -618,7 +627,7 @@ si no difiere, adoptar. No sobrescribir a ciegas. Un sync sube la versión del a
 
 Reactivar el cron de seguimientos (`active => true`). Confirmar `select * from kommo_backfill` (el recorrido de posiciones corre
 solo tras `0061` hasta `done`), `health-scan` sin incidentes (en particular **sin** `registro_abierto`), `alerts` sin ráfagas y
-`select count(*) from _migrations where filename >= '0064'` = 20. Cerrar el pendiente en Boosty Desk con la resolución corta.
+`select count(*) from _migrations where filename >= '0060' and filename not like '0058%' and filename not like '0059%'` = 23. Si el panel o `/api/provision/migrate` se usó con un PAT, **borrar `SUPABASE_ACCESS_TOKEN` de `runtime_config`** (la ruta lo vuelve a guardar al terminar) y revocar el PAT. Cerrar el pendiente en Boosty Desk con la resolución corta.
 
 ### 8. Validación opcional del modelo (no es parte de las migraciones)
 
@@ -638,7 +647,7 @@ publishing_enabled=false` (genera drafts sin publicarlos), revisar, y recién en
 - **Secretos solo en el entorno**: `KOMMO_ACCESS_TOKEN`/`BCV_RATE_APIKEY`/`TOOL_*` ya no caen a `Deno.env`/`process.env` (pre-vuelo 3).
 - **`SALESBOT_VERIFY` está ON por defecto** en `publish-to-kommo`: si la verificación de entrega da falsos «no entregado»
   (`salesbot_not_delivered`, el mensaje NO se reenvía a ciegas), apagar con `SALESBOT_VERIFY_ENABLED=false` en `runtime_config`.
-- **Panel degradado** entre `0079` y el deploy web (ver paso 3); el agente no se interrumpe.
+- **Panel degradado** entre `0079` y el deploy web (ver paso 4); el agente no se interrumpe.
 - **Primer Sincronizar** con conflicto (`first_sync_differs`): decidir con el diff, no sobrescribir.
 - **Usuarios sin rol** quedan sin acceso (pre-vuelo 2): revisar `/usuarios` tras el deploy.
 - El registro público lo vuelve a verificar `health-scan` en cada corrida (`registro_abierto`, crítico, sale por el webhook de alertas).

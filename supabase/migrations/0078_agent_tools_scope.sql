@@ -1,6 +1,6 @@
 -- =============================================================
--- 0075_agent_tools_scope.sql
--- (1) Todo usuario existente queda con un alcance EXPLÍCITO en app_metadata.role.
+-- 0078_agent_tools_scope.sql
+-- (1) El usuario MAESTRO (el creado primero) queda con alcance EXPLÍCITO si no tenía rol.
 -- (2) Leer, crear o editar http tools (agent_tools: URL y headers) exige alcance
 --     `configuracion` TAMBIÉN en la base, no solo en la API.
 --
@@ -8,9 +8,10 @@
 -- `app_metadata.role` valía como alcance total (era el maestro que crea el /first-run, anterior
 -- al módulo de usuarios). Desde 0078/0079 la RLS (y web/src/lib/auth/roles.ts#getScope) tratan
 -- la ausencia como «sin acceso»: solo `configuracion`/`admin`, `contenido`/`editor` y
--- `operacion` abren algo. Para que NADIE legítimo pierda acceso al desplegar en un cliente vivo,
+-- `operacion` abren algo. Para que el cliente vivo no se quede sin administrador,
 -- ANTES de que cambie cualquier policy (esta es la primera migración que lee el rol) se fija
--- `role = 'configuracion'` a todo usuario existente sin rol: su acceso efectivo de hoy.
+-- `role = 'configuracion'` SOLO al maestro si no tiene rol (ver el backfill más abajo); los demás
+-- usuarios legítimos deben tener rol explícito antes de aplicarla.
 -- Un rol presente (incluso irreconocible) no se toca: hoy ya cae cerrado y debe seguir así.
 -- El JWT vigente de ese usuario no trae el rol hasta que la sesión se refresca (≤ 1 h, o al
 -- volver a entrar). Orden de deploy en CLAUDE.md «Quién entra y hasta dónde».

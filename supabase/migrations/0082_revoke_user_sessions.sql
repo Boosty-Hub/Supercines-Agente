@@ -1,5 +1,5 @@
 -- =============================================================
--- 0077_revoke_user_sessions.sql
+-- 0082_revoke_user_sessions.sql
 -- revoke_user_sessions(p_user_id): corta las sesiones de un usuario (refresh tokens y sesiones
 -- de Supabase Auth) y devuelve cuántas filas borró.
 --

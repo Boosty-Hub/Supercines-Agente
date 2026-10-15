@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { z } from "zod";
 import { readJson } from "@/lib/api/body";
 
@@ -17,11 +17,9 @@ const RoutingConfigBody = z.object({
 //   routing_min_confidence     → confianza mínima de la clasificación para
 //                                tocar el CRM (0-1).
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const input = await readJson(request, RoutingConfigBody);
   if (!input.ok) return input.response;

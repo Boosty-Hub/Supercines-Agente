@@ -23,7 +23,9 @@ function decodePayload(token: string): Record<string, unknown> | null {
   }
 }
 
-const norm = (r: unknown): unknown => (r === undefined || r === null || r === "" ? null : r);
+// Solo un string no vacío cuenta como rol; cualquier otra cosa (ausente, null, "", objeto, lista) es «sin rol»
+// y se compara por valor (evita refrescar la sesión en cada request con un dato corrupto).
+const norm = (r: unknown): string | null => (typeof r === "string" && r !== "" ? r : null);
 
 export function jwtRoleDesfasado(accessToken: string | null | undefined, userRole: unknown): boolean {
   if (!accessToken) return false;

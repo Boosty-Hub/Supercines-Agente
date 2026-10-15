@@ -45,7 +45,7 @@
 //     conversaciones (PII de clientes). Lo legítimo siempre tiene rol: el
 //     /first-run crea al maestro con `configuracion` explícito, `/usuarios`
 //     rechaza crear sin alcance, y la migración de datos que acompaña a este
-//     cambio asigna `configuracion` a los usuarios que ya existían sin rol
+//     cambio asigna `configuracion` SOLO al usuario maestro si no tenía rol (los demás deben tener rol explícito antes)
 //     (deploy: esa migración ANTES que esta web, o el maestro viejo se queda
 //     afuera hasta que corra).
 //   - La RLS dice lo mismo (sin rol = sin acceso): el mismo contrato en las

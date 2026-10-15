@@ -1,5 +1,5 @@
 -- =============================================================
--- 0076_runtime_config_lockdown.sql
+-- 0079_runtime_config_lockdown.sql
 -- La RLS distingue alcances y cae CERRADA: los secretos, la configuración y los datos
 -- operativos dejan de estar abiertos a cualquier sesión por PostgREST.
 --

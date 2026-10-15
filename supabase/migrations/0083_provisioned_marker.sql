@@ -1,5 +1,5 @@
 -- =============================================================
--- 0078_provisioned_marker.sql
+-- 0083_provisioned_marker.sql
 -- Marcador PERSISTENTE «esta instalación ya fue provisionada» (_app_secrets.PROVISIONED_AT).
 --
 -- El provisioner (/api/provision/*) trataba «sin usuarios» como primer arranque abierto: si se

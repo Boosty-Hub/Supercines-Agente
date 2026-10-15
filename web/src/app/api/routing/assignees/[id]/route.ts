@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { parseTerms } from "@/lib/routing";
 import { z } from "zod";
 import { readJson } from "@/lib/api/body";
@@ -13,11 +13,9 @@ const AssigneePatchBody = z.object({
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const params = await ctx.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const input = await readJson(request, AssigneePatchBody);
   if (!input.ok) return input.response;
@@ -41,11 +39,9 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
 export async function DELETE(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   const params = await ctx.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await requireScope("configuracion");
+  if (!auth.ok) return auth.response;
+  const { supabase } = auth;
 
   const { error } = await supabase.from("routing_assignees").delete().eq("id", params.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

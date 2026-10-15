@@ -2,7 +2,7 @@
 --
 -- `current_setting('request.jwt.claim…')`, `auth.uid()`, `auth.jwt()` y `auth.role()` escritos
 -- inline en una policy se evalúan UNA VEZ POR FILA: sobre decenas de miles de leads/mensajes/drafts
--- el inbox (inbox_lead_summaries) tardaba ~4,8 s y las consultas del panel llegaban al
+-- el inbox (inbox_lead_summaries, reemplazada en 0085) tardaba ~4,8 s y las consultas del panel llegaban al
 -- statement_timeout. Envueltos en `(select …)` Postgres los convierte en un InitPlan que se evalúa
 -- UNA vez por consulta (~1,4 s, igual que el dueño). La regla de acceso no cambia.
 --

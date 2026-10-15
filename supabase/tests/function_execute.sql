@@ -43,10 +43,10 @@ select pg_temp.expect('PUBLIC tampoco (Postgres lo otorga por default)',
 -- ── 2) authenticated: solo lo que el panel llama con la sesión del usuario ───
 -- (gasto_mes_actual dejó de estar acá en 0079: lee runtime_config, que ya no es legible con la
 -- sesión; /consumo la llama con service_role tras validar el alcance.)
-select pg_temp.expect('authenticated solo ejecuta inbox_lead_summaries',
+select pg_temp.expect('authenticated solo ejecuta las del inbox (0085)',
   (select coalesce(array_agg(f.proname::text order by f.proname), '{}')
      from propias f where has_function_privilege('authenticated', f.oid, 'execute'))
-  = array['inbox_lead_summaries']);
+  = array['inbox_board', 'inbox_etapa_agente_sql', 'inbox_filter_sql', 'inbox_page', 'inbox_stats']);
 select pg_temp.expect('service_role ejecuta todas las propias',
   not exists (select 1 from propias f where not has_function_privilege('service_role', f.oid, 'execute')));
 

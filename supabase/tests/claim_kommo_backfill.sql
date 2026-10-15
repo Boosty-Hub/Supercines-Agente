@@ -265,8 +265,8 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
      where has_function_privilege('anon', f, 'execute') or has_function_privilege('authenticated', f, 'execute')
         or has_function_privilege('public', f, 'execute'))
   and has_function_privilege('service_role', 'apply_lead_position(uuid,bigint,bigint,timestamptz,text,uuid,text,text,text,text,uuid)', 'execute'));
-select pg_temp.expect('inbox_lead_summaries sí es del panel', has_function_privilege('authenticated', 'inbox_lead_summaries()', 'execute')
-  and not has_function_privilege('anon', 'inbox_lead_summaries()', 'execute'));
+select pg_temp.expect('inbox_board sí es del panel', has_function_privilege('authenticated', 'inbox_board(bigint,jsonb,text,int,jsonb)', 'execute')
+  and not has_function_privilege('anon', 'inbox_board(bigint,jsonb,text,int,jsonb)', 'execute'));
 
 -- 13) search_path fijo en TODAS las funciones de 0061 (y la de 0060), y las
 -- SECURITY DEFINER con pg_temp al final (S5).
@@ -274,7 +274,7 @@ select pg_temp.expect('todas las funciones de 0061/0060 fijan search_path = publ
   not exists (
     select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
-       and p.proname in ('sync_kommo_pipelines','record_lead_stage_event','apply_lead_position','inbox_lead_summaries',
+       and p.proname in ('sync_kommo_pipelines','record_lead_stage_event','apply_lead_position',
                          'claim_kommo_pipelines_refresh','claim_kommo_backfill','apply_kommo_lead_positions',
                          'renew_kommo_backfill_lease','save_kommo_backfill_progress',
                          'kommo_missing_candidates','kommo_gap_lead_ids','mark_kommo_leads_missing',

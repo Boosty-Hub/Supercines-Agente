@@ -8,140 +8,103 @@ import {
   initials,
   STAGE_LOST,
   STAGE_WON,
+  type AgentStatusCfg,
   type BoardPipeline,
-  type InboxListData,
   type LeadSummary,
 } from "@/lib/inbox-data";
+import { COLUMNA_OTRAS, COLUMNA_UNICA, NO_EXISTE, SIN_UBICAR, type InboxBoard, type InboxColumn } from "@/lib/inbox-query";
 import ChannelIcon from "./channel-icon";
 import { computeAgentStatus, AgentStatusDot } from "./agent-status";
 
 // Tablero kanban del inbox: una columna por etapa del pipeline elegido, en el
-// orden de Kommo. Lee los MISMOS datos que la lista (inbox-shell.tsx), ya
-// filtrados: cambiar de pipeline o de filtro no le pide nada al servidor.
-//
-// Cada columna muestra de a PAGE tarjetas: PERDIDOS tiene ~940 leads y
-// renderizarlos todos de una congela el navegador sin aportar nada.
-const PAGE = 25;
-
-/** Id del pseudo-pipeline para leads sin pipeline conocido (borrados en Kommo, etc.). */
-export const SIN_UBICAR = -1;
-/** Id del pseudo-pipeline de leads que un recorrido completo de Kommo no encontró (borrados allá). */
-export const NO_EXISTE = -2;
+// orden de Kommo. Cada columna trae del servidor sus primeras tarjetas + el
+// total (inbox_board, migración 0079) y pide más con «Ver más» (keyset).
 
 type Column = {
+  /** Clave de la columna en `board.columns` (id de etapa, «otras» o «all»). */
   key: string;
   stageId: number | null;
   name: string;
   color: string | null;
-  leads: LeadSummary[];
+  data: InboxColumn;
   /** Ganados/Perdidos: plegadas por defecto. */
   terminal: boolean;
 };
 
-export function pipelineCounts(rows: LeadSummary[], pipelines: BoardPipeline[]): Map<number, number> {
-  const known = new Set(pipelines.map((p) => p.id));
-  const counts = new Map<number, number>();
-  for (const l of rows) {
-    const k = l.kommo_missing_at
-      ? NO_EXISTE
-      : l.kommo_pipeline_id != null && known.has(l.kommo_pipeline_id)
-        ? l.kommo_pipeline_id
-        : SIN_UBICAR;
-    counts.set(k, (counts.get(k) ?? 0) + 1);
-  }
-  return counts;
-}
+const VACIA: InboxColumn = { total: 0, rows: [], next: null };
 
 export default function Board({
-  rows,
+  board,
   pipelines,
-  pipelineId,
   selectedLead,
   filterQS,
   agentCfg,
   onMove,
+  onLoadMore,
+  loadingMore,
   movingIds,
 }: {
-  rows: LeadSummary[];
+  board: InboxBoard;
   pipelines: BoardPipeline[];
-  pipelineId: number;
   selectedLead: string | null;
   filterQS: string;
-  agentCfg: InboxListData["agentCfg"];
+  agentCfg: AgentStatusCfg;
   /** Soltar una tarjeta en otra columna. Sin esto el tablero es solo lectura. */
   onMove?: (leadId: string, pipelineId: number, stageId: number) => void;
+  /** «Ver más» de una columna (clave de la columna). */
+  onLoadMore: (key: string) => void;
+  /** Columnas con un «Ver más» en curso. */
+  loadingMore: Set<string>;
   /** Tarjetas con un movimiento en curso (se ven atenuadas). */
   movingIds?: Set<string>;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [shown, setShown] = useState<Record<string, number>>({});
   // Columna bajo el cursor mientras se arrastra (para resaltarla).
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // Mientras se arrastra, las columnas vacías se estiran para ser fáciles de apuntar.
   const [dragging, setDragging] = useState(false);
   const DRAG_TYPE = "application/x-lead-id";
+  const pipelineId = board.pipeline;
 
   const columns = useMemo<Column[]>(() => {
-    const known = new Set(pipelines.map((p) => p.id));
-    if (pipelineId === NO_EXISTE) {
+    if (pipelineId === NO_EXISTE || pipelineId === SIN_UBICAR) {
       return [
         {
-          key: "no-existe",
+          key: COLUMNA_UNICA,
           stageId: null,
-          name: "No existe en Kommo",
+          name: pipelineId === NO_EXISTE ? "No existe en Kommo" : "Sin pipeline",
           color: null,
-          leads: rows.filter((l) => l.kommo_missing_at),
-          terminal: false,
-        },
-      ];
-    }
-    if (pipelineId === SIN_UBICAR) {
-      return [
-        {
-          key: "sin-ubicar",
-          stageId: null,
-          name: "Sin pipeline",
-          color: null,
-          leads: rows.filter((l) => !l.kommo_missing_at && (l.kommo_pipeline_id == null || !known.has(l.kommo_pipeline_id))),
+          data: board.columns[COLUMNA_UNICA] ?? VACIA,
           terminal: false,
         },
       ];
     }
     const pipeline = pipelines.find((p) => p.id === pipelineId);
     if (!pipeline) return [];
-    const inPipeline = rows.filter((l) => !l.kommo_missing_at && l.kommo_pipeline_id === pipelineId);
-    const byStage = new Map<number, LeadSummary[]>();
-    for (const l of inPipeline) {
-      const k = l.kommo_stage_id ?? -1;
-      const list = byStage.get(k) ?? [];
-      list.push(l);
-      byStage.set(k, list);
-    }
-    const stageIds = new Set(pipeline.stages.map((s) => s.id));
     const cols: Column[] = pipeline.stages.map((s) => ({
-      key: `${pipelineId}:${s.id}`,
+      key: String(s.id),
       stageId: s.id,
       name: s.name,
       color: s.color,
-      leads: byStage.get(s.id) ?? [],
+      data: board.columns[String(s.id)] ?? VACIA,
       terminal: s.id === STAGE_WON || s.id === STAGE_LOST,
     }));
     // Etapa que ya no existe en el pipeline (renombrada/borrada en Kommo y
     // todavía sin resincronizar): se muestran aparte en vez de perderse.
-    const huerfanos = inPipeline.filter((l) => l.kommo_stage_id == null || !stageIds.has(l.kommo_stage_id));
-    if (huerfanos.length > 0) {
+    const otras = board.columns[COLUMNA_OTRAS];
+    if (otras && otras.total > 0) {
       const firstTerminal = cols.findIndex((c) => c.terminal);
       cols.splice(firstTerminal === -1 ? cols.length : firstTerminal, 0, {
-        key: `${pipelineId}:otras`,
+        key: COLUMNA_OTRAS,
         stageId: null,
         name: "Etapa desconocida",
         color: null,
-        leads: huerfanos,
+        data: otras,
         terminal: false,
       });
     }
     return cols;
-  }, [rows, pipelines, pipelineId]);
+  }, [board, pipelines, pipelineId]);
 
   if (columns.length === 0) {
     return <p className="p-6 text-sm text-neutral-500">Este pipeline no tiene etapas sincronizadas todavía. Usá «Sincronizar» para traerlas de Kommo.</p>;
@@ -151,14 +114,14 @@ export default function Board({
     <div className="flex h-full snap-x gap-3 overflow-x-auto p-3 sm:snap-none sm:p-4">
       {columns.map((col) => {
         const open = !col.terminal || expanded[col.key];
-        const limit = shown[col.key] ?? PAGE;
         // Vacía = angosta: en un pipeline de ventas las 3 primeras etapas suelen estar en 0 y
         // a ancho completo empujaban fuera de la pantalla a las que tienen trabajo.
-        const empty = col.leads.length === 0;
+        const empty = col.data.total === 0 && col.data.rows.length === 0;
         // Solo se puede soltar en una etapa real del pipeline (no en "Sin
         // pipeline" ni en "Etapa desconocida"), y no en la columna de origen.
         const droppable = !!onMove && col.stageId != null && pipelineId > 0;
         const isTarget = dropTarget === col.key;
+        const restantes = Math.max(0, col.data.total - col.data.rows.length);
         return (
           <section
             key={col.key}
@@ -188,8 +151,7 @@ export default function Board({
                     setDropTarget(null);
                     setDragging(false);
                     const leadId = e.dataTransfer.getData(DRAG_TYPE);
-                    const lead = rows.find((r) => r.id === leadId);
-                    if (!lead || lead.kommo_stage_id === col.stageId) return;
+                    if (!leadId || col.data.rows.some((r) => r.id === leadId)) return;
                     onMove!(leadId, pipelineId, col.stageId!);
                   }
                 : undefined
@@ -204,7 +166,7 @@ export default function Board({
                   {col.name}
                 </h3>
                 <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[11px] font-medium text-neutral-600">
-                  {col.leads.length}
+                  {col.data.total}
                 </span>
               </div>
               {col.terminal && !empty && (
@@ -219,41 +181,38 @@ export default function Board({
             </header>
             {open && !empty && (
               <div className="flex-1 space-y-2 overflow-y-auto p-2">
-                {(
-                  <>
-                    {col.leads.slice(0, limit).map((l) => (
-                      <Card
-                        key={l.id}
-                        lead={l}
-                        active={selectedLead === l.id}
-                        href={`/inbox/${l.id}${filterQS ? `?${filterQS}` : ""}`}
-                        agentCfg={agentCfg}
-                        moving={movingIds?.has(l.id) ?? false}
-                        onDragStart={
-                          onMove && pipelineId > 0
-                            ? (e) => {
-                                e.dataTransfer.setData(DRAG_TYPE, l.id);
-                                e.dataTransfer.effectAllowed = "move";
-                                setDragging(true);
-                              }
-                            : undefined
-                        }
-                        onDragEnd={() => {
-                          setDragging(false);
-                          setDropTarget(null);
-                        }}
-                      />
-                    ))}
-                    {col.leads.length > limit && (
-                      <button
-                        type="button"
-                        onClick={() => setShown((s) => ({ ...s, [col.key]: limit + PAGE }))}
-                        className="w-full rounded-lg border border-dashed border-neutral-300 py-1.5 text-[11px] font-medium text-neutral-500 hover:bg-white"
-                      >
-                        Ver {Math.min(PAGE, col.leads.length - limit)} más ({col.leads.length - limit} restantes)
-                      </button>
-                    )}
-                  </>
+                {col.data.rows.map((l) => (
+                  <Card
+                    key={l.id}
+                    lead={l}
+                    active={selectedLead === l.id}
+                    href={`/inbox/${l.id}${filterQS ? `?${filterQS}` : ""}`}
+                    agentCfg={agentCfg}
+                    moving={movingIds?.has(l.id) ?? false}
+                    onDragStart={
+                      onMove && pipelineId > 0
+                        ? (e) => {
+                            e.dataTransfer.setData(DRAG_TYPE, l.id);
+                            e.dataTransfer.effectAllowed = "move";
+                            setDragging(true);
+                          }
+                        : undefined
+                    }
+                    onDragEnd={() => {
+                      setDragging(false);
+                      setDropTarget(null);
+                    }}
+                  />
+                ))}
+                {col.data.next && (
+                  <button
+                    type="button"
+                    disabled={loadingMore.has(col.key)}
+                    onClick={() => onLoadMore(col.key)}
+                    className="w-full rounded-lg border border-dashed border-neutral-300 py-1.5 text-[11px] font-medium text-neutral-500 hover:bg-white disabled:opacity-60"
+                  >
+                    {loadingMore.has(col.key) ? "Cargando…" : `Ver más (${restantes} restantes)`}
+                  </button>
                 )}
               </div>
             )}
@@ -276,7 +235,7 @@ function Card({
   lead: LeadSummary;
   active: boolean;
   href: string;
-  agentCfg: InboxListData["agentCfg"];
+  agentCfg: AgentStatusCfg;
   moving: boolean;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
@@ -289,12 +248,12 @@ function Card({
       href={href}
       prefetch={false}
       scroll={false}
-      data-lead-name={name}
       draggable={!!onDragStart}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       aria-busy={moving || undefined}
       title={moving ? "Moviendo en Kommo… (podés elegir otro destino: gana el último)" : undefined}
+      data-lead-name={name}
       className={
         "block rounded-lg border bg-white p-2.5 shadow-sm transition " +
         (onDragStart ? "cursor-grab active:cursor-grabbing " : "") +

@@ -1,10 +1,11 @@
 // Datos del inbox compartidos entre la ruta /api/inbox/leads, la conversación
 // (/inbox/[leadId]) y la lista/tablero del cliente. Sin imports de servidor: las
-// funciones que consultan reciben el cliente de Supabase por parámetro.
+// funciones que consultan reciben el cliente de Supabase por parámetro. La
+// paginación/filtros del inbox viven en lib/inbox-query.ts (pura, con tests).
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { firstGrapheme } from "@/lib/text-safe";
 
-/** Una fila de `inbox_lead_summaries()` (migración 0061). */
+/** Una tarjeta del inbox: un lead + su resumen (inbox_page / inbox_board, migración 0085). */
 export type LeadSummary = {
   id: string;
   display_name: string | null;
@@ -46,13 +47,6 @@ export type AgentStatusCfg = {
 export type BoardStage = { id: number; name: string; sort: number; type: number; color: string | null };
 export type BoardPipeline = { id: number; name: string; sort: number; is_main: boolean; stages: BoardStage[] };
 
-export type InboxListData = {
-  leads: LeadSummary[];
-  agentCfg: AgentStatusCfg;
-  /** Pipelines activos (sin archivados) con sus etapas en el orden de Kommo. */
-  pipelines: BoardPipeline[];
-};
-
 /**
  * Parámetros de URL que son estado del inbox: modo embed, vista, pipeline y los
  * filtros. Lista blanca para armar los enlaces entre lista y conversación: otros
@@ -60,7 +54,7 @@ export type InboxListData = {
  * propagan.
  */
 export const INBOX_URL_PARAMS = [
-  "mode", "vista", "pipeline", "q", "channel", "vertical", "estado", "urgent", "rango", "sort",
+  "mode", "vista", "pipeline", "etapa", "q", "channel", "vertical", "estado", "urgent", "rango", "sort",
 ] as const;
 
 /** Etapas de sistema de Kommo, con el MISMO id en todos los pipelines. */
@@ -92,40 +86,6 @@ export async function fetchBoardPipelines(supabase: SupabaseClient): Promise<Boa
     }))
     // El principal primero, después el orden de Kommo.
     .sort((a, b) => Number(b.is_main) - Number(a.is_main) || a.sort - b.sort);
-}
-
-const PAGE = 1000; // max_rows de PostgREST
-
-/**
- * Todos los resúmenes, pidiendo las dos primeras páginas A LA VEZ: cada página
- * recalcula la función entera y en fila el total se duplica. Si la segunda viene
- * llena, sigue en serie. Orden por id (clave inmutable) para que la paginación
- * no repita ni se salte filas cuando llegan mensajes mientras se lee.
- */
-export async function fetchLeadSummaries(supabase: SupabaseClient): Promise<LeadSummary[]> {
-  const page = async (from: number) => {
-    const { data, error } = await supabase
-      .rpc("inbox_lead_summaries")
-      .order("id", { ascending: true })
-      .range(from, from + PAGE - 1);
-    // Lanzar, nunca devolver lo que llegó: una página perdida se vería como un
-    // total creíble y equivocado.
-    if (error) throw new Error(`inbox_lead_summaries [${from}]: ${error.message}`);
-    return (data ?? []) as LeadSummary[];
-  };
-  const [p0, p1] = await Promise.all([page(0), page(PAGE)]);
-  const out = [...p0, ...p1];
-  let last = p1;
-  for (let from = 2 * PAGE; last.length === PAGE; from += PAGE) {
-    last = await page(from);
-    out.push(...last);
-  }
-  return out.map((l) => ({
-    ...l,
-    // numeric de Postgres llega como string por PostgREST.
-    max_urgency: Number(l.max_urgency) || 0,
-    max_toxicity: Number(l.max_toxicity) || 0,
-  }));
 }
 
 export type PublishCfgRow = {
@@ -183,19 +143,6 @@ export function normChannel(ch: string | null): string {
   if (c.includes("tiktok")) return "tiktok";
   if (c.includes("telegram")) return "telegram";
   return "other";
-}
-
-export function withinRange(iso: string | null, rango: string): boolean {
-  if (!rango) return true;
-  if (!iso) return false;
-  const age = Date.now() - new Date(iso).getTime();
-  const H = 3600_000;
-  const D = 24 * H;
-  if (rango === "1h") return age <= H;
-  if (rango === "today") return age <= D;
-  if (rango === "7d") return age <= 7 * D;
-  if (rango === "30d") return age <= 30 * D;
-  return true;
 }
 
 // Ojo con los emojis: hay display_names de WhatsApp que son puro emoji. Cortar con

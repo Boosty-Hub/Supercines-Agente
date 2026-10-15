@@ -74,7 +74,8 @@ insert into matriz values
   ('drafts', 'SELECT'), ('outcomes', 'SELECT'), ('lead_stage_events', 'SELECT'), ('follow_ups', 'SELECT'),
   ('kommo_pipelines', 'SELECT'), ('kommo_stages', 'SELECT'), ('kommo_webhook_auth', 'SELECT'),
   -- propias de SuperCines (0080): auditoría del ruteo (operacion+) y embudos de salesbots (contenido+)
-  ('lead_routing_events', 'SELECT'), ('salesbot_funnel_leads', 'SELECT');
+  ('lead_routing_events', 'SELECT'), ('salesbot_funnel_leads', 'SELECT'),
+  ('lead_inbox_summary', 'SELECT');
 
 create temp view privs_reales as
   select t.rel,

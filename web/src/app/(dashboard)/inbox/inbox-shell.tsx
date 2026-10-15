@@ -3,38 +3,54 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Alert, Badge, Inbox as InboxIcon, LazyReveal, MessageSquare } from "@/components/ui";
+import { Alert, Badge, Inbox as InboxIcon, MessageSquare } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { initials, INBOX_URL_PARAMS, normChannel, type AgentStatusCfg, type LeadSummary } from "@/lib/inbox-data";
 import {
-  initials,
-  INBOX_URL_PARAMS,
-  normChannel,
-  withinRange,
-  type InboxListData,
-  type LeadSummary,
-} from "@/lib/inbox-data";
+  appendPage,
+  applyPendingMoves,
+  BOARD_PAGE,
+  boardLimits,
+  findLead,
+  LIST_PAGE,
+  listRefreshLimit,
+  mergeBoardRefresh,
+  mergeRefresh,
+  moveCard,
+  revertMove,
+  NO_EXISTE,
+  parseEtapa,
+  parseFilters,
+  parsePipeline,
+  parseSort,
+  parseVista,
+  queryFromFilters,
+  SIN_UBICAR,
+  type EtapaTab,
+  type InboxBoard,
+  type InboxPage,
+  type InboxResponse,
+} from "@/lib/inbox-query";
 import ChannelIcon from "./channel-icon";
 import InboxFilters from "./filters";
 import { computeAgentStatus, AgentStatusDot } from "./agent-status";
 import { leadMoves } from "@/lib/move-client";
-import Board, { NO_EXISTE, pipelineCounts, SIN_UBICAR } from "./board";
+import Board from "./board";
 
 // La lista/tablero del inbox vive en el LAYOUT (este componente) y la
 // conversación en /inbox/[leadId]. Next no vuelve a renderizar un layout al
-// navegar entre sus hijos, así que abrir otra conversación ya no recalcula la
-// lista: antes cada clic re-renderizaba la página entera con todos los mensajes.
+// navegar entre sus hijos, así que abrir otra conversación no recarga la lista.
 //
-// Los datos se piden al montar a /api/inbox/leads, y NO los pasa el server
-// component: un router.refresh() (el refresco en vivo de la conversación)
-// re-renderiza también el layout, y con la lista del lado del servidor cada
-// mensaje nuevo en la conversación abierta la volvería a calcular entera.
+// Los datos se piden a /api/inbox/leads, que pagina y filtra EN LA BASE
+// (migración 0079): por columna del tablero, las primeras tarjetas + el total;
+// en la lista, una página. «Ver más» y el scroll piden la siguiente página por
+// keyset a /api/inbox/leads/page. Cambiar un filtro, el orden, la vista o el
+// pipeline vuelve a pedir; el cliente ya no filtra ni ordena nada.
 
-// Cambios de CUALQUIER lead → se agrupan en una sola recarga de la lista. Con
-// leads.status/update ahora accionables (y el backfill) pueden llegar ráfagas:
-// una recarga cada 5 s como máximo, sin importar cuántos eventos entren.
+// Cambios de CUALQUIER lead → se agrupan en una sola recarga de lo VISIBLE (con
+// los «Ver más» ya abiertos). Una recarga cada 5 s como máximo.
 const LISTA_MS = 5000;
-
 
 type Aviso = { tone: "error" | "ok" | "info"; text: string };
 
@@ -42,8 +58,7 @@ type Aviso = { tone: "error" | "ok" | "info"; text: string };
 // mayoría de los embudos de SuperCines están apagados (ventas por zona, equipo
 // interno) y esas conversaciones tapaban a las que sí importan. El tablero NO
 // la aplica: es el espejo completo de Kommo y cada tarjeta ya marca con un punto
-// si el agente está apagado en su etapa.
-type EtapaTab = "agente" | "apagadas" | "todas";
+// si el agente está apagado en su etapa. El filtro lo aplica la base (0085).
 const ETAPA_TABS: ReadonlyArray<{ id: EtapaTab; label: string }> = [
   { id: "agente", label: "Con agente" },
   { id: "apagadas", label: "Apagadas" },
@@ -80,6 +95,8 @@ function MiniStat({
   );
 }
 
+type Meta = Pick<InboxResponse, "stats" | "agentCfg" | "pipelines">;
+
 export default function InboxShell({ children }: { children: React.ReactNode }) {
   const params = useParams<{ leadId?: string }>();
   const selectedLead = params?.leadId ?? null;
@@ -87,9 +104,28 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   const router = useRouter();
   const pathname = usePathname();
 
-  // Vista y pipeline viven en la URL (se pueden compartir y sobreviven al
-  // refresco) y se cambian sin navegar: todo se calcula en el cliente.
-  const vista = sp.get("vista") === "lista" ? "lista" : "tablero";
+  // Vista, pipeline, filtros y orden viven en la URL (se pueden compartir y
+  // sobreviven al refresco) y se cambian sin navegar (history.replaceState).
+  const vista = parseVista(sp);
+  const sort = parseSort(sp);
+  const pipelineParam = parsePipeline(sp);
+  const fEtapa = parseEtapa(sp);
+  // La pestaña sale de parseEtapa (con su default); el resto de los filtros, de la URL.
+  const filters = { ...parseFilters(sp), etapa: undefined };
+  // La pestaña no es un «filtro activo» (es la pestaña) y solo viaja en la vista Lista.
+  const hasActiveFilters = queryFromFilters(filters, sort).toString() !== "";
+  const filtersQS = queryFromFilters(
+    vista === "lista" && fEtapa !== "todas" ? { ...filters, etapa: fEtapa } : filters,
+    sort
+  ).toString();
+  // Qué se pide: cambia → recarga desde cero (sin los «Ver más» de antes).
+  const queryKey = useMemo(() => {
+    const p = new URLSearchParams(filtersQS);
+    p.set("vista", vista);
+    if (vista === "tablero" && pipelineParam != null) p.set("pipeline", String(pipelineParam));
+    return p.toString();
+  }, [filtersQS, vista, pipelineParam]);
+
   const setParam = (key: string, value: string | null) => {
     const p = new URLSearchParams(sp.toString());
     if (value) p.set(key, value);
@@ -109,12 +145,26 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
     return () => mq.removeEventListener("change", sync);
   }, []);
 
-  const [data, setData] = useState<InboxListData | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [board, setBoard] = useState<InboxBoard | null>(null);
+  const [list, setList] = useState<InboxPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cargandoVista, setCargandoVista] = useState(false);
+  // Refs con lo último que se mostró: la recarga en vivo pide lo mismo que está a la vista.
+  const boardRef = useRef(board);
+  const listRef = useRef(list);
+  boardRef.current = board;
+  listRef.current = list;
+  const keyRef = useRef(queryKey);
+  keyRef.current = queryKey;
+  const sortRef = useRef(sort);
+  sortRef.current = sort;
+  // Clave de lo que hay en pantalla (null = nada todavía).
+  const shownKey = useRef<string | null>(null);
   const cargando = useRef(false);
   const pendiente = useRef(false);
   // Destino pedido por lead mientras su movimiento sigue en la cola (lib/move-queue.ts):
-  // una recarga que llega en el medio trae la etapa vieja y se pisa con esto.
+  // una recarga que llega en el medio trae la etapa vieja y se corrige con esto.
   const pendingMoves = useRef(new Map<string, { pipeline: number; stage: number }>());
 
   const load = useCallback(async () => {
@@ -125,8 +175,19 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
       return;
     }
     cargando.current = true;
+    const key = keyRef.current;
+    // Misma consulta que lo que está a la vista → recarga en vivo conservando lo cargado.
+    const enVivo = shownKey.current === key;
+    const qs = new URLSearchParams(key);
+    if (enVivo && qs.get("vista") === "tablero") {
+      const limits = boardLimits(boardRef.current);
+      if (Object.keys(limits).length > 0) qs.set("limits", JSON.stringify(limits));
+    } else if (enVivo) {
+      qs.set("limit", String(listRefreshLimit(listRef.current)));
+    }
+    if (!enVivo) setCargandoVista(true);
     try {
-      const res = await fetch("/api/inbox/leads", { cache: "no-store" });
+      const res = await fetch(`/api/inbox/leads?${qs.toString()}`, { cache: "no-store" });
       // Sesión vencida: el middleware redirige a /login y llega HTML, no JSON.
       if (res.redirected || !(res.headers.get("content-type") ?? "").includes("json")) {
         window.location.href = "/login";
@@ -134,21 +195,38 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
       }
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-      const fresh = json as InboxListData;
-      // Una recarga que llega con un movimiento en curso trae la etapa VIEJA:
-      // se respeta la del movimiento para que la tarjeta no salte hacia atrás.
-      if (pendingMoves.current.size > 0) {
-        fresh.leads = fresh.leads.map((l) => {
-          const m = pendingMoves.current.get(l.id);
-          return m ? { ...l, kommo_pipeline_id: m.pipeline, kommo_stage_id: m.stage } : l;
-        });
+      // El usuario cambió de filtro/vista mientras tanto: esta respuesta ya no sirve.
+      if (keyRef.current !== key) {
+        pendiente.current = true;
+        return;
       }
-      setData(fresh);
+      const fresh = json as InboxResponse;
+      setMeta({ stats: fresh.stats, agentCfg: fresh.agentCfg, pipelines: fresh.pipelines });
+      if (fresh.vista === "tablero") {
+        // Una recarga que llega con un movimiento en curso trae la etapa VIEJA:
+        // se respeta la del movimiento para que la tarjeta no salte hacia atrás. En vivo,
+        // lo que se cargó con «Ver más» mientras la recarga viajaba no se pierde.
+        const b = applyPendingMoves(fresh.board, pendingMoves.current, sortRef.current);
+        setBoard((cur) => (enVivo ? mergeBoardRefresh(cur, b) : b));
+        setList(null);
+      } else {
+        setList((cur) => (enVivo ? mergeRefresh(cur, fresh.list) : fresh.list));
+        setBoard(null);
+      }
+      shownKey.current = key;
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // Falló la carga de OTRA consulta (filtro, vista, pipeline): no se deja a la vista
+      // lo de la consulta anterior bajo los controles nuevos.
+      if (!enVivo) {
+        shownKey.current = null;
+        setBoard(null);
+        setList(null);
+      }
     } finally {
       cargando.current = false;
+      setCargandoVista(false);
       if (pendiente.current) {
         pendiente.current = false;
         void load();
@@ -156,14 +234,69 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // Primera carga y cada cambio de vista/pipeline/filtros/orden.
   useEffect(() => {
     void load();
+  }, [queryKey, load]);
+
+  useEffect(() => {
     // "Mover a…" de la conversación avisa por acá para que el tablero no espere
     // al refresco en vivo (5 s) para mover la tarjeta.
     const onReload = () => void load();
     window.addEventListener("inbox:reload", onReload);
     return () => window.removeEventListener("inbox:reload", onReload);
   }, [load]);
+
+  // ── «Ver más» (columna del tablero) y scroll de la lista ─────────────────
+  const [loadingMore, setLoadingMore] = useState<Set<string>>(() => new Set());
+  const enVuelo = useRef(new Set<string>());
+  // Cursor cuya página falló: el scroll no lo reintenta solo (sería un bucle de
+  // pedidos); el botón «Cargar más»/«Ver más» sí.
+  const [fallido, setFallido] = useState<string | null>(null);
+  const loadMore = useCallback(async (colKey: string) => {
+    const key = keyRef.current;
+    const b = boardRef.current;
+    const l = listRef.current;
+    const enLista = colKey === "__lista";
+    const cursor = enLista ? l?.next : b?.columns[colKey]?.next;
+    if (!cursor || shownKey.current !== key || enVuelo.current.has(colKey)) return;
+    enVuelo.current.add(colKey);
+    setFallido(null);
+    const qs = new URLSearchParams(key);
+    qs.delete("vista");
+    qs.delete("pipeline");
+    if (!enLista && b) {
+      qs.set("pipeline", String(b.pipeline));
+      qs.set("stage", colKey);
+    }
+    qs.set("after", JSON.stringify(cursor));
+    qs.set("limit", String(enLista ? LIST_PAGE : BOARD_PAGE));
+    setLoadingMore((s) => new Set(s).add(colKey));
+    try {
+      const res = await fetch(`/api/inbox/leads/page?${qs.toString()}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      if (keyRef.current !== key) return;
+      const page = json as InboxPage;
+      if (enLista) setList((cur) => (cur ? appendPage(cur, page) : cur));
+      else
+        setBoard((cur) =>
+          cur && b && cur.pipeline === b.pipeline && cur.columns[colKey]
+            ? { ...cur, columns: { ...cur.columns, [colKey]: appendPage(cur.columns[colKey], page) } }
+            : cur
+        );
+    } catch (e) {
+      setFallido(JSON.stringify(cursor));
+      setAviso({ tone: "error", text: `No se pudieron cargar más conversaciones: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      enVuelo.current.delete(colKey);
+      setLoadingMore((s) => {
+        const n = new Set(s);
+        n.delete(colKey);
+        return n;
+      });
+    }
+  }, []);
 
   const [aviso, setAviso] = useState<Aviso | null>(null);
   useEffect(() => {
@@ -173,29 +306,20 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
   }, [aviso]);
 
   // ── Mover de etapa ───────────────────────────────────────────────────────
-  // Optimista: la tarjeta cambia de columna al soltarla y, si Kommo falla,
-  // vuelve a donde estaba con el motivo en un aviso.
+  // Optimista: la tarjeta cambia de columna al soltarla (con los totales de las
+  // dos columnas) y, si Kommo falla, vuelve a donde estaba con el motivo en un aviso.
   const [movingIds, setMovingIds] = useState<Set<string>>(() => new Set());
   const moveLead = useCallback(
     async (leadId: string, toPipeline: number, toStage: number) => {
-      const before = data?.leads.find((l) => l.id === leadId);
+      const before = boardRef.current ? findLead(boardRef.current, leadId) : null;
       if (!before) return;
-      const patch = (pipeline: number | null, stage: number | null) =>
-        setData((d) =>
-          d
-            ? {
-                ...d,
-                leads: d.leads.map((l) =>
-                  l.id === leadId ? { ...l, kommo_pipeline_id: pipeline, kommo_stage_id: stage } : l
-                ),
-              }
-            : d
-        );
-      patch(toPipeline, toStage);
+      const place = (pipeline: number, stage: number) =>
+        setBoard((b) => (b ? moveCard(b, leadId, { pipeline, stage }, sortRef.current) : b));
+      place(toPipeline, toStage);
       pendingMoves.current.set(leadId, { pipeline: toPipeline, stage: toStage });
       setMovingIds((s) => new Set(s).add(leadId));
       const stageName =
-        data?.pipelines.find((p) => p.id === toPipeline)?.stages.find((s) => s.id === toStage)?.name ?? `#${toStage}`;
+        meta?.pipelines.find((p) => p.id === toPipeline)?.stages.find((s) => s.id === toStage)?.name ?? `#${toStage}`;
       const nombre = before.display_name ?? `Lead ${before.kommo_lead_id ?? ""}`;
       // Cola por lead (lib/move-queue.ts): un envío a la vez, gana el ÚLTIMO destino.
       const out = await leadMoves.enqueue(
@@ -208,7 +332,9 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
       if (out.kind === "failed") {
         // revertTo es null si hay un movimiento más nuevo en cola: la tarjeta ya
         // muestra ESE destino y no debe saltar hacia atrás.
-        if (out.revertTo) patch(out.revertTo.pipeline, out.revertTo.stage);
+        if (out.revertTo) {
+          setBoard((b) => (b ? revertMove(b, before, { pipeline: toPipeline, stage: toStage }, sortRef.current) : b));
+        }
         setAviso({ tone: "error", text: `No se pudo mover a ${nombre}: ${out.message}` });
       } else if (out.kind === "done") {
         setAviso({ tone: out.warning ? "error" : "ok", text: out.warning ?? `${nombre} → ${stageName}` });
@@ -224,10 +350,11 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
           n.delete(leadId);
           return n;
         });
-        if (out.kind === "deferred") void load();
+        // Los totales y la posición real los confirma la base.
+        if (out.kind !== "done") void load();
       }
     },
-    [data, load]
+    [meta, load]
   );
 
   // ── Sincronizar con Kommo (pipelines/etapas + backfill) ──────────────────
@@ -333,16 +460,6 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
     };
   }, [load]);
 
-  const fQ = (sp.get("q") ?? "").trim().toLowerCase();
-  const fChannel = sp.get("channel") ?? "";
-  const fVertical = sp.get("vertical") ?? "";
-  const fEstado = sp.get("estado") ?? "";
-  const fUrgent = sp.get("urgent") === "1";
-  const fRango = sp.get("rango") ?? "";
-  const fSort = sp.get("sort") ?? "recent";
-  const hasActiveFilters =
-    !!fQ || !!fChannel || !!fVertical || !!fEstado || fUrgent || !!fRango || fSort !== "recent";
-  const fEtapa: EtapaTab = sp.get("etapa") === "apagadas" ? "apagadas" : sp.get("etapa") === "todas" ? "todas" : "agente";
 
   // Querystring de filtros para conservarlos al abrir una conversación (incluye
   // vista y pipeline: al cerrar el panel se vuelve al mismo tablero).
@@ -358,83 +475,19 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
     return p.toString();
   }, [sp]);
 
-  const all = useMemo(() => data?.leads ?? [], [data]);
-  const channelOptions = useMemo(() => Array.from(new Set(all.map((l) => normChannel(l.channel)))).sort(), [all]);
-  const verticalOptions = useMemo(() => Array.from(new Set(all.flatMap((l) => l.verticals ?? []))).sort(), [all]);
-
-  const rows = useMemo(() => {
-    return all
-      .filter((l) => {
-        if (fQ) {
-          const hay = `${l.display_name ?? ""} ${l.kommo_lead_id ?? ""} ${l.last_content ?? ""}`.toLowerCase();
-          if (!hay.includes(fQ)) return false;
-        }
-        if (fChannel && normChannel(l.channel) !== fChannel) return false;
-        if (fVertical && !(l.verticals ?? []).includes(fVertical)) return false;
-        if (fUrgent && l.max_urgency < 4) return false;
-        if (fEstado === "review" && !l.has_review_pending) return false;
-        if (fEstado === "waiting" && !l.awaiting_reply) return false;
-        if (fEstado === "answered" && l.last_reply_at == null) return false;
-        if (fEstado === "toxic" && l.max_toxicity <= 0.3) return false;
-        if (fRango && !withinRange(l.last_message_at, fRango)) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        const ta = a.last_message_at ? +new Date(a.last_message_at) : 0;
-        const tb = b.last_message_at ? +new Date(b.last_message_at) : 0;
-        if (fSort === "oldest") return ta - tb;
-        if (fSort === "urgency") return b.max_urgency - a.max_urgency || tb - ta;
-        if (fSort === "messages") return b.msg_count - a.msg_count || tb - ta;
-        return tb - ta;
-      });
-  }, [all, fQ, fChannel, fVertical, fEstado, fUrgent, fRango, fSort]);
-
-  // Las tres métricas del topbar miden SIEMPRE el inbox completo, para que no
-  // cambien al filtrar ni al saltar de pestaña; lo que se está viendo lo dicen
-  // los contadores de las pestañas y el «x de y» de los filtros.
-  const totalActive = all.length;
-  const pendingReview = all.filter((l) => l.has_review_pending).length;
-  const sinResponder = all.filter((l) => l.awaiting_reply).length;
-
-  // Etapa desconocida (todavía sin sincronizar desde Kommo) = el agente SÍ
-  // responde: el gate de process-inbound es fail-open. La pestaña refleja el
-  // comportamiento real, no el deseado.
-  const ignoredStages = useMemo(() => new Set(data?.agentCfg.ignoredStageIds ?? []), [data]);
-  const agentHandles = useCallback(
-    (stageId: number | null) => stageId == null || !ignoredStages.has(Number(stageId)),
-    [ignoredStages]
+  const stats = meta?.stats ?? null;
+  const pipelines = useMemo(() => meta?.pipelines ?? [], [meta]);
+  const channelOptions = useMemo(
+    () => Array.from(new Set((stats?.channels ?? []).map((c) => normChannel(c)))).sort(),
+    [stats]
   );
-  // Conteos por pestaña: DESPUÉS del resto de los filtros, para que los números
-  // sigan a lo que se está mirando.
-  const etapaCounts = useMemo(
-    () => ({
-      agente: rows.filter((l) => agentHandles(l.kommo_stage_id)).length,
-      apagadas: rows.filter((l) => !agentHandles(l.kommo_stage_id)).length,
-      todas: rows.length,
-    }),
-    [rows, agentHandles]
-  );
-  const listRows = useMemo(
-    () =>
-      fEtapa === "todas"
-        ? rows
-        : rows.filter((l) => (fEtapa === "agente" ? agentHandles(l.kommo_stage_id) : !agentHandles(l.kommo_stage_id))),
-    [rows, fEtapa, agentHandles]
-  );
-
-  const pipelines = useMemo(() => data?.pipelines ?? [], [data]);
-  const counts = useMemo(() => pipelineCounts(rows, pipelines), [rows, pipelines]);
-  const pipelineParam = Number(sp.get("pipeline"));
-  const pipelineId =
-    pipelineParam === SIN_UBICAR || pipelineParam === NO_EXISTE || pipelines.some((p) => p.id === pipelineParam)
-      ? pipelineParam
-      : pipelines[0]?.id ?? SIN_UBICAR;
+  const verticalOptions = useMemo(() => stats?.verticals ?? [], [stats]);
+  // Pipeline a la vista: el que resolvió el servidor (uno inválido o archivado cae al principal).
+  const pipelineId = board?.pipeline ?? pipelineParam ?? pipelines[0]?.id ?? SIN_UBICAR;
+  const pipelineCount = (id: number) => stats?.pipelines[String(id)] ?? 0;
 
   // Cerrar el panel de conversación del tablero: volver a /inbox con los filtros.
   const closeHref = `/inbox${filterQS ? `?${filterQS}` : ""}`;
-
-  // Cambiar de pestaña conserva el resto de la URL (filtros, vista) y no navega.
-  const setEtapa = (tab: EtapaTab) => setParam("etapa", tab === "agente" ? null : tab);
   useEffect(() => {
     if (vista !== "tablero" || !selectedLead) return;
     const onKey = (e: KeyboardEvent) => {
@@ -450,20 +503,23 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
       <div className="sticky top-0 z-20 border-b border-neutral-200/80 bg-white/80 backdrop-blur-md">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-3 sm:px-6">
           <h1 className="text-[15px] font-semibold tracking-tight text-neutral-900">Inbox</h1>
-          {data ? (
+          {stats ? (
+            // Las tres métricas del topbar miden SIEMPRE el inbox completo, para que no
+            // cambien al filtrar ni al saltar de pestaña; lo que se está viendo lo dicen
+            // los contadores de las pestañas y el «x de y» de los filtros.
             <div className="flex items-center gap-1.5">
-              <MiniStat icon={<InboxIcon size={14} />} label="conversaciones" value={totalActive} tone="brand" />
+              <MiniStat icon={<InboxIcon size={14} />} label="conversaciones" value={stats.total} tone="brand" />
               <MiniStat
                 icon={<MessageSquare size={14} />}
                 label="sin responder"
-                value={sinResponder}
-                tone={sinResponder > 0 ? "amber" : "default"}
+                value={stats.awaiting_all}
+                tone={stats.awaiting_all > 0 ? "amber" : "default"}
               />
               <MiniStat
                 icon={<Alert size={14} />}
                 label="en revisión"
-                value={pendingReview}
-                tone={pendingReview > 0 ? "red" : "default"}
+                value={stats.review}
+                tone={stats.review > 0 ? "red" : "default"}
               />
             </div>
           ) : (
@@ -507,9 +563,9 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
             <div className="min-w-0 flex-1">
               <InboxFilters channels={channelOptions} verticals={verticalOptions} inline shallow collapsible={isMobile} />
             </div>
-            {hasActiveFilters && data && (
-              <p className="shrink-0 text-xs text-neutral-500">
-                <span className="font-medium text-neutral-700">{rows.length}</span> de {totalActive}
+            {hasActiveFilters && stats && (
+              <p className="shrink-0 text-xs text-neutral-500" aria-live="polite">
+                <span className="font-medium text-neutral-700">{stats.filtered}</span> de {stats.total}
               </p>
             )}
           </div>
@@ -526,15 +582,15 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
               </button>
             </div>
           )}
-          {!data ? (
-            <BoardSkeleton />
+          {!board || !meta ? (
+            error ? null : <BoardSkeleton />
           ) : (
             <>
               <nav className="flex gap-1 overflow-x-auto border-b border-neutral-200 bg-white px-3 sm:px-4" aria-label="Pipelines">
                 {[
                   ...pipelines.map((p) => ({ id: p.id, name: p.name })),
-                  ...(counts.get(SIN_UBICAR) ? [{ id: SIN_UBICAR, name: "Sin pipeline" }] : []),
-                  ...(counts.get(NO_EXISTE) ? [{ id: NO_EXISTE, name: "No existe en Kommo" }] : []),
+                  ...(pipelineCount(SIN_UBICAR) || pipelineId === SIN_UBICAR ? [{ id: SIN_UBICAR, name: "Sin pipeline" }] : []),
+                  ...(pipelineCount(NO_EXISTE) || pipelineId === NO_EXISTE ? [{ id: NO_EXISTE, name: "No existe en Kommo" }] : []),
                 ].map((p) => (
                   <button
                     key={p.id}
@@ -550,7 +606,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                   >
                     {p.name}
                     <span className="ml-1.5 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600">
-                      {counts.get(p.id) ?? 0}
+                      {pipelineCount(p.id)}
                     </span>
                   </button>
                 ))}
@@ -572,15 +628,16 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                   Todavía no hay pipelines sincronizados desde Kommo. Usá «Sincronizar» (requiere Kommo conectado).
                 </p>
               )}
-              <div className="min-h-0 flex-1">
+              <div className={"min-h-0 flex-1 transition-opacity " + (cargandoVista ? "opacity-60" : "")} aria-busy={cargandoVista || undefined}>
                 <Board
-                  rows={rows}
+                  board={board}
                   pipelines={pipelines}
-                  pipelineId={pipelineId}
                   selectedLead={selectedLead}
                   filterQS={filterQS}
-                  agentCfg={data.agentCfg}
+                  agentCfg={meta.agentCfg}
                   onMove={moveLead}
+                  onLoadMore={(k) => void loadMore(k)}
+                  loadingMore={loadingMore}
                   movingIds={movingIds}
                 />
               </div>
@@ -637,7 +694,7 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => setEtapa(t.id)}
+                    onClick={() => setParam("etapa", t.id === "agente" ? null : t.id)}
                     aria-pressed={on}
                     className={
                       "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors " +
@@ -653,35 +710,45 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
                         (on ? "bg-white/70 text-brand-strong" : "bg-neutral-100 text-neutral-500")
                       }
                     >
-                      {data ? etapaCounts[t.id] : "…"}
+                      {stats ? stats.etapa[t.id] : "…"}
                     </span>
                   </button>
                 );
               })}
             </div>
-            <div className="flex-1 overflow-y-auto">
-              {!data ? (
-                <ListSkeleton />
-              ) : listRows.length === 0 ? (
+            <div className={"flex-1 overflow-y-auto transition-opacity " + (cargandoVista ? "opacity-60" : "")} aria-busy={cargandoVista || undefined}>
+              {!list || !meta ? (
+                error ? null : <ListSkeleton />
+              ) : list.rows.length === 0 ? (
                 <p className="p-5 text-sm text-neutral-500">
-                  {fEtapa === "agente"
-                    ? "Ninguna conversación en etapas donde el agente responde."
-                    : fEtapa === "apagadas"
-                      ? "Ninguna conversación en etapas apagadas."
-                      : "Sin conversaciones todavía."}
+                  {hasActiveFilters
+                    ? "Ninguna conversación coincide con los filtros."
+                    : fEtapa === "agente"
+                      ? "Ninguna conversación en etapas donde el agente responde."
+                      : fEtapa === "apagadas"
+                        ? "Ninguna conversación en etapas apagadas."
+                        : "Sin conversaciones todavía."}
                 </p>
               ) : (
-                <LazyReveal
-                  items={listRows.map((l) => (
+                <ul className="divide-y divide-neutral-100">
+                  {list.rows.map((l) => (
                     <LeadItem
                       key={l.id}
                       lead={l}
                       active={selectedLead === l.id}
                       href={`/inbox/${l.id}${filterQS ? `?${filterQS}` : ""}`}
-                      agentCfg={data.agentCfg}
+                      agentCfg={meta.agentCfg}
                     />
                   ))}
-                />
+                  {list.next && (
+                    <MoreSentinel
+                      loading={loadingMore.has("__lista")}
+                      auto={fallido !== JSON.stringify(list.next)}
+                      rows={list.rows.length}
+                      onVisible={() => void loadMore("__lista")}
+                    />
+                  )}
+                </ul>
               )}
             </div>
           </aside>
@@ -699,6 +766,45 @@ export default function InboxShell({ children }: { children: React.ReactNode }) 
         </div>
       )}
     </div>
+  );
+}
+
+// Fin de la lista: al asomarse (300 px antes) pide la página siguiente. También es un
+// botón, para teclado y por si el observer no dispara (pantallas muy altas).
+// Si la página falló (auto=false) no se reintenta sola: queda el botón.
+function MoreSentinel({
+  loading,
+  auto,
+  rows,
+  onVisible,
+}: {
+  loading: boolean;
+  auto: boolean;
+  /** Filas a la vista: al cambiar, el observer se vuelve a armar (lista corta tras un filtro). */
+  rows: number;
+  onVisible: () => void;
+}) {
+  const ref = useRef<HTMLLIElement | null>(null);
+  const cb = useRef(onVisible);
+  cb.current = onVisible;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || loading || !auto) return;
+    const obs = new IntersectionObserver((entries) => entries[0]?.isIntersecting && cb.current(), { rootMargin: "300px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [loading, auto, rows]);
+  return (
+    <li ref={ref} className="px-4 py-3 text-center">
+      <button
+        type="button"
+        disabled={loading}
+        onClick={() => cb.current()}
+        className="text-xs font-medium text-neutral-500 hover:text-neutral-800 disabled:opacity-60"
+      >
+        {loading ? "Cargando más…" : auto ? "Cargar más" : "Reintentar: cargar más"}
+      </button>
+    </li>
   );
 }
 
@@ -741,7 +847,7 @@ function LeadItem({
   lead: LeadSummary;
   active: boolean;
   href: string;
-  agentCfg: InboxListData["agentCfg"];
+  agentCfg: AgentStatusCfg;
 }) {
   const name = l.display_name ?? `Lead ${l.kommo_lead_id ?? "?"}`;
   const agentStatus = computeAgentStatus({ ...agentCfg, stageId: l.kommo_stage_id });

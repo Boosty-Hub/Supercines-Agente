@@ -21,11 +21,19 @@
 //   const operator = cfg.getOr("OPERATOR_NAME", "el operador");
 
 // deno-lint-ignore-file no-explicit-any
+import { isDbOnlySecretKey } from "./db-only-secret-keys.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 export interface ConfigReader {
   /** DB-first, then Deno.env.get() fallback. Returns undefined if absent everywhere. */
   get(key: string): string | undefined;
+  /**
+   * SOLO la tabla runtime_config, sin fallback a Deno.env. Para lo que el operador decide
+   * desde el panel y no debe poder caer en un secreto del entorno de las funciones: los
+   * {{CLAVE}} de los headers de las http tools (una clave ausente en la base no puede
+   * resolverse con un secret de Supabase con el mismo nombre).
+   */
+  getDbOnly(key: string): string | undefined;
   /** Like get() but throws if the resolved value is absent. */
   require(key: string): string;
   /** Like get() but returns `fallback` if the resolved value is absent. */
@@ -65,12 +73,27 @@ async function loadConfigMap(supabase: SupabaseClient): Promise<Record<string, s
 
 export async function loadConfig(supabase: SupabaseClient): Promise<ConfigReader> {
   const map = await loadConfigMap(supabase);
+  return createConfigReader(map, (k) => Deno.env.get(k));
+}
 
-  const get = (key: string): string | undefined => {
+/**
+ * Lector sobre un mapa ya cargado (puro: el entorno entra como función, para testearlo).
+ * Solo cuentan las propiedades PROPIAS del mapa y los valores no vacíos.
+ */
+export function createConfigReader(
+  map: Record<string, string>,
+  envGet: (key: string) => string | undefined
+): ConfigReader {
+  const getDbOnly = (key: string): string | undefined => {
+    if (!Object.hasOwn(map, key)) return undefined;
     const dbValue = map[key];
-    if (dbValue !== undefined && dbValue.trim() !== "") return dbValue;
-    return Deno.env.get(key) ?? undefined;
+    return typeof dbValue === "string" && dbValue.trim() !== "" ? dbValue : undefined;
   };
+
+  // Los secretos atados a un destino (KOMMO_ACCESS_TOKEN, SHOPIFY_*, BCV_RATE_APIKEY, TOOL_<X>) viven
+  // SOLO en runtime_config: sin fallback a Deno.env (ver _shared/db-only-secret-keys.ts).
+  const get = (key: string): string | undefined =>
+    getDbOnly(key) ?? (isDbOnlySecretKey(key) ? undefined : envGet(key)) ?? undefined;
 
   const require = (key: string): string => {
     const v = get(key);
@@ -82,5 +105,5 @@ export async function loadConfig(supabase: SupabaseClient): Promise<ConfigReader
     return get(key) ?? fallback;
   };
 
-  return { get, require, getOr };
+  return { get, getDbOnly, require, getOr };
 }

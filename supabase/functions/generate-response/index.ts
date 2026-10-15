@@ -191,22 +191,25 @@ async function runHttpTool(
     }
 
     // (b) Substitute {{param}} in url_template (URL-encode each value).
-    const url = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
+    const interpolatedUrl = tool.url_template.replace(/\{\{(\w+)\}\}/g, (_, p) =>
       // solo propiedades propias: {{constructor}} / {{__proto__}} no resuelven a lo heredado
       encodeURIComponent(String(Object.hasOwn(input, p) ? input[p] ?? "" : ""))
     );
 
     // (c) Resolve {{CLAVE}} en los headers con la URL FINAL y cada secreto atado a sus hosts
     // (_shared/http-tool-keys.ts): una tool no puede mandar un secreto a un host que no le
-    // corresponde (ni el modelo moverlo con un {{param}} en el host).
+    // corresponde (ni el modelo moverlo con un {{param}} en el host). La URL se parsea UNA vez
+    // ahí (solo https, sin caracteres ambiguos) y el fetch usa ESA href, no la cadena original.
     const resolved = resolveToolHeaders({
       headers: tool.headers,
       urlTemplate: tool.url_template,
-      finalUrl: url,
-      lookup: (k) => cfg.get(k),
+      finalUrl: interpolatedUrl,
+      // SOLO runtime_config: un {{CLAVE}} nunca cae a un secret del entorno de las funciones.
+      lookup: (k) => cfg.getDbOnly(k),
     });
     if (!resolved.ok) return `ERROR_CONFIG_TOOL: ${resolved.error}`;
     const headers = resolved.headers;
+    const url = resolved.url;
 
     // (d) Build body for non-GET via recursive template walk.
     let body: string | undefined;
@@ -217,16 +220,12 @@ async function runHttpTool(
       headers["content-type"] ??= "application/json";
     }
 
-    // (e) HTTPS-only assert.
-    if (!url.startsWith("https://")) {
-      return "ERROR: url_template debe ser https://";
-    }
-
-    // (e2) Una tool HTTP que apunta a una Edge Function PROPIA (p. ej. la cartelera)
+    // (e) Una tool HTTP que apunta a una Edge Function PROPIA (p. ej. la cartelera)
     // se llama con el secreto interno, que se agrega ACÁ y no vive en agent_tools.headers:
     // esa tabla la lee cualquier usuario autenticado del panel (RLS) y el secreto
     // de las funciones internas no puede quedar a su alcance. Solo se adjunta a
-    // nuestro propio origen /functions/v1/ — nunca a un host de terceros.
+    // nuestro propio origen /functions/v1/ — nunca a un host de terceros. (El esquema https
+    // ya lo exige resolveToolHeaders con la URL parseada una sola vez.)
     let attachedInternal = false;
     if (url.startsWith(`${SUPABASE_URL}/functions/v1/`)) {
       Object.assign(headers, await internalHeaders(supabase));
@@ -241,7 +240,7 @@ async function runHttpTool(
       // Con un secreto en los headers, un 302 no puede llevarlo a otro host.
       const res = await fetch(url, { method, headers, body, signal: ctrl.signal, ...(resolved.hasSecret || attachedInternal ? { redirect: "manual" as const } : {}) });
       const text = await res.text();
-      // (g) Cap response at 8 KB.
+      // (f) Cap response at 8 KB.
       const capped =
         text.length > 8192 ? truncateGraphemes(text, 8192) + "…[truncado]" : stripLoneSurrogates(text);
       return res.ok ? capped : `ERROR_HTTP ${res.status}: ${capped}`;

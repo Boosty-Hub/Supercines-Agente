@@ -121,3 +121,25 @@ export function decidirColaAtascada(
     metadata: { atascados, umbral, minutos },
   };
 }
+
+// ---------------- Registro público de Supabase Auth abierto ----------------
+/**
+ * `disableSignup` es el `disable_signup` que expone GoTrue en `GET /auth/v1/settings` (público:
+ * no necesita el token de Management API). Abierto = cualquiera con la anon key (pública) puede
+ * crearse una cuenta. El panel no le da nada a un usuario sin rol, pero una cuenta que nadie dio
+ * de alta no debería poder existir: el /first-run lo cierra al crear al maestro y este chequeo
+ * avisa si quedó (o volvió a quedar) abierto.
+ */
+export function decidirRegistroAbierto(disableSignup: boolean): IncidentInput | null {
+  if (disableSignup) return null;
+  return {
+    kind: "registro_abierto",
+    severity: "critical",
+    title: "Registro público abierto — cualquiera puede crearse una cuenta",
+    description:
+      "Supabase Auth acepta altas nuevas con la anon key (que es pública). Esas cuentas no ven nada del panel (sin rol = sin acceso), pero no deberían poder existir.",
+    remedy:
+      "Supabase → tu proyecto → Authentication → Sign In / Providers → desactivá «Allow new users to sign up» y guardá. Después revisá en Usuarios que no haya cuentas que nadie dio de alta.",
+    metadata: { disable_signup: false },
+  };
+}

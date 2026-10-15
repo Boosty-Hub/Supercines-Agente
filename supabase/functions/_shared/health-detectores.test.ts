@@ -1,11 +1,12 @@
 // _shared/health-detectores.test.ts
-// Deno test para los cuatro detectores puros de health-scan.
+// Deno test para los detectores puros de health-scan.
 // Correr con: deno test supabase/functions/_shared/health-detectores.test.ts
 
 import { assertEquals } from "jsr:@std/assert@^1.0.0";
 import {
   decidirColaAtascada,
   decidirIngestaDetenida,
+  decidirRegistroAbierto,
   decidirTokenKommo,
   decidirWebhookKommo,
 } from "./health-detectores.ts";
@@ -112,4 +113,17 @@ Deno.test("cola: justo en el umbral → incidente (>=, no solo >)", () => {
 Deno.test("cola: muy por encima del umbral → incidente con el conteo en el título", () => {
   const inc = decidirColaAtascada(200, 50, 15);
   assertEquals(inc?.title.includes("200"), true);
+});
+
+// ---------------- decidirRegistroAbierto ----------------
+
+Deno.test("registro: disable_signup=true → sano", () => {
+  assertEquals(decidirRegistroAbierto(true), null);
+});
+
+Deno.test("registro: disable_signup=false → incidente crítico con el paso manual", () => {
+  const inc = decidirRegistroAbierto(false);
+  assertEquals(inc?.kind, "registro_abierto");
+  assertEquals(inc?.severity, "critical");
+  assertEquals(inc?.remedy?.includes("Allow new users to sign up"), true);
 });

@@ -19,6 +19,10 @@
 //   cola_atascada        Muchos items viejos en 'processing' en
 //                        inbound_queue = runs que se cortan a mitad. Síntoma
 //                        clásico de que el agente está fallando aguas arriba.
+//   registro_abierto     Supabase Auth acepta altas públicas (disable_signup
+//                        = false): cualquiera con la anon key se crea una
+//                        cuenta. Se lee de GoTrue `GET /auth/v1/settings`,
+//                        que es público: no hace falta el token de Management.
 //
 // También CIERRA los incidentes cuando la salud vuelve. Sin este cierre, la
 // franja roja quedaría prendida para siempre.
@@ -44,6 +48,7 @@ import { buildWebhookPayload } from "../_shared/alert-webhook.ts";
 import {
   decidirColaAtascada,
   decidirIngestaDetenida,
+  decidirRegistroAbierto,
   decidirTokenKommo,
   decidirWebhookKommo,
 } from "../_shared/health-detectores.ts";
@@ -56,6 +61,8 @@ import {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// El gateway de Supabase exige `apikey` también en /auth/v1/settings; la anon alcanza (es pública).
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? SERVICE_ROLE;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
@@ -174,6 +181,22 @@ async function chequearCola(
   return decidirColaAtascada(count ?? 0, umbral, minutos);
 }
 
+// ---------------- I/O: registro público de Auth ----------------
+// `GET /auth/v1/settings` de GoTrue expone `disable_signup` sin credenciales de usuario. Una
+// respuesta sin ese booleano no prueba nada: se lanza y el barrido no abre ni cierra el incidente.
+async function chequearRegistro(): Promise<IncidentInput | null> {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/settings`, {
+    headers: { apikey: ANON_KEY },
+  });
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`auth settings ${res.status}`);
+  }
+  const json = (await res.json()) as { disable_signup?: unknown };
+  if (typeof json?.disable_signup !== "boolean") throw new Error("auth settings sin disable_signup");
+  return decidirRegistroAbierto(json.disable_signup);
+}
+
 // ---------------- Webhook externo (Slack/Discord) ----------------
 // Mismo cuerpo que alerts-scan (_shared/alert-webhook.ts): el detalle puede traer texto de
 // terceros (p. ej. el cuerpo de un error de Kommo), así que se neutralizan menciones y links.
@@ -259,6 +282,15 @@ Deno.serve(async (req: Request) => {
       else sanos.add("cola_atascada");
     } catch (e) {
       console.warn("health-scan cola:", e instanceof Error ? e.message : String(e));
+    }
+
+    // --- Registro público de Auth ---
+    try {
+      const inc = await chequearRegistro();
+      if (inc) encontrados.push(inc);
+      else sanos.add("registro_abierto");
+    } catch (e) {
+      console.warn("health-scan registro:", e instanceof Error ? e.message : String(e));
     }
 
     for (const inc of encontrados) {

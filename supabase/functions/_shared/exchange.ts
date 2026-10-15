@@ -12,6 +12,7 @@
 // no tiene sentido golpear la fuente en cada mensaje.
 
 import type { ConfigReader } from "./config.ts";
+import { parseToolUrl } from "./http-tool-keys.ts";
 
 export type BcvRate = { rate: number; source: string; fetchedAt: string };
 
@@ -44,12 +45,20 @@ export async function getBcvRate(cfg: ConfigReader): Promise<BcvRate> {
   }
 
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (customUrl && apiKey) {
-    headers["apikey"] = apiKey;
+  let target = url;
+  const withKey = Boolean(customUrl && apiKey);
+  if (withKey) {
+    // La key solo viaja a una URL que pasa las mismas reglas que una http tool con secreto
+    // (https:443, dominio, sin diferenciales de parser) y a la href ya parseada; con
+    // redirect manual (un 302 no la lleva a otro host: `apikey` no se borra en redirects).
+    const parsed = parseToolUrl(url, { strict: true });
+    if (!parsed.ok) throw new Error(`BCV_RATE_URL no es apta para enviar la API key: ${parsed.error}`);
+    target = parsed.url.href;
+    headers["apikey"] = apiKey!;
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const res = await fetch(url, { headers });
+  const res = await fetch(target, { headers, ...(withKey ? { redirect: "manual" as const } : {}) });
   if (!res.ok) {
     // Si la fuente custom falla y no ERA el fallback, intentar el público.
     if (customUrl) {

@@ -20,7 +20,8 @@ export type IncidentKind =
   | "kommo_webhook_caido"
   | "kommo_token"
   | "ingesta_detenida"
-  | "cola_atascada";
+  | "cola_atascada"
+  | "registro_abierto";
 
 export type IncidentInput = {
   kind: IncidentKind;

@@ -651,3 +651,40 @@ publishing_enabled=false` (genera drafts sin publicarlos), revisar, y recién en
 - **Primer Sincronizar** con conflicto (`first_sync_differs`): decidir con el diff, no sobrescribir.
 - **Usuarios sin rol** quedan sin acceso (pre-vuelo 2): revisar `/usuarios` tras el deploy.
 - El registro público lo vuelve a verificar `health-scan` en cada corrida (`registro_abierto`, crítico, sale por el webhook de alertas).
+
+### Bitácora de despliegues
+
+**2026-10-15 (13:40–14:20 UTC) — deploy de `4db78862` (111 commits) a producción.** Autorizado por el dueño. Hecho fuera
+del panel (Management API + CLI `supabase` 2.121.0 + script con los mismos libs del panel). Respaldo lógico previo
+(`runtime_config`, `kommo_publish_config`, `alert_config`, `agent_tools`, `verticals`, `routing_assignees`, `_migrations`,
+`auth.users` id/email/rol, `cron.job`) y fuente de las 11 Edge Functions que estaban desplegadas en
+`~/Projets/Boosty/backups/supercines-2026-10-15/` (fuera del repo, 600).
+
+- **El estado de partida del runbook estaba mal**: `0057_system_halted`, `0058_claim_inbound_batch_created_at` y `0059`
+  **no** estaban aplicadas en efecto (faltaba `kommo_publish_config.system_halted`, `claim_inbound_batch` no devolvía
+  `created_at`, `follow_up_due_leads` sin la cota de 72 h). `publish-to-kommo` nuevo selecciona `system_halted`: registrarlas
+  sin aplicarlas habría roto la publicación. Se **aplicaron** (aditivas / `create or replace`, misma firma). Verificación
+  usada: cruzar columnas/tablas/funciones de cada migración < 0060 contra `information_schema`/`pg_proc` (sin más faltantes).
+  Lección: antes de registrar una migración «aplicada en efecto», comprobar su objeto concreto.
+- Orden real: pausa de `follow-up-scan-sweep` → 0057/0058_claim/0059 → Fase A (0060–0062, 0064–0077) → 13 Edge Functions en
+  `DEPLOY_ORDER` (`--no-verify-jwt --use-api`; `health-scan` y `sync-pipelines` nuevas) → **push y deploy web** (Netlify
+  `6ad0d985`, ready en 94 s) → Fase B (0078–0083) → cron de seguimientos reactivado. La web se subió ANTES de 0078/0079
+  (no después, como dice el paso 4) para que no hubiera hueco de panel degradado y para frenar sin cerrar la RLS si el build
+  fallaba; es compatible porque la web nueva lee `runtime_config` con service_role y todos los usuarios ya tenían rol.
+  `_migrations` quedó en 80 filas (24 ≥ 0060 contando 0063).
+- Verificación: 0 corridas de cron fallidas y 0 respuestas ≥ 400 de pg_net desde 13:46 (los 404 previos eran el cron de
+  `sync-pipelines` antes de desplegarla); sin `x-internal-secret` las 12 funciones internas dan 401; `kommo-webhook` 200;
+  anon key → 401 en `runtime_config`, `alert_config`, `agent_tools`, `leads`, `messages`, `drafts`, `_app_secrets`… y en las
+  RPC; `/login` 200; `system_incidents` sin abiertos; `kommo_backfill` `done` (46 264 leídos, 7 505 actualizados); un mensaje
+  respondible ya salió `auto_sent` por el pipeline nuevo. `draft_failed` ×2 al abrir: drafts fallidos del 14-oct que el
+  `alerts-scan` nuevo levantó en su primera corrida (no causados por el deploy).
+- Webhook: registrado en Kommo con `?token=` usando `applyWebhookDestination` + `kommo_webhook_mark_applied` (equivale a
+  «Actualizar en Kommo»); se conservaron los eventos existentes (`add_message`) y no se tocó el webhook ajeno de
+  supercineseventos. **Kommo tardó ~20 min en usar la URL nueva** (siguió entregando a la vieja, ya borrada de la lista,
+  hasta 14:16; primera firmada 14:17). Queda en `permissive`; pasa a estricto solo a las 24 h sin requests sin firma, o a mano
+  cuando haya ≥ 1 h sin ellas.
+- Agente: el prompt de operador vivo era idéntico al de `runtime_config` (sin conflicto) → se adoptó (push de
+  `composeSystem` + mismas tools, concurrencia optimista sobre v4) → **v5**, con `AGENT_PROMPT_SYNCED_HASH` y
+  `AGENT_SCAFFOLD_HASH` registrados. Modelos sin cambiar (`claude-haiku-4-5`).
+- Rollback disponible: fuentes de funciones previas en el respaldo (`supabase functions deploy` desde esa carpeta), deploy
+  Netlify anterior `6acec961` (commit 9e5d78ef), y los JSON de config.

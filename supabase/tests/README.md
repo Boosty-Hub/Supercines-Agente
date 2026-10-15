@@ -64,6 +64,7 @@ docker rm -f sql-tests
 |---|---|---|
 | `function_execute.sql` | 0063, 0070, 0072 | Ninguna función propia ejecutable por anon/PUBLIC; authenticated solo las del panel; SECURITY DEFINER con `search_path` fijo y guard |
 | `rls_coverage.sql` | 0079 | RLS en toda tabla, vistas security_invoker, matriz de privilegios de `authenticated` por tabla, default privileges cerrados |
+| `rls_initplan.sql` | 0084 | Ninguna policy de public lee el JWT (`request.jwt.claims`, `auth.uid()`/`jwt()`/`role()`) fuera de una subconsulta escalar `(select …)`: inline se evalúa por fila; el `explain` de `leads` usa un InitPlan |
 | `runtime_config_lockdown.sql` | 0079 | La matriz tabla × alcance (incluye «sin rol ve 0 filas en todo», drafts/messages por columna, «a nombre propio») |
 | `agent_tools_scope.sql` | 0078 | `agent_tools` solo alcance configuracion |
 | `scope_backfill.sql` | 0078 | Backfill del rol: solo el MAESTRO sin rol queda en configuracion; el resto y los nuevos sin rol no ven nada |

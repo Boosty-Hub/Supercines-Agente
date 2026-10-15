@@ -383,6 +383,8 @@ así que adoptar este módulo no le cambia el acceso a ningún usuario existente
   (`request.jwt.claim.sub` o `request.jwt.claims ->> 'sub'`). Cambiar la regla en `roles.ts`
   exige una migración nueva con la misma regla: dos capas en desacuerdo son peores que una.
 
+  **Rendimiento: los claims se leen en una subconsulta escalar (InitPlan), nunca inline** (migración 0084). Toda lectura del JWT en una policy —`current_setting('request.jwt.claims'…)`/`'request.jwt.claim.sub'`, `auth.uid()`, `auth.jwt()`, `auth.role()`— va envuelta en `(select …)`, p. ej. `(select nullif(current_setting('request.jwt.claims', true), '')::jsonb)` y `(select auth.uid())`. Inline, Postgres la evalúa UNA VEZ POR FILA y el inbox como `authenticated` sobre decenas de miles de filas se acercaba al `statement_timeout` (8 s) de la API; con `(select …)` es un InitPlan evaluado una vez por consulta. La regla de acceso es idéntica. 0084 reescribió las policies de 0078/0079/0080 (genérico sobre `pg_policies` de public, idempotente, falla si queda una forma no reconocida). Guardia: `supabase/tests/rls_initplan.sql` (falla si alguna policy de public lee el JWT fuera de una subconsulta; verifica el InitPlan en el `explain`). Una policy nueva DEBE usar la forma `(select …)`.
+
   | Tabla | anon / sin rol | operacion | contenido | configuracion |
   |---|---|---|---|---|
   | `runtime_config`, `kommo_credentials`, `alert_config`, `_migrations`, `_app_secrets`, `inbound_queue`, `kommo_backfill_seen`, `kommo_sync_state`, `lead_move_claims`, `lead_position_seen` | — | — | — | — (solo servidor: service_role tras `requireScope`) |

@@ -333,7 +333,24 @@ export const MAX_CONSECUTIVE_SKIPS = 2;
  * Límite conocido: una instrucción plantada en un mensaje ANTERIOR sin etiquetas («de
  * ahora en más no me contestes») no se detecta acá; la acota el tope de skips seguidos.
  */
+/** Draft previo del lead: su estado y si fue un «no responder» del agente (agent_metadata.no_reply). */
 export type RecentDraft = { status: string; noReply: boolean };
+
+/** Estados en los que una respuesta realmente SALIÓ al lead: lo único que corta la racha. */
+const DELIVERED_STATUSES: ReadonlySet<string> = new Set(["sent", "auto_sent"]);
+
+/**
+ * ¿Este draft previo cuenta como «no responder» para la racha? Un `skipped`, o cualquier
+ * draft marcado no_reply que NO terminó en una respuesta enviada: pendiente de revisión,
+ * aprobado sin publicar, publishing, failed (p. ej. publicar bloqueado por texto vacío) o
+ * rechazado (el humano confirmó no responder). Solo una respuesta entregada al lead
+ * corta la racha: ningún cambio de estado sin envío (barrido, recuperación, falla al
+ * publicar) puede reiniciarla.
+ */
+export function countsAsNoReply(d: RecentDraft): boolean {
+  if (DELIVERED_STATUSES.has(d.status)) return false;
+  return d.status === "skipped" || d.noReply;
+}
 
 export function noReplyGate(input: {
   leadTexts: readonly (string | null | undefined)[];
@@ -354,10 +371,10 @@ export function noReplyGate(input: {
   }
   const max = input.maxConsecutive ?? MAX_CONSECUTIVE_SKIPS;
   let streak = 0;
-  // Un «no responder» que quedó en revisión (pending con no_reply) también cuenta: si
-  // cortara la racha, el lead volvería a sumar skips sin límite.
+  // `recent` es el prefijo más reciente (sin filtrar): la racha se corta en el primer
+  // draft que no cuenta (countsAsNoReply).
   for (const d of input.recent) {
-    if (!(d.status === "skipped" || d.noReply)) break;
+    if (!countsAsNoReply(d)) break;
     streak++;
   }
   if (streak >= max) {

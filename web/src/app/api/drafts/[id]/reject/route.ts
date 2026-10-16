@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireScope } from "@/lib/auth/require-scope";
 import { DRAFT_NOT_ACTIONABLE, DRAFT_REJECTABLE_STATUSES } from "@/lib/draft-status";
 import { clearNoReplyReview } from "@/lib/draft-review";
 
 export async function POST(_request: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  // Mismo alcance que el middleware (/api/drafts → operacion), verificado también acá:
+  // rechazar un «no responder» quita la revisión humana de su lote.
+  const auth = await requireScope("operacion");
+  if (!auth.ok) return auth.response;
+  const { supabase, user } = auth;
 
   // Un draft que se está enviando (`publishing`) o que ya salió no se rechaza: el
   // mensaje ya está en camino o en el canal, y marcarlo rechazado falsearía el historial.

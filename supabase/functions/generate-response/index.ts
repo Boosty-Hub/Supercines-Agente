@@ -1785,24 +1785,30 @@ Deno.serve(async (req: Request) => {
         // (posible inducción por prompt injection) o el lead ya acumula
         // MAX_CONSECUTIVE_SKIPS «sin respuesta» seguidos, NO se acepta sin humano: el
         // draft queda `pending` (sin texto) para que alguien decida.
+        // Racha de «no responder» del lead: SOLO participan los drafts que deciden algo
+        // (enviados, skipped o marcados no_reply). El filtro va en la BASE, así el
+        // .limit es el prefijo correcto: un draft de otro run del mismo lead que se está
+        // generando (pending + generating, sin no_reply) o una respuesta en revisión
+        // nunca cortan la racha (con runs superpuestos se podía encadenar skips sin tope).
         const { data: recent, error: recentErr } = await supabase
           .from("drafts")
           .select("status, agent_metadata, messages!drafts_message_id_fkey!inner(lead_id)")
           .eq("messages.lead_id", batch.leadId)
           .neq("id", draft.id)
+          .or("status.in.(sent,auto_sent,skipped),agent_metadata->>no_reply.eq.true")
           .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
           .limit(MAX_CONSECUTIVE_SKIPS);
         const gate = recentErr
           // Sin poder contar los skips previos no se acepta en silencio (fail-closed).
           ? { accept: false as const, reason: `no se pudo verificar el historial de «sin respuesta»: ${recentErr.message}` }
           : noReplyGate({
             leadTexts: batchMsgs.map((m) => m.content as string | null),
-            // Misma condición que 0081: cuenta un skipped o un no_reply todavía en
-            // revisión (pending). Uno que un humano ya resolvió (enviado/rechazado) no.
+            // Estado + marca CRUDOS: qué cuenta lo decide countsAsNoReply (solo una
+            // respuesta enviada corta la racha).
             recent: (recent ?? []).map((r) => ({
               status: String(r.status),
-              noReply: String(r.status) === "pending" &&
-                (r.agent_metadata as Record<string, unknown> | null)?.no_reply === true,
+              noReply: (r.agent_metadata as Record<string, unknown> | null)?.no_reply === true,
             })),
             afterReplyCorrection: outcome.noReply.afterReplyCorrection,
           });
@@ -1820,43 +1826,68 @@ Deno.serve(async (req: Request) => {
           vertical: vertical.slug,
           ...(outcome.leak.attempts > 0 ? { leak_verify: outcome.leak } : {}),
         };
-        const { error: skipErr } = await supabase
-          .from("drafts")
-          .update({
-            body: "",
-            status: gate.accept ? "skipped" : "pending",
-            agent_metadata: { ...noReplyMeta, ...(gate.accept ? {} : { no_reply_review: gate.reason }) },
-          })
-          .eq("id", draft.id)
-          .eq("status", "pending");
-        // Si no se pudo guardar (p. ej. 0080 sin aplicar: el CHECK rechaza `skipped`), el
-        // draft quedaría `pending` + generating y el barrido de runs muertos lo reprocesaría
-        // en bucle: se deja en revisión humana, sin generating.
-        const needsHuman = !gate.accept || skipErr != null;
-        if (skipErr) {
-          console.error(`generate-response: no se pudo marcar skipped el draft ${draft.id}: ${skipErr.message} → revisión humana`);
-          const { error: fallbackErr } = await supabase
+        // Dejar el «no responder» en revisión humana, visible. Orden (revisiones W1/S3):
+        //  1) marcar requires_human_review SOLO en los mensajes de ESTE lote que no lo
+        //     estaban (el draft todavía es `pending` + generating: nadie lo resuelve aún);
+        //  2) hacerlo visible (`pending`, no_reply_review) registrando EXACTAMENTE los ids
+        //     que se marcaron (no_reply_marked_ids), con guarda status='pending';
+        //  3) si el draft ya no estaba pending (lo resolvió alguien) o el update falló,
+        //     deshacer la marca. Así nunca queda un flag sin registro ni un registro de
+        //     ids que no se marcaron (desmarcar luego tocaría un flag ajeno).
+        const parkForHuman = async (review: string): Promise<void> => {
+          const { data: marked, error: markErr } = await supabase
+            .from("messages")
+            .update({ requires_human_review: true })
+            .in("id", batchIds)
+            .eq("answered_by_draft_id", draft.id)
+            .eq("requires_human_review", false)
+            .select("id");
+          if (markErr) console.error(`generate-response: no se pudo marcar revisión humana del lote ${draft.id}:`, markErr.message);
+          const markedIds = (marked ?? []).map((m) => m.id as string);
+          const { data: parked, error: parkErr } = await supabase
             .from("drafts")
             .update({
               body: "",
               status: "pending",
-              agent_metadata: { ...noReplyMeta, no_reply_review: `no se pudo guardar la decisión: ${skipErr.message}` },
+              agent_metadata: {
+                ...noReplyMeta,
+                no_reply_review: review,
+                ...(markedIds.length > 0 ? { no_reply_marked_ids: markedIds } : {}),
+              },
             })
             .eq("id", draft.id)
-            .eq("status", "pending");
-          if (fallbackErr) {
-            console.error(`generate-response: tampoco se pudo dejar en revisión el draft ${draft.id}: ${fallbackErr.message}`);
+            .eq("status", "pending")
+            .select("id");
+          if (parkErr || !parked || parked.length === 0) {
+            console.error(
+              `generate-response: no se pudo dejar en revisión el draft ${draft.id}: ${parkErr?.message ?? "ya no estaba pending"}`
+            );
+            if (markedIds.length > 0) {
+              const { error: undoErr } = await supabase
+                .from("messages")
+                .update({ requires_human_review: false })
+                .in("id", markedIds)
+                .eq("answered_by_draft_id", draft.id);
+              if (undoErr) console.error(`generate-response: no se pudo deshacer la marca del lote ${draft.id}:`, undoErr.message);
+            }
           }
-        }
-        if (needsHuman) {
-          // Visible: el lote queda marcado para revisión humana (inbox «revisión» y
-          // alerta human_review_needed de alerts-scan). Sin esto el pending sin texto no
-          // figuraba en ningún filtro.
-          const { error: revErr } = await supabase
-            .from("messages")
-            .update({ requires_human_review: true })
-            .in("id", batchIds);
-          if (revErr) console.error(`generate-response: no se pudo marcar revisión humana del lote ${draft.id}:`, revErr.message);
+        };
+
+        if (gate.accept) {
+          const { error: skipErr } = await supabase
+            .from("drafts")
+            .update({ body: "", status: "skipped", agent_metadata: noReplyMeta })
+            .eq("id", draft.id)
+            .eq("status", "pending");
+          // Si no se pudo guardar (p. ej. 0087 sin aplicar: el CHECK rechaza `skipped`),
+          // el draft quedaría `pending` + generating y el barrido de runs muertos lo
+          // reprocesaría en bucle: se deja en revisión humana, sin generating.
+          if (skipErr) {
+            console.error(`generate-response: no se pudo marcar skipped el draft ${draft.id}: ${skipErr.message} → revisión humana`);
+            await parkForHuman(`no se pudo guardar la decisión: ${skipErr.message}`);
+          }
+        } else {
+          await parkForHuman(gate.reason);
         }
         await captureUsage(outcome.sessionId, outcome.durationMs, outcome.toolCalls);
         return;
@@ -1992,7 +2023,7 @@ Deno.serve(async (req: Request) => {
         requiresReview: vertical.requires_review === true,
       });
 
-      await supabase
+      const { error: finalErr } = await supabase
         .from("drafts")
         .update({
           body: outcome.responseText,
@@ -2023,6 +2054,9 @@ Deno.serve(async (req: Request) => {
         // Solo si sigue pending: si el sweep lo borró (run dado por muerto) o
         // un humano lo resolvió mientras generábamos, no pisamos nada.
         .eq("status", "pending");
+      // Un error acá (p. ej. el CHECK de 0089) dejaría el draft pending + generating y el
+      // barrido lo reprocesaría en bucle: se cierra como failed con su session_id.
+      if (finalErr) throw new AgentSessionError(`no se pudo guardar el draft: ${finalErr.message}`, outcome.sessionId);
 
       await captureUsage(outcome.sessionId, outcome.durationMs, outcome.toolCalls);
 

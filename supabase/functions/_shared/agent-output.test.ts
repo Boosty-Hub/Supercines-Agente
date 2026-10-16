@@ -8,6 +8,7 @@ import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
 import {
   AgentTranscript,
   type AgentDecision,
+  countsAsNoReply,
   decideAgentOutput,
   draftStatusFor,
   MAX_CONSECUTIVE_SKIPS,
@@ -218,9 +219,9 @@ Deno.test("noReplyGate: un «no responder» en revisión (pending + no_reply) NO
   // Caso de la revisión: ["pending","skipped","skipped"] aceptaba y la racha se reiniciaba sin fin.
   assert(!noReplyGate({ leadTexts: ["😀"], recent: [D("pending", true), D("skipped")] }).accept);
   assert(!noReplyGate({ leadTexts: ["😀"], recent: [D("pending", true), D("pending", true)] }).accept);
-  // Un no_reply que un humano ya resolvió (enviado con «responder igual» o rechazado) lo
-  // marca generate-response con noReply=false: corta la racha.
-  assert(noReplyGate({ leadTexts: ["😀"], recent: [D("sent", false), D("skipped"), D("skipped")] }).accept);
+  // Solo una respuesta ENVIADA corta la racha.
+  assert(noReplyGate({ leadTexts: ["😀"], recent: [D("sent", true), D("skipped"), D("skipped")] }).accept);
+  assert(noReplyGate({ leadTexts: ["😀"], recent: [D("auto_sent", false), D("skipped"), D("skipped")] }).accept);
   // Un pending común (otra respuesta en revisión) sí corta.
   assert(noReplyGate({ leadTexts: ["😀"], recent: [D("pending", false), D("skipped"), D("skipped")] }).accept);
 });
@@ -287,9 +288,51 @@ Deno.test("generate-response: el rescate queda guard_blocked y el no_reply pasa 
   assert(/guardBlocked = outcome\.leak\.reason != null \|\| !outcome\.leak\.wellFormed/.test(src), "rescate => guardBlocked");
   assert(/const wellFormed = finalDecision\?\.kind === "reply"/.test(src), "solo un reply es wellFormed");
   assert(src.includes("draftStatusFor({"), "el estado sale de draftStatusFor");
-  assert(/noReplyGate\(\{/.test(src) && /status: gate\.accept \? "skipped" : "pending"/.test(src), "no_reply con compuerta");
+  assert(/noReplyGate\(\{/.test(src) && /if \(gate\.accept\) \{[\s\S]{0,200}status: "skipped"/.test(src) && /await parkForHuman\(gate\.reason\)/.test(src), "no_reply con compuerta");
   assert(/requires_human_review: true/.test(src), "un no_reply frenado marca el lote para revisión (visible)");
-  assert(/noReply: String\(r\.status\) === "pending" &&/.test(src), "la racha cuenta solo no_reply pendientes (como 0081)");
   assert(/skipErr/.test(src), "un error al guardar el skipped no queda en silencio");
   assert(/transcript\.decide\(\)/.test(src) && !/decideAgentOutput\(transcript\.text\)/.test(src), "el turno se decide con transcript.decide()");
+});
+
+Deno.test("regresión 9319072: un no_reply que salió de pending SIN envío sigue contando para la racha", () => {
+  // Barrido, recuperación, publicación bloqueada (texto vacío → failed), aprobado sin
+  // publicar, publishing o rechazado: ninguno entregó una respuesta al lead.
+  for (const st of ["pending", "approved", "publishing", "failed", "rejected", "skipped"]) {
+    assert(countsAsNoReply(D(st, true)), st);
+    assert(!noReplyGate({ leadTexts: ["😀"], recent: [D(st, true), D("skipped")] }).accept, st);
+  }
+  // Una respuesta entregada corta, aunque el draft venga de un no_reply («responder igual»).
+  assert(!countsAsNoReply(D("sent", true)) && !countsAsNoReply(D("auto_sent", true)));
+  // Drafts comunes (sin no_reply) que no son skipped cortan la racha.
+  for (const st of ["pending", "approved", "failed", "rejected"]) assert(!countsAsNoReply(D(st, false)), st);
+});
+
+Deno.test("la racha se calcula sobre el prefijo más reciente SIN filtrar (limit = tope)", () => {
+  // generate-response pide .limit(MAX_CONSECUTIVE_SKIPS) ordenado por created_at desc y no
+  // filtra en memoria: con exactamente el tope de no_reply consecutivos, se rechaza.
+  const prefix = Array.from({ length: MAX_CONSECUTIVE_SKIPS }, () => D("failed", true));
+  assert(!noReplyGate({ leadTexts: ["😀"], recent: prefix }).accept);
+});
+
+Deno.test("generate-response: racha filtrada en la BASE, ids registrados antes de marcar", async () => {
+  const src = await Deno.readTextFile(new URL("../generate-response/index.ts", import.meta.url));
+  const q = src.slice(src.indexOf("const { data: recent, error: recentErr }"), src.indexOf("const gate = recentErr"));
+  // Solo participan enviados, skipped y no_reply: un run concurrente del mismo lead
+  // (pending + generating) o una respuesta en revisión no cortan la racha (revisión C1).
+  assert(q.includes('.or("status.in.(sent,auto_sent,skipped),agent_metadata->>no_reply.eq.true")'), "filtro en la base");
+  assert(/\.limit\(MAX_CONSECUTIVE_SKIPS\)/.test(q) && /\.order\("id"/.test(q), "prefijo con desempate por id");
+  assert(!/recent \?\? \[\]\)\.filter/.test(src), "sin filtrar en memoria");
+  assert(/noReply: \(r\.agent_metadata as Record<string, unknown> \| null\)\?\.no_reply === true/.test(src), "marca cruda");
+  // parkForHuman: 1) marca SOLO mensajes de ese lote no marcados, 2) registra EXACTAMENTE
+  // los marcados en el update (guarda pending) que hace visible el draft, 3) si el draft ya
+  // no estaba pending o falló, deshace la marca (revisiones W1/S3).
+  const park = src.slice(src.indexOf("const parkForHuman = async"), src.indexOf("if (gate.accept) {"));
+  const iMark = park.indexOf("update({ requires_human_review: true })");
+  const iPark = park.indexOf('status: "pending"');
+  const iUndo = park.indexOf("update({ requires_human_review: false })");
+  assert(iMark > 0 && iPark > iMark && iUndo > iPark, "orden marcar → registrar → deshacer");
+  assert(park.includes('.eq("answered_by_draft_id", draft.id)') && park.includes('.eq("requires_human_review", false)'), "solo ese lote, sin pisar flags previos");
+  assert(park.includes("no_reply_marked_ids: markedIds"), "registra los ids efectivamente marcados");
+  assert(/parked\.length === 0/.test(park), "deshace si el draft ya no estaba pending");
+  assert(/if \(finalErr\) throw new AgentSessionError/.test(src), "el update final del draft revisa su error");
 });

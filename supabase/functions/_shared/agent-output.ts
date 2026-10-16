@@ -118,20 +118,28 @@ export type ProtocolParse = {
   openReply: string | null;
   /** ¿Hubo alguna marca del protocolo (incluidas lookalikes)? */
   hasMarkers: boolean;
+  /** Texto (sin espacios) DESPUÉS del cierre del último bloque. */
+  trailing: string;
 };
 
 /** Tokeniza UNA vez y arma los bloques; anidar, cerrar sin abrir o usar lookalikes es error. */
 export function parseProtocol(raw: string | null | undefined): ProtocolParse {
   const s = String(raw ?? "");
   if (s.length > MAX_PARSE_CHARS) {
-    return { blocks: [], error: `la salida supera ${MAX_PARSE_CHARS} caracteres`, openReply: null, hasMarkers: true };
+    return { blocks: [], error: `la salida supera ${MAX_PARSE_CHARS} caracteres`, openReply: null, hasMarkers: true, trailing: "" };
   }
   const tokens = tokenize(s);
   // Algo que se parece a una marca pero el tokenizador estricto no reconoce (lookalikes
   // NFKC, confusables, invisibles, marcas combinantes): fail-closed, sin rescate.
   const lookalike = looseTagCount(s) !== tokens.length;
   const param = s.match(PARAM_RE);
-  const res: ProtocolParse = { blocks: [], error: null, openReply: null, hasMarkers: tokens.length > 0 || lookalike || !!param };
+  const res: ProtocolParse = {
+    blocks: [],
+    error: null,
+    openReply: null,
+    hasMarkers: tokens.length > 0 || lookalike || !!param,
+    trailing: tokens.length > 0 ? s.slice(tokens[tokens.length - 1].end).trim() : "",
+  };
   if (lookalike) {
     res.error = "trae algo que se parece a una etiqueta del protocolo pero no lo es (caracteres no ASCII, confusables o invisibles)";
     return res;
@@ -197,6 +205,17 @@ export function decideAgentOutput(raw: string | null | undefined): AgentDecision
     // Texto sin ninguna marca (p. ej. un análisis «no respondo»): sin bloque no hay
     // respuesta que rescatar; el crudo NUNCA se usa como texto para el lead.
     return { kind: "malformed", reason: "el bloque <respuesta>...</respuesta> vino ausente", rescue: null, allowNoReply: true };
+  }
+  // Texto después del bloque final en el MISMO mensaje («…</respuesta>\nCorrijo: no hay
+  // stock»): el bloque puede estar desactualizado → nunca un reply/no_reply limpio.
+  if (p.trailing) {
+    const last = p.blocks[p.blocks.length - 1];
+    return {
+      kind: "malformed",
+      reason: "el agente escribió texto después del bloque final",
+      rescue: last && last.tag === "respuesta" && last.content.trim() ? last.content.trim() : null,
+      allowNoReply: true,
+    };
   }
   const replyBlocks = p.blocks.filter((b) => b.tag === "respuesta");
   const replies = replyBlocks.filter((b) => b.content.trim());
@@ -295,7 +314,7 @@ export function emptyOutputCorrectionMessage(): string {
 
 /** Instrucción del protocolo de no-respuesta que viaja en el [CONTEXTO] de cada sesión (tuteo). */
 export const NO_REPLY_INSTRUCTION =
-  "Si según tu system prompt o los aprendizajes del operador este mensaje NO debe responderse (por ejemplo: solo emojis, una reacción, un sticker, spam o un hilo que el operador pidió no contestar), no inventes una respuesta ni dejes el bloque vacío: termina con <sin_respuesta>motivo breve</sin_respuesta> en lugar del bloque <respuesta>.";
+  "Si según tu system prompt o los aprendizajes del operador este mensaje NO debe responderse (por ejemplo: solo emojis, una reacción, un sticker, spam o un hilo que el operador pidió no contestar), no inventes una respuesta ni dejes el bloque vacío: termina con <sin_respuesta>motivo breve</sin_respuesta> en lugar del bloque <respuesta>. Si vas a escribir en learnings.md, hazlo ANTES de tu mensaje final: después del bloque final no escribas nada más.";
 
 // ---- Compuertas de la decisión (consumidas por generate-response) ----
 

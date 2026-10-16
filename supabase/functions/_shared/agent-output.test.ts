@@ -71,7 +71,10 @@ const CASES: Case[] = [
   ["sin_respuesta sin cerrar", `${INTERNAL}<sin_respuesta>spam`, "malformed", { rescue: null }],
   ["cierre sin apertura", `${INTERNAL}</respuesta>`, "malformed", { rescue: null }],
   ["cierre cruzado", "<respuesta>hola</sin_respuesta>", "malformed", { rescue: null }],
-  ["texto después del bloque no se expone", `<respuesta>Hola</respuesta>\n${INTERNAL}`, "reply", { text: "Hola" }],
+  ["texto después del bloque (mismo mensaje) → malformado con el bloque como rescate", `<respuesta>Hola</respuesta>\n${INTERNAL}`, "malformed", { rescue: "Hola" }],
+  ["corrección después del bloque en el mismo mensaje (revisión)", "<respuesta>Precio 10</respuesta>\nCorrijo: no hay stock, no envíes eso.", "malformed", { rescue: "Precio 10" }],
+  ["texto después de un sin_respuesta → malformado sin rescate", "<sin_respuesta>emoji</sin_respuesta> igual respondo", "malformed", { rescue: null }],
+  ["solo espacios después del bloque = respuesta", "<respuesta>Hola</respuesta>\n  \n", "reply", { text: "Hola" }],
   ["fullwidth ＜respuesta＞", `${INTERNAL}＜respuesta＞Hola＜/respuesta＞`, "malformed", { rescue: null }],
   ["fullwidth dentro de un bloque válido", "<respuesta>Hola ＜sin_respuesta＞</respuesta>", "malformed", { rescue: null }],
   ["etiqueta inválida </respuesta/>", "<respuesta>a</respuesta/>", "malformed"],
@@ -215,6 +218,9 @@ Deno.test("noReplyGate: un «no responder» en revisión (pending + no_reply) NO
   // Caso de la revisión: ["pending","skipped","skipped"] aceptaba y la racha se reiniciaba sin fin.
   assert(!noReplyGate({ leadTexts: ["😀"], recent: [D("pending", true), D("skipped")] }).accept);
   assert(!noReplyGate({ leadTexts: ["😀"], recent: [D("pending", true), D("pending", true)] }).accept);
+  // Un no_reply que un humano ya resolvió (enviado con «responder igual» o rechazado) lo
+  // marca generate-response con noReply=false: corta la racha.
+  assert(noReplyGate({ leadTexts: ["😀"], recent: [D("sent", false), D("skipped"), D("skipped")] }).accept);
   // Un pending común (otra respuesta en revisión) sí corta.
   assert(noReplyGate({ leadTexts: ["😀"], recent: [D("pending", false), D("skipped"), D("skipped")] }).accept);
 });
@@ -283,6 +289,7 @@ Deno.test("generate-response: el rescate queda guard_blocked y el no_reply pasa 
   assert(src.includes("draftStatusFor({"), "el estado sale de draftStatusFor");
   assert(/noReplyGate\(\{/.test(src) && /status: gate\.accept \? "skipped" : "pending"/.test(src), "no_reply con compuerta");
   assert(/requires_human_review: true/.test(src), "un no_reply frenado marca el lote para revisión (visible)");
+  assert(/noReply: String\(r\.status\) === "pending" &&/.test(src), "la racha cuenta solo no_reply pendientes (como 0081)");
   assert(/skipErr/.test(src), "un error al guardar el skipped no queda en silencio");
   assert(/transcript\.decide\(\)/.test(src) && !/decideAgentOutput\(transcript\.text\)/.test(src), "el turno se decide con transcript.decide()");
 });

@@ -4,6 +4,7 @@ import { triggerInternalFunction } from "@/lib/internal-call";
 import { DRAFT_APPROVABLE_STATUSES, DRAFT_NOT_ACTIONABLE } from "@/lib/draft-status";
 import { z } from "zod";
 import { readJson } from "@/lib/api/body";
+import { clearNoReplyReview } from "@/lib/draft-review";
 
 // Sin cuerpo = aprobar tal cual; `body` = texto editado por el operador.
 const ApproveBody = z.object({ body: z.string().nullable().optional() });
@@ -49,7 +50,7 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
     .update(update)
     .eq("id", params.id)
     .in("status", [...DRAFT_APPROVABLE_STATUSES])
-    .select("id");
+    .select("id, agent_metadata");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!updated || updated.length === 0) {
     return NextResponse.json({ error: DRAFT_NOT_ACTIONABLE }, { status: 409 });
@@ -58,6 +59,7 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   // Disparar publish: se espera el acuse (en serverless un fetch sin await se congela
   // al devolver la respuesta). Si falla, el draft ya quedó 'approved' y el barrido de
   // pg_cron lo publica; triggerInternalFunction lo registra sin romper la respuesta.
+  await clearNoReplyReview(supabase, params.id, updated[0].agent_metadata);
   await triggerInternalFunction("publish-to-kommo", {}, `draft ${params.id}`);
 
   return NextResponse.json({ ok: true });

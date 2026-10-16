@@ -1797,9 +1797,12 @@ Deno.serve(async (req: Request) => {
           ? { accept: false as const, reason: `no se pudo verificar el historial de «sin respuesta»: ${recentErr.message}` }
           : noReplyGate({
             leadTexts: batchMsgs.map((m) => m.content as string | null),
+            // Misma condición que 0081: cuenta un skipped o un no_reply todavía en
+            // revisión (pending). Uno que un humano ya resolvió (enviado/rechazado) no.
             recent: (recent ?? []).map((r) => ({
               status: String(r.status),
-              noReply: (r.agent_metadata as Record<string, unknown> | null)?.no_reply === true,
+              noReply: String(r.status) === "pending" &&
+                (r.agent_metadata as Record<string, unknown> | null)?.no_reply === true,
             })),
             afterReplyCorrection: outcome.noReply.afterReplyCorrection,
           });
@@ -1832,7 +1835,7 @@ Deno.serve(async (req: Request) => {
         const needsHuman = !gate.accept || skipErr != null;
         if (skipErr) {
           console.error(`generate-response: no se pudo marcar skipped el draft ${draft.id}: ${skipErr.message} → revisión humana`);
-          await supabase
+          const { error: fallbackErr } = await supabase
             .from("drafts")
             .update({
               body: "",
@@ -1841,6 +1844,9 @@ Deno.serve(async (req: Request) => {
             })
             .eq("id", draft.id)
             .eq("status", "pending");
+          if (fallbackErr) {
+            console.error(`generate-response: tampoco se pudo dejar en revisión el draft ${draft.id}: ${fallbackErr.message}`);
+          }
         }
         if (needsHuman) {
           // Visible: el lote queda marcado para revisión humana (inbox «revisión» y

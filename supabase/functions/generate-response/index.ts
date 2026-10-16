@@ -44,6 +44,12 @@ import { effortFor, modelFor } from "../_shared/models.ts";
 import { evaluateClaim } from "../_shared/claim-batch.ts";
 import { crmValueLeak, outboundLeak } from "../_shared/outbound.ts";
 import { extractResponseBlock, detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
+import {
+  AgentTranscript,
+  decideAgentOutput,
+  emptyOutputCorrectionMessage,
+  NO_REPLY_INSTRUCTION,
+} from "../_shared/agent-output.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
@@ -1083,6 +1089,8 @@ ${block}
 
 Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee ${opts.leadsPath}/${opts.lead.id}/learnings.md si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt. La conversación previa ya está en el historial de arriba: no la busques en la memoria. Solo escribí en learnings.md si aprendiste algo DURADERO de este lead; si no hay nada nuevo, no escribas nada. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
 
+${NO_REPLY_INSTRUCTION}
+
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
 }
 
@@ -1105,9 +1113,20 @@ type Outcome = {
   toolCalls: number;
   durationMs: number;
   sessionId: string;
+  // El agente decidió NO responder a propósito (<sin_respuesta>, _shared/agent-output.ts).
+  // No es una falla: el draft queda `skipped`, sin alerta ni publicación.
+  noReply: { reason: string } | null;
 };
 
-async function runAgent(opts: {
+/** Falla de la sesión CMA que ya tiene id: el llamador guarda el session_id y el consumo. */
+class AgentSessionError extends Error {
+  constructor(message: string, readonly sessionId: string) {
+    super(message);
+    this.name = "AgentSessionError";
+  }
+}
+
+type RunAgentOpts = {
   leadId: string;
   contextMessage: string;
   agentId: string;
@@ -1125,7 +1144,9 @@ async function runAgent(opts: {
   currentKommoStageId?: number | null;
   currentKommoPipelineId?: number | null;
   draftId?: string;
-}): Promise<Outcome> {
+};
+
+async function runAgent(opts: RunAgentOpts): Promise<Outcome> {
   const start = Date.now();
 
   // 1) Crear sesión con ambos memory stores
@@ -1151,6 +1172,20 @@ async function runAgent(opts: {
     ],
   });
 
+  try {
+    return await driveSession(opts, session.id, start);
+  } catch (err) {
+    if (err instanceof AgentSessionError) throw err;
+    throw new AgentSessionError(err instanceof Error ? err.message : String(err), session.id);
+  }
+}
+
+async function driveSession(
+  opts: RunAgentOpts,
+  sessionId: string,
+  start: number,
+): Promise<Outcome> {
+  const session = { id: sessionId };
   // 2) Abrir stream PRIMERO, después enviar mensaje
   const [, , stream] = await Promise.all([
     Promise.resolve(),
@@ -1168,8 +1203,9 @@ async function runAgent(opts: {
   });
 
   // 3) Loop de eventos
-  let responseText = "";
+  const transcript = new AgentTranscript();
   let toolCalls = 0;
+  let noReply: { reason: string } | null = null;
 
   // VERIFICADOR DE FUGA INTERNA: reprocesa en la MISMA sesión (reusa contexto y
   // memoria) cuando el bloque <respuesta> viene malformado o el texto trae
@@ -1183,12 +1219,9 @@ async function runAgent(opts: {
     // deno-lint-ignore no-explicit-any
     const ev = event as any;
     if (ev.type === "agent.message") {
-      // Reset: nos quedamos con el ÚLTIMO agent.message
-      // (mensajes intermedios suelen ser razonamiento previo a tool calls)
-      responseText = "";
-      for (const block of ev.content ?? []) {
-        if (block.type === "text") responseText += block.text;
-      }
+      // Gana el último agent.message con marca del protocolo (<respuesta>/<sin_respuesta>);
+      // sin marcas, el último (los intermedios suelen ser razonamiento previo a tools).
+      transcript.addMessage(ev.content);
     } else if (ev.type === "agent.custom_tool_use") {
       toolCalls++;
       try {
@@ -1275,18 +1308,51 @@ async function runAgent(opts: {
       // <respuesta>...</respuesta> no cierra bien, o el texto extraído trae
       // residuo que nunca debe llegar al cliente, se pide el formato correcto
       // en la misma sesión, hasta MAX_LEAK_RETRIES veces.
-      const extracted = extractResponseBlock(responseText);
-      leakReason = !extracted.wellFormed
+      //
+      // Una no-respuesta explícita (<sin_respuesta>) se decide ANTES que cualquier
+      // chequeo de fuga: nunca pasa por leakOf (su motivo puede decir «no respondo»).
+      const decision = decideAgentOutput(transcript.text);
+      if (decision.kind === "no_reply") {
+        noReply = { reason: decision.reason };
+        leakReason = null;
+        break;
+      }
+      if (decision.kind === "empty") {
+        // Bloque vacío / sin texto NO es una decisión: se le pide que elija en la
+        // misma sesión (responder o <sin_respuesta>). Comparte el tope de reintentos.
+        leakReason = "el agente terminó sin texto ni decisión explícita";
+        if (leakAttempts < MAX_LEAK_RETRIES) {
+          leakAttempts++;
+          console.warn(
+            `generate-response: salida vacía (intento ${leakAttempts}/${MAX_LEAK_RETRIES}) draft ${opts.draftId ?? "?"} sesión ${session.id} → pidiendo decisión en sesión`
+          );
+          transcript.startTurn();
+          await opts.anthropic.beta.sessions.events.send(session.id, {
+            events: [
+              { type: "user.message", content: [{ type: "text", text: emptyOutputCorrectionMessage() }] },
+            ],
+          });
+          continue;
+        }
+        break;
+      }
+      leakReason = decision.ambiguous
+        ? "trae a la vez <respuesta> y <sin_respuesta>"
+        : !decision.wellFormed
         ? "el bloque <respuesta>...</respuesta> vino malformado o ausente"
-        : leakOf(extracted.text);
+        : leakOf(decision.text);
       if (leakReason && leakAttempts < MAX_LEAK_RETRIES) {
         leakAttempts++;
         console.warn(
           `generate-response: VERIFICADOR fuga (intento ${leakAttempts}/${MAX_LEAK_RETRIES}) draft ${opts.draftId ?? "?"}: ${leakReason} → reprocesando en sesión`
         );
+        transcript.startTurn();
         await opts.anthropic.beta.sessions.events.send(session.id, {
           events: [
-            { type: "user.message", content: [{ type: "text", text: leakCorrectionMessage(leakReason) }] },
+            {
+              type: "user.message",
+              content: [{ type: "text", text: leakCorrectionMessage(leakReason, { allowNoReply: !decision.wellFormed }) }],
+            },
           ],
         });
         continue;
@@ -1296,8 +1362,21 @@ async function runAgent(opts: {
       break;
     } else if (ev.type === "session.error") {
       const msg = ev.error?.message ?? "session error";
-      throw new Error(msg);
+      throw new AgentSessionError(msg, session.id);
     }
+  }
+
+  const responseText = transcript.text;
+  if (noReply) {
+    return {
+      responseText: "",
+      rawResponseText: responseText.trim(),
+      leak: { attempts: leakAttempts, reason: null, wellFormed: true },
+      noReply,
+      toolCalls,
+      durationMs: Date.now() - start,
+      sessionId: session.id,
+    };
   }
 
   // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>. NO hay
@@ -1321,6 +1400,7 @@ async function runAgent(opts: {
     responseText: clean,
     rawResponseText: responseText.trim(),
     leak: { attempts: leakAttempts, reason: leakReason, wellFormed: extractedFinal.wellFormed },
+    noReply: null,
     toolCalls,
     durationMs: Date.now() - start,
     sessionId: session.id,
@@ -1573,6 +1653,28 @@ Deno.serve(async (req: Request) => {
   // desconecta, dejando el draft 'pending' para siempre. Por eso devolvemos 200
   // de inmediato y corremos el trabajo lento bajo EdgeRuntime.waitUntil, que
   // mantiene la función viva hasta que termine aunque el cliente se vaya.
+  let sessionId: string | null = null;
+  let usageCaptured = false;
+  // Captura fail-open de consumo CMA (helper compartido con follow-up-scan). Se llama
+  // en TODA salida con sesión (respuesta, sin respuesta a propósito y falla).
+  const captureUsage = async (sid: string, durationMs: number, toolCalls: number) => {
+    usageCaptured = true;
+    try {
+      await captureSessionUsage(supabase, {
+        apiKey: resolvedCfg.require("ANTHROPIC_API_KEY"),
+        sessionId: sid,
+        component: "generate_response",
+        model: modelFor(resolvedCfg, "AGENT_MODEL"),
+        leadId: batch.leadId,
+        draftId: draft.id,
+        fallbackRuntimeMs: durationMs,
+        metadata: { vertical: vertical.slug, tool_calls: toolCalls },
+        pricingOverrideRaw: resolvedCfg.get("AI_PRICING_OVERRIDES"),
+      });
+    } catch (usageErr) {
+      console.warn("generate-response: captura de consumo falló (fail-open):", usageErr instanceof Error ? usageErr.message : String(usageErr));
+    }
+  };
   const slowWork = (async () => {
     try {
       const lead = await getLead(batch.leadId);
@@ -1653,8 +1755,43 @@ Deno.serve(async (req: Request) => {
         draftId: draft.id,
       });
 
+      sessionId = outcome.sessionId;
+
+      if (outcome.noReply) {
+        // El agente decidió NO responder a propósito (p. ej. «solo emojis → no
+        // respondas» del operador). No es una falla: estado `skipped` (sin alerta
+        // draft_failed, sin publicar). El lote queda cubierto (answered_by_draft_id)
+        // y no se reprocesa; si el lead vuelve a escribir, es un lote nuevo.
+        console.log(
+          `generate-response: draft ${draft.id} sin respuesta a propósito (sesión ${outcome.sessionId}): ${outcome.noReply.reason}`
+        );
+        await supabase
+          .from("drafts")
+          .update({
+            body: "",
+            status: "skipped",
+            agent_metadata: {
+              session_id: outcome.sessionId,
+              no_reply: true,
+              no_reply_reason: outcome.noReply.reason,
+              tool_calls: outcome.toolCalls,
+              duration_ms: outcome.durationMs,
+              model: modelFor(resolvedCfg, "AGENT_MODEL"),
+              vertical: vertical.slug,
+              ...(outcome.leak.attempts > 0 ? { leak_verify: outcome.leak } : {}),
+            },
+          })
+          .eq("id", draft.id)
+          .eq("status", "pending");
+        await captureUsage(outcome.sessionId, outcome.durationMs, outcome.toolCalls);
+        return;
+      }
+
       if (!outcome.responseText) {
-        throw new Error("agent devolvió respuesta vacía");
+        throw new AgentSessionError(
+          "agent devolvió respuesta vacía (sin texto ni <sin_respuesta> tras pedirle una decisión)",
+          outcome.sessionId,
+        );
       }
 
       // ---- Respuesta pública IA (comentario de Instagram) — fail-open ----
@@ -1816,18 +1953,7 @@ Deno.serve(async (req: Request) => {
         // un humano lo resolvió mientras generábamos, no pisamos nada.
         .eq("status", "pending");
 
-      // Captura fail-open de consumo CMA (helper compartido con follow-up-scan).
-      await captureSessionUsage(supabase, {
-        apiKey: resolvedCfg.require("ANTHROPIC_API_KEY"),
-        sessionId: outcome.sessionId,
-        component: "generate_response",
-        model: modelFor(resolvedCfg, "AGENT_MODEL"),
-        leadId: batch.leadId,
-        draftId: draft.id,
-        fallbackRuntimeMs: outcome.durationMs,
-        metadata: { vertical: vertical.slug, tool_calls: outcome.toolCalls },
-        pricingOverrideRaw: resolvedCfg.get("AI_PRICING_OVERRIDES"),
-      });
+      await captureUsage(outcome.sessionId, outcome.durationMs, outcome.toolCalls);
 
       if (status === "approved") {
         try {
@@ -1839,12 +1965,19 @@ Deno.serve(async (req: Request) => {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      // El session_id permite abrir la sesión en Anthropic y ver qué pasó.
+      const failedSession = err instanceof AgentSessionError ? err.sessionId : sessionId;
       await supabase
         .from("drafts")
-        .update({ status: "failed", agent_metadata: { error: errMsg } })
+        .update({
+          status: "failed",
+          agent_metadata: { error: errMsg, ...(failedSession ? { session_id: failedSession } : {}) },
+        })
         .eq("id", draft.id)
         .eq("status", "pending");
-      console.error("generate-response slowWork failed:", errMsg);
+      console.error(`generate-response slowWork failed (draft ${draft.id}, sesión ${failedSession ?? "-"}):`, errMsg);
+      // Una sesión fallida igual consumió tokens: sin esto el techo de gasto la ignoraba.
+      if (failedSession && !usageCaptured) await captureUsage(failedSession, 0, 0);
     }
   })();
 

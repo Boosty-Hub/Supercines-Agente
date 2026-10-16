@@ -1,9 +1,11 @@
 // Estados de `drafts.status` (CHECK drafts_status_check, última definición en la
-// migración 0074). `draft-status.test.ts` falla si esta lista y la de la base divergen.
+// migración 0087). `draft-status.test.ts` falla si esta lista y la de la base divergen.
 //
 //   pending ─aprobar─▶ approved ─(publish-to-kommo reserva)─▶ publishing ─▶ auto_sent | failed
 //                                                                   │       (pending si el guard
 //                                                                   │        de fuga lo bloquea)
+//   `skipped` = el agente decidió NO responder a propósito (<sin_respuesta>, 0087): terminal,
+//   sin cuerpo; el motivo está en agent_metadata.no_reply_reason.
 //   `publishing` = «enviando…»: lo tiene reservado un worker de publish-to-kommo y el
 //   panel NO puede tocarlo (ni aprobar, ni rechazar, ni editar).
 export const DRAFT_STATUSES = [
@@ -14,6 +16,7 @@ export const DRAFT_STATUSES = [
   "auto_sent",
   "rejected",
   "failed",
+  "skipped",
 ] as const;
 
 export type DraftStatus = (typeof DRAFT_STATUSES)[number];

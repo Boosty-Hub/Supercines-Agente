@@ -542,7 +542,7 @@ function Timeline({
                             ? "green"
                             : draft.status === "failed"
                             ? "red"
-                            : draft.status === "rejected"
+                            : draft.status === "rejected" || draft.status === "skipped"
                             ? "neutral"
                             : draft.status === "publishing"
                             ? "blue"
@@ -555,6 +555,8 @@ function Timeline({
                           ? "escribiendo…"
                           : draft.status === "publishing"
                           ? "enviando…"
+                          : draft.status === "skipped"
+                          ? "sin respuesta"
                           : draft.status}
                       </Badge>
                     </div>
@@ -565,6 +567,13 @@ function Timeline({
                           className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-emerald-300 border-t-emerald-600 motion-reduce:animate-none"
                         />
                         El agente está redactando la respuesta…
+                      </p>
+                    ) : draft.status === "skipped" ? (
+                      <p className="whitespace-pre-wrap break-words text-sm italic text-neutral-500">
+                        El agente decidió no responder
+                        {typeof draft.agent_metadata?.no_reply_reason === "string" && draft.agent_metadata.no_reply_reason
+                          ? `: ${String(draft.agent_metadata.no_reply_reason)}`
+                          : "."}
                       </p>
                     ) : (
                       <p className="whitespace-pre-wrap break-words text-sm text-neutral-900">{draftBody}</p>

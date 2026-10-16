@@ -140,7 +140,7 @@ export function extractResponseBlock(raw: string | null | undefined): {
  * si el operador define una voz/dialecto particular en su system prompt, no
  * queremos que este mensaje del sistema se la contamine.
  */
-export function leakCorrectionMessage(reason: string): string {
+export function leakCorrectionMessage(reason: string, opts: { allowNoReply?: boolean } = {}): string {
   return [
     "[VERIFICADOR INTERNO — NO es un mensaje del cliente, es una corrección del sistema]",
     `Tu salida anterior no se puede enviar: ${reason}.`,
@@ -150,5 +150,11 @@ export function leakCorrectionMessage(reason: string): string {
     "SOLO el texto que se le envía al cliente, listo para mandar tal cual",
     "</respuesta>",
     "Sin ningún texto después del bloque. Nada de lo que escribas antes del bloque llega al cliente, así que dentro del bloque no puede quedar ni una palabra sobre tu proceso interno.",
+    // Sin un bloque bien formado puede que el agente haya DECIDIDO no responder (p. ej.
+    // «solo emojis → no respondas» del operador) y lo haya escrito como análisis: se le
+    // ofrece la salida explícita en vez de forzarlo a inventar un mensaje.
+    ...(opts.allowNoReply
+      ? ["Si decidiste NO responder a propósito (según tu system prompt o los aprendizajes del operador), en lugar del bloque anterior termina con: <sin_respuesta>motivo breve</sin_respuesta>"]
+      : []),
   ].join("\n");
 }

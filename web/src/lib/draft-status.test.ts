@@ -34,7 +34,7 @@ test("DRAFT_STATUSES = los estados del CHECK de la base", () => {
 });
 
 test("el panel nunca aprueba ni rechaza un draft que se está enviando o ya se resolvió", () => {
-  for (const s of ["publishing", "sent", "auto_sent", "rejected", "failed"] as const) {
+  for (const s of ["publishing", "sent", "auto_sent", "rejected", "failed", "skipped"] as const) {
     assert.ok(!DRAFT_APPROVABLE_STATUSES.includes(s), `aprobar desde ${s}`);
     assert.ok(!DRAFT_REJECTABLE_STATUSES.includes(s), `rechazar desde ${s}`);
   }

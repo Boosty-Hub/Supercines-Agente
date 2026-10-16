@@ -54,6 +54,10 @@ export default function DraftActions({
   if (status === "failed") {
     return <span className="text-xs font-medium text-red-600">Falló publicación</span>;
   }
+  if (status === "skipped") {
+    // El agente decidió no responder a propósito (0087): no hay nada que aprobar.
+    return <span className="text-xs text-neutral-500">Sin respuesta (decisión del agente)</span>;
+  }
   // Red de seguridad: generate-response crea el draft vacío como lock y lo
   // rellena al terminar. Sin este corte se podía aprobar (y publicar al
   // cliente) una respuesta en blanco.

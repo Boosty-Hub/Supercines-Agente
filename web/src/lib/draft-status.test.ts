@@ -34,8 +34,27 @@ test("DRAFT_STATUSES = los estados del CHECK de la base", () => {
 });
 
 test("el panel nunca aprueba ni rechaza un draft que se está enviando o ya se resolvió", () => {
-  for (const s of ["publishing", "sent", "auto_sent", "rejected", "failed", "skipped"] as const) {
+  for (const s of ["publishing", "sent", "auto_sent", "rejected", "failed"] as const) {
     assert.ok(!DRAFT_APPROVABLE_STATUSES.includes(s), `aprobar desde ${s}`);
     assert.ok(!DRAFT_REJECTABLE_STATUSES.includes(s), `rechazar desde ${s}`);
   }
+});
+
+test("un skipped se puede responder igual (aprobar con texto) o marcar revisado (rechazar)", () => {
+  assert.ok(DRAFT_APPROVABLE_STATUSES.includes("skipped"));
+  assert.ok(DRAFT_REJECTABLE_STATUSES.includes("skipped"));
+});
+
+test("la policy RLS de drafts permite exactamente los estados accionables del panel", () => {
+  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
+  let using: string | null = null;
+  for (const f of files) {
+    const sql = readFileSync(join(MIGRATIONS, f), "utf8");
+    const m = /create policy drafts_review on drafts for update[\s\S]*?using \(%s and status in \(([^)]*)\)\)/i.exec(sql);
+    if (m) using = m[1];
+  }
+  assert.ok(using, "no se encontró la policy drafts_review");
+  const states = [...using.matchAll(/'+([a-z_]+)'+/g)].map((x) => x[1]).sort();
+  const panel = [...new Set([...DRAFT_APPROVABLE_STATUSES, ...DRAFT_REJECTABLE_STATUSES])].sort();
+  assert.deepEqual(states, panel);
 });

@@ -47,8 +47,11 @@ import { detectInternalLeak, leakCorrectionMessage } from "../_shared/response-g
 import {
   AgentTranscript,
   decideAgentOutput,
+  draftStatusFor,
   emptyOutputCorrectionMessage,
+  MAX_CONSECUTIVE_SKIPS,
   NO_REPLY_INSTRUCTION,
+  noReplyGate,
 } from "../_shared/agent-output.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
@@ -1091,7 +1094,7 @@ Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes
 
 ${NO_REPLY_INSTRUCTION}
 
-Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
+Tu mensaje final debe terminar con el bloque <respuesta> (o <sin_respuesta>), sin texto después: dentro de <respuesta> va SOLO el texto que se envía al lead, sin preámbulo.`;
 }
 
 // Detector de fuga: patrones del guard compartido (_shared/response-guard.ts) +
@@ -1115,7 +1118,9 @@ type Outcome = {
   sessionId: string;
   // El agente decidió NO responder a propósito (<sin_respuesta>, _shared/agent-output.ts).
   // No es una falla: el draft queda `skipped`, sin alerta ni publicación.
-  noReply: { reason: string } | null;
+  // afterReplyCorrection: el agente tenía una respuesta (con fuga) y, al pedirle que la
+  // reescriba SIN ofrecerle <sin_respuesta>, decidió no responder → revisión humana.
+  noReply: { reason: string; afterReplyCorrection: boolean } | null;
 };
 
 /** Falla de la sesión CMA que ya tiene id: el llamador guarda el session_id y el consumo. */
@@ -1205,7 +1210,9 @@ async function driveSession(
   // 3) Loop de eventos
   const transcript = new AgentTranscript();
   let toolCalls = 0;
-  let noReply: { reason: string } | null = null;
+  let noReply: { reason: string; afterReplyCorrection: boolean } | null = null;
+  // ¿Alguna corrección pidió reescribir una respuesta sin ofrecer <sin_respuesta>?
+  let replyOnlyCorrection = false;
 
   // VERIFICADOR DE FUGA INTERNA: reprocesa en la MISMA sesión (reusa contexto y
   // memoria) cuando el bloque <respuesta> viene malformado o el texto trae
@@ -1304,16 +1311,15 @@ async function driveSession(
         console.warn(`generate-response: sesión ${session.id} quedó idle con stop_reason=${stop} (draft ${opts.draftId ?? "?"})`);
       }
 
-      // VERIFICADOR DE FUGA INTERNA — el agente terminó el turno. Si el bloque
-      // <respuesta>...</respuesta> no cierra bien, o el texto extraído trae
-      // residuo que nunca debe llegar al cliente, se pide el formato correcto
-      // en la misma sesión, hasta MAX_LEAK_RETRIES veces.
-      //
-      // Una no-respuesta explícita (<sin_respuesta>) se decide ANTES que cualquier
-      // chequeo de fuga: nunca pasa por leakOf (su motivo puede decir «no respondo»).
-      const decision = decideAgentOutput(transcript.text);
+      // VERIFICADOR DE FUGA INTERNA — el agente terminó el turno. Si el
+      // bloque <respuesta>...</respuesta> no cierra bien, o el texto que
+      // extraemos trae residuo de razonamiento/sintaxis de tool-calling que
+      // nunca debe llegar al cliente, reprocesamos EN LA MISMA sesión
+      // pidiéndole el formato correcto, hasta MAX_LEAK_RETRIES veces.
+      const decision = transcript.decide();
       if (decision.kind === "no_reply") {
-        noReply = { reason: decision.reason };
+        // Decisión explícita de no responder: no hay nada que verificar ni enviar.
+        noReply = { reason: decision.reason, afterReplyCorrection: replyOnlyCorrection };
         leakReason = null;
         break;
       }
@@ -1345,6 +1351,8 @@ async function driveSession(
         console.warn(
           `generate-response: VERIFICADOR fuga (intento ${leakAttempts}/${MAX_LEAK_RETRIES}) draft ${opts.draftId ?? "?"}: ${leakReason} → reprocesando en sesión`
         );
+        const allowNoReply = decision.kind === "malformed" && decision.allowNoReply;
+        if (!allowNoReply) replyOnlyCorrection = true;
         transcript.startTurn();
         await opts.anthropic.beta.sessions.events.send(session.id, {
           events: [
@@ -1353,7 +1361,7 @@ async function driveSession(
               content: [
                 {
                   type: "text",
-                  text: leakCorrectionMessage(leakReason, { allowNoReply: decision.kind === "malformed" && decision.allowNoReply }),
+                  text: leakCorrectionMessage(leakReason, { allowNoReply }),
                 },
               ],
             },
@@ -1374,14 +1382,15 @@ async function driveSession(
   // La salida final se decide con el MISMO parser que el bucle (incluso si el stream
   // cortó sin pasar por el idle). Nunca hay fallback al texto crudo: el texto de una
   // respuesta sale de adentro de un bloque <respuesta>; un rescate de un bloque mal
-  // cerrado queda wellFormed=false y el llamador fuerza revisión humana.
-  const finalDecision = noReply ? null : decideAgentOutput(responseText);
+  // cerrado queda wellFormed=false y el llamador fuerza revisión humana (bug real: un
+  // <parameter name="respuesta"> sin cerrar llegó una vez crudo al cliente).
+  const finalDecision = noReply ? null : transcript.decide();
   if (noReply || finalDecision?.kind === "no_reply") {
     return {
       responseText: "",
       rawResponseText: responseText.trim(),
       leak: { attempts: leakAttempts, reason: null, wellFormed: true },
-      noReply: noReply ?? { reason: (finalDecision as { reason: string }).reason },
+      noReply: noReply ?? { reason: (finalDecision as { reason: string }).reason, afterReplyCorrection: replyOnlyCorrection },
       toolCalls,
       durationMs: Date.now() - start,
       sessionId: session.id,
@@ -1401,7 +1410,10 @@ async function driveSession(
   }
   // Chequeo final sobre el texto que efectivamente se devuelve (y que publish-to-kommo
   // vuelve a verificar con outbound.ts antes de enviar).
-  leakReason = leakReason ?? (clean ? leakOf(clean) : null);
+  // El rescate de un bloque malformado también pasa por el verificador: su motivo se
+  // suma al del bloque (el draft ya va a revisión humana, pero el humano lo ve).
+  const textLeak = clean ? leakOf(clean) : null;
+  leakReason = leakReason && textLeak && leakReason !== textLeak ? `${leakReason}; texto: ${textLeak}` : leakReason ?? textLeak;
 
   return {
     responseText: clean,
@@ -1767,29 +1779,79 @@ Deno.serve(async (req: Request) => {
       if (outcome.noReply) {
         // El agente decidió NO responder a propósito (p. ej. «solo emojis → no
         // respondas» del operador). No es una falla: estado `skipped` (sin alerta
-        // draft_failed, sin publicar). El lote queda cubierto (answered_by_draft_id)
-        // y no se reprocesa; si el lead vuelve a escribir, es un lote nuevo.
+        // draft_failed, sin publicar), visible en el inbox y contado como «sin
+        // responder». El lote queda cubierto y no se reprocesa.
+        // Compuerta (agent-output.ts noReplyGate): si el lote trae marcas del protocolo
+        // (posible inducción por prompt injection) o el lead ya acumula
+        // MAX_CONSECUTIVE_SKIPS «sin respuesta» seguidos, NO se acepta sin humano: el
+        // draft queda `pending` (sin texto) para que alguien decida.
+        const { data: recent, error: recentErr } = await supabase
+          .from("drafts")
+          .select("status, agent_metadata, messages!drafts_message_id_fkey!inner(lead_id)")
+          .eq("messages.lead_id", batch.leadId)
+          .neq("id", draft.id)
+          .order("created_at", { ascending: false })
+          .limit(MAX_CONSECUTIVE_SKIPS);
+        const gate = recentErr
+          // Sin poder contar los skips previos no se acepta en silencio (fail-closed).
+          ? { accept: false as const, reason: `no se pudo verificar el historial de «sin respuesta»: ${recentErr.message}` }
+          : noReplyGate({
+            leadTexts: batchMsgs.map((m) => m.content as string | null),
+            recent: (recent ?? []).map((r) => ({
+              status: String(r.status),
+              noReply: (r.agent_metadata as Record<string, unknown> | null)?.no_reply === true,
+            })),
+            afterReplyCorrection: outcome.noReply.afterReplyCorrection,
+          });
         console.log(
-          `generate-response: draft ${draft.id} sin respuesta a propósito (sesión ${outcome.sessionId}): ${outcome.noReply.reason}`
+          `generate-response: draft ${draft.id} sin respuesta a propósito (sesión ${outcome.sessionId}): ${outcome.noReply.reason}` +
+            (gate.accept ? "" : ` → revisión humana: ${gate.reason}`)
         );
-        await supabase
+        const noReplyMeta = {
+          session_id: outcome.sessionId,
+          no_reply: true,
+          no_reply_reason: outcome.noReply.reason,
+          tool_calls: outcome.toolCalls,
+          duration_ms: outcome.durationMs,
+          model: modelFor(resolvedCfg, "AGENT_MODEL"),
+          vertical: vertical.slug,
+          ...(outcome.leak.attempts > 0 ? { leak_verify: outcome.leak } : {}),
+        };
+        const { error: skipErr } = await supabase
           .from("drafts")
           .update({
             body: "",
-            status: "skipped",
-            agent_metadata: {
-              session_id: outcome.sessionId,
-              no_reply: true,
-              no_reply_reason: outcome.noReply.reason,
-              tool_calls: outcome.toolCalls,
-              duration_ms: outcome.durationMs,
-              model: modelFor(resolvedCfg, "AGENT_MODEL"),
-              vertical: vertical.slug,
-              ...(outcome.leak.attempts > 0 ? { leak_verify: outcome.leak } : {}),
-            },
+            status: gate.accept ? "skipped" : "pending",
+            agent_metadata: { ...noReplyMeta, ...(gate.accept ? {} : { no_reply_review: gate.reason }) },
           })
           .eq("id", draft.id)
           .eq("status", "pending");
+        // Si no se pudo guardar (p. ej. 0080 sin aplicar: el CHECK rechaza `skipped`), el
+        // draft quedaría `pending` + generating y el barrido de runs muertos lo reprocesaría
+        // en bucle: se deja en revisión humana, sin generating.
+        const needsHuman = !gate.accept || skipErr != null;
+        if (skipErr) {
+          console.error(`generate-response: no se pudo marcar skipped el draft ${draft.id}: ${skipErr.message} → revisión humana`);
+          await supabase
+            .from("drafts")
+            .update({
+              body: "",
+              status: "pending",
+              agent_metadata: { ...noReplyMeta, no_reply_review: `no se pudo guardar la decisión: ${skipErr.message}` },
+            })
+            .eq("id", draft.id)
+            .eq("status", "pending");
+        }
+        if (needsHuman) {
+          // Visible: el lote queda marcado para revisión humana (inbox «revisión» y
+          // alerta human_review_needed de alerts-scan). Sin esto el pending sin texto no
+          // figuraba en ningún filtro.
+          const { error: revErr } = await supabase
+            .from("messages")
+            .update({ requires_human_review: true })
+            .in("id", batchIds);
+          if (revErr) console.error(`generate-response: no se pudo marcar revisión humana del lote ${draft.id}:`, revErr.message);
+        }
         await captureUsage(outcome.sessionId, outcome.durationMs, outcome.toolCalls);
         return;
       }
@@ -1916,17 +1978,13 @@ Deno.serve(async (req: Request) => {
       // forceReview (revisión humana) → siempre pending para que el humano
       // apruebe/edite. bypass → siempre approved (publica todo, ignora review).
       // Resto → lógica normal por vertical.
-      const status = guardBlocked
-        ? "pending"
-        : forceReview
-        ? "pending"
-        : contestPhoneGuard
-        ? "pending"
-        : bypass
-        ? "approved"
-        : vertical.auto_reply && !vertical.requires_review
-        ? "approved"
-        : "pending";
+      const status = draftStatusFor({
+        guardBlocked,
+        forceReview,
+        bypass,
+        autoReply: vertical.auto_reply === true,
+        requiresReview: vertical.requires_review === true,
+      });
 
       await supabase
         .from("drafts")

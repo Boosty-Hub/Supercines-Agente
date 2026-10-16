@@ -527,7 +527,10 @@ function Timeline({
                 respuesta vacía. */}
             {draft && (() => {
               const draftBody = draftText(draft);
-              const generating = draft.status === "pending" && draftBody.trim() === "";
+              // Un «no responder» que quedó en revisión también tiene el cuerpo vacío, pero NO se está
+              // redactando: el operador debe verlo y resolverlo.
+              const noReplyReview = draft.status === "pending" && draft.agent_metadata?.no_reply === true;
+              const generating = draft.status === "pending" && draftBody.trim() === "" && !noReplyReview;
               return (
                 <div className="flex justify-end">
                   <div className="max-w-[85%] rounded-2xl rounded-tr-md border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
@@ -567,6 +570,18 @@ function Timeline({
                           className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-emerald-300 border-t-emerald-600 motion-reduce:animate-none"
                         />
                         El agente está redactando la respuesta…
+                      </p>
+                    ) : noReplyReview ? (
+                      <p className="whitespace-pre-wrap break-words text-sm italic text-amber-700">
+                        El agente propuso no responder
+                        {typeof draft.agent_metadata?.no_reply_reason === "string" && draft.agent_metadata.no_reply_reason
+                          ? ` (${String(draft.agent_metadata.no_reply_reason)})`
+                          : ""}
+                        , pero necesita tu revisión
+                        {typeof draft.agent_metadata?.no_reply_review === "string" && draft.agent_metadata.no_reply_review
+                          ? `: ${String(draft.agent_metadata.no_reply_review)}`
+                          : ""}
+                        . Escribí la respuesta y aprobala, o rechazala para no responder.
                       </p>
                     ) : draft.status === "skipped" ? (
                       <p className="whitespace-pre-wrap break-words text-sm italic text-neutral-500">

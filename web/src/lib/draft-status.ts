@@ -21,11 +21,18 @@ export const DRAFT_STATUSES = [
 
 export type DraftStatus = (typeof DRAFT_STATUSES)[number];
 
-/** Desde dónde el panel puede aprobar (o re-aprobar con una edición) un draft. */
-export const DRAFT_APPROVABLE_STATUSES: readonly DraftStatus[] = ["pending", "approved"];
+/**
+ * Desde dónde el panel puede aprobar (o re-aprobar con una edición) un draft. `skipped`
+ * («el agente decidió no responder») también: «responder igual», con texto obligatorio
+ * (la ruta approve rechaza un draft sin texto).
+ */
+export const DRAFT_APPROVABLE_STATUSES: readonly DraftStatus[] = ["pending", "approved", "skipped"];
 
-/** Desde dónde el panel puede rechazar un draft (aprobado = todavía no reservado: se cancela). */
-export const DRAFT_REJECTABLE_STATUSES: readonly DraftStatus[] = ["pending", "approved"];
+/**
+ * Desde dónde el panel puede rechazar un draft (aprobado = todavía no reservado: se cancela).
+ * Rechazar un `skipped` = «marcar revisado»: el humano confirma que no se responde.
+ */
+export const DRAFT_REJECTABLE_STATUSES: readonly DraftStatus[] = ["pending", "approved", "skipped"];
 
 /** Respuesta 409 cuando el draft ya no admite la acción (se está enviando o ya se resolvió). */
 export const DRAFT_NOT_ACTIONABLE =

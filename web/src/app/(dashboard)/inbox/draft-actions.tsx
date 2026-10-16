@@ -14,7 +14,11 @@ export default function DraftActions({
   status: string;
 }) {
   const router = useRouter();
-  const [editing, setEditing] = useState(false);
+  // Sin texto (el agente decidió no responder: `skipped`, o un «no responder» que quedó
+  // en revisión): el operador escribe la respuesta («responder igual») o lo da por
+  // revisado (rechazar = no se responde).
+  const noText = !body.trim();
+  const [editing, setEditing] = useState(noText);
   const [draftBody, setDraftBody] = useState(body);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,16 +58,9 @@ export default function DraftActions({
   if (status === "failed") {
     return <span className="text-xs font-medium text-red-600">Falló publicación</span>;
   }
-  if (status === "skipped") {
-    // El agente decidió no responder a propósito (0087): no hay nada que aprobar.
-    return <span className="text-xs text-neutral-500">Sin respuesta (decisión del agente)</span>;
-  }
-  // Red de seguridad: generate-response crea el draft vacío como lock y lo
-  // rellena al terminar. Sin este corte se podía aprobar (y publicar al
-  // cliente) una respuesta en blanco.
-  if (status === "pending" && draftBody.trim() === "") {
-    return <span className="text-xs text-neutral-500">Redactando…</span>;
-  }
+  // El draft vacío que crea generate-response como lock no llega acá (la página no
+  // monta las acciones mientras se redacta); un vacío «skipped» o «no responder» en
+  // revisión exige texto para responder (el botón y la ruta lo verifican).
 
   return (
     <div className="space-y-2.5">
@@ -85,11 +82,11 @@ export default function DraftActions({
           type="button"
           variant="primary"
           size="sm"
-          disabled={busy !== null}
+          disabled={busy !== null || (noText && !draftBody.trim())}
           busy={busy === "approve"}
           onClick={() => act("approve", editing ? { body: draftBody } : undefined)}
         >
-          {busy === "approve" ? "Enviando…" : editing ? "Aprobar editado" : "Aprobar y enviar"}
+          {busy === "approve" ? "Enviando…" : noText ? "Responder igual" : editing ? "Aprobar editado" : "Aprobar y enviar"}
         </Button>
         <Button
           type="button"
@@ -98,7 +95,7 @@ export default function DraftActions({
           disabled={busy !== null}
           onClick={() => act("reject")}
         >
-          Rechazar
+          {noText ? "Marcar revisado (no responder)" : "Rechazar"}
         </Button>
       </div>
       {error && <p className="text-xs text-red-600">{error}</p>}

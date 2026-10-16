@@ -18,6 +18,23 @@ export async function POST(request: Request, props: { params: Promise<{ id: stri
   if (!input.ok) return input.response;
   const body = input.data.body?.trim() || undefined;
 
+  // Sin texto no hay nada que aprobar (p. ej. un «sin respuesta» del agente que quedó
+  // en revisión): el operador tiene que escribir la respuesta. publish-to-kommo lo
+  // bloquearía igual (outbound.ts: «texto vacío»); esto da el motivo claro.
+  if (!body) {
+    const { data: current } = await supabase
+      .from("drafts")
+      .select("body, edited_body")
+      .eq("id", params.id)
+      .maybeSingle();
+    if (current && !String(current.edited_body ?? "").trim() && !String(current.body ?? "").trim()) {
+      return NextResponse.json(
+        { error: "Este borrador no tiene texto. Escribí la respuesta antes de aprobarla o rechazalo." },
+        { status: 400 },
+      );
+    }
+  }
+
   const update: Record<string, unknown> = {
     status: "approved",
     reviewer_id: user.id,

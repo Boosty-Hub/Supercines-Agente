@@ -25,6 +25,7 @@ import { canSkipDigestRebuild, digestFingerprint } from "../_shared/dreams-diges
 import { sanitizeUntrusted, turn, EVALUATION_NOTICE } from "../_shared/untrusted.ts";
 import { isSystemHalted, haltedResponse, logHalted } from "../_shared/halt.ts";
 import { jsonOf, LLM_PROFILES, textOf } from "../_shared/llm.ts";
+import { DREAMS_LEARNINGS_SCHEMA } from "../_shared/llm-schemas.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
@@ -582,29 +583,7 @@ async function runDreams(
       ...effortFor(dreamsModel, LLM_PROFILES.dreamsLearnings.effort),
       format: {
         type: "json_schema",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            learnings: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  title: { type: "string" },
-                  category: { type: "string" },
-                  severity: { type: "string", enum: ["sugerencia", "advertencia", "error"] },
-                  vertical: { type: "string" },
-                  content: { type: "string" },
-                  evidence: { type: "string" },
-                },
-                required: ["title", "category", "severity", "vertical", "content", "evidence"],
-              },
-            },
-          },
-          required: ["learnings"],
-        },
+        schema: DREAMS_LEARNINGS_SCHEMA,
       },
     },
   });

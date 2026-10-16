@@ -33,6 +33,7 @@ import { effortFor, modelFor } from "../_shared/models.ts";
 import { budgetSkipError, getBudgetGate } from "../_shared/budget.ts";
 import { sanitizeUntrusted, turn, EVALUATION_NOTICE } from "../_shared/untrusted.ts";
 import { jsonOf, LLM_PROFILES, LlmRefusalError, LlmTruncatedError } from "../_shared/llm.ts";
+import { classifySchema } from "../_shared/llm-schemas.ts";
 import { eventInstantMs, parseLeadPosition } from "../_shared/lead-position.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -709,33 +710,7 @@ Reglas:
       ...effortFor(model, LLM_PROFILES.classify.effort),
       format: {
         type: "json_schema",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            vertical_slug: { type: "string", enum: verticals.map((v) => v.slug) },
-            intent: {
-              type: "string",
-              enum: ["info", "purchase", "support", "feedback", "spam", "other"],
-            },
-            urgency: { type: "integer" },
-            toxicity: { type: "number" },
-            requires_human_review: { type: "boolean" },
-            confidence: { type: "number" },
-            reasoning: { type: "string" },
-            media_summary: { type: "string" },
-          },
-          required: [
-            "vertical_slug",
-            "intent",
-            "urgency",
-            "toxicity",
-            "requires_human_review",
-            "confidence",
-            "reasoning",
-            "media_summary",
-          ],
-        },
+        schema: classifySchema(verticals.map((v) => v.slug)),
       },
     },
   });

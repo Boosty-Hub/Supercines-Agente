@@ -19,6 +19,8 @@ import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { buildGraderContext } from "../_shared/grader-prompt.ts";
+import { errorAttemptsOf, shouldEvaluate, type ExistingOutcome } from "../_shared/outcome-retry.ts";
+import { GRADER_PASS_FAIL_SCHEMA, GRADER_SCORE_SCHEMA } from "../_shared/llm-schemas.ts";
 import { draftText } from "../_shared/draft-text.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
@@ -89,12 +91,14 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
   return (data ?? []) as DraftWithContext[];
 }
 
-async function getExistingOutcomes(draftId: string): Promise<Set<string>> {
+async function getExistingOutcomes(draftId: string): Promise<Map<string, ExistingOutcome>> {
   const { data } = await supabase
     .from("outcomes")
-    .select("grader_id")
+    .select("grader_id, score, metadata")
     .eq("draft_id", draftId);
-  return new Set((data ?? []).map((o) => o.grader_id as string));
+  return new Map(
+    (data ?? []).map((o) => [o.grader_id as string, { score: o.score as number | null, metadata: o.metadata }]),
+  );
 }
 
 // ---------------- LLM-judge ----------------
@@ -119,23 +123,7 @@ async function runLlmJudge(
   });
 
   const isPassFail = grader.scale === "pass_fail";
-  const schema = isPassFail
-    ? {
-        type: "object",
-        properties: {
-          passed: { type: "boolean" },
-          reasoning: { type: "string" },
-        },
-        required: ["passed", "reasoning"],
-      }
-    : {
-        type: "object",
-        properties: {
-          score: { type: "number" },
-          reasoning: { type: "string" },
-        },
-        required: ["score", "reasoning"],
-      };
+  const schema = isPassFail ? GRADER_PASS_FAIL_SCHEMA : GRADER_SCORE_SCHEMA;
 
   const response = await anthropic.messages.create({
     model,
@@ -266,16 +254,25 @@ async function runAutomatic(
 }
 
 // ---------------- Evaluación principal ----------------
-async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthropic: Anthropic, cfg: ConfigReader, llmBlocked: boolean): Promise<number> {
+
+async function evaluateDraft(
+  draft: DraftWithContext,
+  graders: Grader[],
+  anthropic: Anthropic,
+  cfg: ConfigReader,
+  llmBlocked: boolean,
+): Promise<number> {
   // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku 5.5).
   const graderModel = modelFor(cfg, "GRADER_MODEL");
   const existing = await getExistingOutcomes(draft.id);
   let count = 0;
 
   for (const grader of graders) {
-    // Si ya existe, skip — excepto para automatic que pueden cambiar con el tiempo (lead_replied)
+    // Si ya existe, skip — excepto lead_replied (mutable) y las filas de ERROR, que se
+    // reintentan hasta MAX_ERROR_ATTEMPTS (antes quedaban en ERROR para siempre).
     const isMutable = grader.source === "automatic" && grader.slug === "lead_replied";
-    if (existing.has(grader.id) && !isMutable) continue;
+    const prev = existing.get(grader.id);
+    if (!shouldEvaluate(prev, isMutable)) continue;
     // Techo de gasto (>=100%): los graders LLM esperan (no se escribe outcome; el
     // draft se vuelve a evaluar al reanudar). Los automáticos no cuestan nada.
     if (llmBlocked && grader.source === "llm_judge") continue;
@@ -331,7 +328,7 @@ async function evaluateDraft(draft: DraftWithContext, graders: Grader[], anthrop
           score: null,
           passed: null,
           reasoning: `ERROR: ${msg}`,
-          metadata: { error: true },
+          metadata: { error: true, error_attempts: errorAttemptsOf(prev) + 1 },
         },
         { onConflict: "draft_id,grader_id" }
       );

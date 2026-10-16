@@ -49,6 +49,10 @@ export type LeadHistoryOptions = {
   // Agrega a cada turno su instante (`t="YYYY-MM-DDTHH:mm"`, UTC). El seguimiento lo
   // necesita: decide según cuánto hace que el lead dejó de escribir. Default false.
   timestamps?: boolean;
+  // Solo lo ANTERIOR a este instante (ISO): mensajes con created_at < before y drafts con
+  // sent_at < before. El grader lo usa para ver la conversación previa a la respuesta que
+  // evalúa, aunque después hayan llegado más mensajes. Default: sin corte.
+  before?: string;
 };
 
 // Normaliza para comparar textos (espacios y mayúsculas no distinguen un eco de un
@@ -83,10 +87,12 @@ export async function fetchLeadHistory(
   try {
     // Traemos de más para compensar los excluidos del batch actual.
     // deno-lint-ignore no-explicit-any
-    const { data, error } = await (supabase as any)
+    let q = (supabase as any)
       .from("messages")
       .select(HISTORY_SELECT)
-      .eq("lead_id", leadId)
+      .eq("lead_id", leadId);
+    if (opts.before) q = q.lt("created_at", opts.before);
+    const { data, error } = await q
       .order("created_at", { ascending: false })
       .limit(maxMessages + exclude.size);
     if (error || !data) return "";
@@ -123,12 +129,14 @@ export async function fetchLeadHistory(
     if (oldest) {
       try {
         // deno-lint-ignore no-explicit-any
-        const { data: dd } = await (supabase as any)
+        let dq = (supabase as any)
           .from("drafts")
           .select("id, body, edited_body, status, sent_at, created_at, message_id, messages!drafts_message_id_fkey!inner(lead_id)")
           .eq("messages.lead_id", leadId)
           .in("status", ["sent", "auto_sent"])
-          .gte("sent_at", oldest)
+          .gte("sent_at", oldest);
+        if (opts.before) dq = dq.lt("sent_at", opts.before);
+        const { data: dd } = await dq
           .order("sent_at", { ascending: true })
           .limit(maxMessages);
         for (const d of (dd ?? []) as (NonNullable<HistoryRow["draft"]> & { message_id: string })[]) {

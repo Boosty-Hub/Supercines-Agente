@@ -22,6 +22,7 @@ import {
   buildGraderContext,
   type EvidenceReference,
   graderReferences,
+  HISTORY_LIMITS,
   LEAD_BATCH_LIMITS,
   type VoiceReference,
   VOICE_REF_LIMITS,
@@ -30,6 +31,7 @@ import { fetchSessionEvidence, type AgentEvidence, type SessionEventsClient } fr
 import { errorAttemptsOf, shouldEvaluate, type ExistingOutcome } from "../_shared/outcome-retry.ts";
 import { GRADER_PASS_FAIL_SCHEMA, GRADER_SCORE_SCHEMA } from "../_shared/llm-schemas.ts";
 import { draftText } from "../_shared/draft-text.ts";
+import { fetchLeadHistory } from "../_shared/history.ts";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
@@ -151,6 +153,33 @@ async function loadLeadBatch(draftId: string): Promise<string[]> {
 }
 
 /**
+ * Conversación previa a la respuesta del draft (graderReferences → "history"): turnos
+ * saneados anteriores al primer mensaje de su lote, sin el lote mismo. Fail-soft como
+ * fetchLeadHistory: "" = sin historial (el prompt lo dice).
+ */
+async function loadPriorHistory(draft: DraftWithContext): Promise<string> {
+  const leadId = draft.messages?.lead_id;
+  if (typeof leadId !== "string" || !leadId) return "";
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id, created_at")
+    .eq("answered_by_draft_id", draft.id)
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.warn("evaluate-outcomes: lote para el historial no disponible (fail-soft):", error.message);
+    return "";
+  }
+  const batch = data ?? [];
+  const before = (batch[0]?.created_at as string | undefined) ?? undefined;
+  return await fetchLeadHistory(supabase, leadId, {
+    before,
+    excludeMessageIds: batch.map((m) => m.id as string),
+    maxMessages: HISTORY_LIMITS.messages,
+    truncateChars: HISTORY_LIMITS.turnChars,
+  });
+}
+
+/**
  * Evidencia de la sesión del agente para los graders que verifican hechos. Sin
  * session_id → null (el prompt lo dice). Si la API de Anthropic falla, LANZA: el catch
  * de evaluateDraft deja un ERROR reintentable (nunca se evalúa «sin KB» por un corte).
@@ -171,7 +200,7 @@ async function runLlmJudge(
   draft: DraftWithContext,
   anthropic: Anthropic,
   model: string,
-  refs: { voice: VoiceReference | null; evidence: EvidenceReference | null; leadTexts: string[] },
+  refs: { voice: VoiceReference | null; evidence: EvidenceReference | null; history: string | null; leadTexts: string[] },
 ): Promise<{ score: number | null; passed: boolean | null; reasoning: string; __usage?: Anthropic.Usage }> {
   const msg = draft.messages;
   const verticalSlug = msg?.verticals?.slug ?? "(desconocida)";
@@ -189,6 +218,7 @@ async function runLlmJudge(
     agentText: responseText,
     voiceReference: refs.voice,
     evidence: refs.evidence,
+    history: refs.history,
   });
 
   const isPassFail = grader.scale === "pass_fail";
@@ -342,6 +372,7 @@ async function evaluateDraft(
   // Por draft, perezoso: solo si algún grader pendiente lo usa (y una sola vez).
   let batch: Promise<string[]> | null = null;
   let session: Promise<AgentEvidence | null> | null = null;
+  let prior: Promise<string> | null = null;
 
   for (const grader of graders) {
     // Si ya existe, skip — excepto lead_replied (mutable) y las filas de ERROR, que se
@@ -369,6 +400,7 @@ async function evaluateDraft(
         result = await runLlmJudge(grader, draft, anthropic, graderModel, {
           voice: needs.has("voice") ? operator : null,
           evidence,
+          history: needs.has("history") ? await (prior ??= loadPriorHistory(draft)) : null,
           leadTexts: await (batch ??= loadLeadBatch(draft.id)),
         });
       } else {

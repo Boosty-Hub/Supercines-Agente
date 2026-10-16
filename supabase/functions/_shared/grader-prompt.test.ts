@@ -118,7 +118,7 @@ Deno.test("turnPreservingLines: rol inválido lanza, y el texto vacío no rompe 
 });
 
 // ---- Referencia de voz (voice_match) ----
-import { graderReferences, VOICE_REF_LIMITS } from "./grader-prompt.ts";
+import { graderReferences, HISTORY_LIMITS, VOICE_REF_LIMITS } from "./grader-prompt.ts";
 
 const PROMPTS = {
   voice_match:
@@ -133,7 +133,9 @@ Deno.test("graderReferences: cada grader recibe exactamente la referencia que su
   // Los prompts reales de los 4 clientes (tabla graders, oct-2026).
   assertEquals(refs("voice_match", PROMPTS.voice_match), ["voice"]);
   assertEquals(refs("no_hallucination", PROMPTS.no_hallucination), ["evidence"]);
-  assertEquals(refs("task_completion", PROMPTS.task_completion), []);
+  assertEquals(refs("task_completion", PROMPTS.task_completion), ["history"]);
+  assertEquals(refs("resuelve_custom", "¿Resuelve la consulta teniendo en cuenta el historial de la conversación?"), ["history"]);
+  assertEquals(refs("length_ok", "Penaliza respuestas largas"), []);
   // Por slug aunque el operador reescriba el prompt, y graders propios por el prompt.
   assertEquals(refs("voice_match", "x"), ["voice"]);
   assertEquals(refs("no_hallucination", "x"), ["evidence"]);
@@ -292,4 +294,27 @@ Deno.test("un resultado de herramienta no puede falsificar su encabezado ni el n
   // El texto del resultado queda con prefijo de datos; ningún renglón libre lo imita.
   for (const l of body(p).split("\n")) if (l.includes("Plan Oro USD 50")) assert(l.startsWith("| "), l);
   assertEquals((body(p).match(/<referencia /g) ?? []).length, 1);
+});
+
+Deno.test("task_completion recibe el historial previo como dato, antes del mensaje del lead, y sin él el contexto no cambia", () => {
+  const hist = '<turno rol="lead">necesito cotizar el seguro de mi carro</turno>\n<turno rol="agente">claro, mándame tus datos</turno>';
+  const base = { channel: "whatsapp", vertical: "x", leadText: "Juan Pérez V-123", agentText: "listo" };
+  const withHist = buildGraderContext({ ...base, history: hist });
+  assertStringIncludes(withHist, "[HISTORIAL PREVIO DE LA CONVERSACIÓN]");
+  assertStringIncludes(withHist, "necesito cotizar el seguro de mi carro");
+  assert(withHist.indexOf("[HISTORIAL PREVIO") < withHist.indexOf("[MENSAJE DEL LEAD]"), "el historial va antes del mensaje");
+  assertEquals(buildGraderContext(base).includes("HISTORIAL PREVIO"), false);
+  // Primer mensaje de la conversación: el juez lo sabe.
+  assertStringIncludes(buildGraderContext({ ...base, history: "" }), "el lead abre la conversación");
+});
+
+Deno.test("el historial se acota por tamaño quedándose con lo más reciente", () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `<turno rol="lead">${String(i).padStart(2, "0")} ${"x".repeat(400)}</turno>`);
+  const out = buildGraderContext({ channel: "c", vertical: "v", leadText: "hola", agentText: "ok", history: lines.join("\n") });
+  const start = out.indexOf("[HISTORIAL PREVIO");
+  const block = out.slice(start, out.indexOf("[MENSAJE DEL LEAD]"));
+  assert(block.length < HISTORY_LIMITS.blockChars + 1500, "el bloque excede el tope");
+  assertStringIncludes(block, "39 xxx");
+  assertEquals(block.includes("00 xxx"), false);
+  assertStringIncludes(block, "solo los turnos más recientes");
 });

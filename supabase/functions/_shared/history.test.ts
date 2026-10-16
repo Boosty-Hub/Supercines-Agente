@@ -133,3 +133,16 @@ Deno.test("historial: si la consulta de drafts falla, el historial sigue siendo 
   } } as never;
   assertEquals((await fetchLeadHistory(sb, "lead-1")).split("\n").length, 1);
 });
+
+Deno.test("historial: before acota mensajes y drafts a lo anterior a ese instante", async () => {
+  const calls: string[] = [];
+  const chain: Record<string, unknown> = {
+    select: () => chain, eq: () => chain, in: () => chain, gte: () => chain, order: () => chain,
+    lt: (col: string, v: string) => { calls.push(`${col}<${v}`); return chain; },
+    limit: () => Promise.resolve({ data: [row("m1", "inbound", "hola")], error: null }),
+  };
+  const h = await fetchLeadHistory({ from: () => chain } as never, "lead-1", { before: "2026-10-01T09:00:00Z" });
+  assert(h.includes("hola"));
+  assertEquals(calls.includes("created_at<2026-10-01T09:00:00Z"), true);
+  assertEquals(calls.includes("sent_at<2026-10-01T09:00:00Z"), true);
+});

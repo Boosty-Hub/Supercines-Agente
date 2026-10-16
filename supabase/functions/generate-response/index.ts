@@ -43,7 +43,7 @@ import { LLM_PROFILES, textOf } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { evaluateClaim } from "../_shared/claim-batch.ts";
 import { crmValueLeak, outboundLeak } from "../_shared/outbound.ts";
-import { extractResponseBlock, detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
+import { detectInternalLeak, leakCorrectionMessage } from "../_shared/response-guard.ts";
 import {
   AgentTranscript,
   decideAgentOutput,
@@ -1336,11 +1336,10 @@ async function driveSession(
         }
         break;
       }
-      leakReason = decision.ambiguous
-        ? "trae a la vez <respuesta> y <sin_respuesta>"
-        : !decision.wellFormed
-        ? "el bloque <respuesta>...</respuesta> vino malformado o ausente"
-        : leakOf(decision.text);
+      // Mismo parse para decidir y extraer (_shared/agent-output.ts): una respuesta
+      // solo existe si vino en UN bloque <respuesta> bien formado; todo lo demás es
+      // malformado y se reprocesa ofreciendo <sin_respuesta> cuando corresponde.
+      leakReason = decision.kind === "malformed" ? decision.reason : leakOf(decision.text);
       if (leakReason && leakAttempts < MAX_LEAK_RETRIES) {
         leakAttempts++;
         console.warn(
@@ -1351,7 +1350,12 @@ async function driveSession(
           events: [
             {
               type: "user.message",
-              content: [{ type: "text", text: leakCorrectionMessage(leakReason, { allowNoReply: !decision.wellFormed }) }],
+              content: [
+                {
+                  type: "text",
+                  text: leakCorrectionMessage(leakReason, { allowNoReply: decision.kind === "malformed" && decision.allowNoReply }),
+                },
+              ],
             },
           ],
         });
@@ -1367,39 +1371,42 @@ async function driveSession(
   }
 
   const responseText = transcript.text;
-  if (noReply) {
+  // La salida final se decide con el MISMO parser que el bucle (incluso si el stream
+  // cortó sin pasar por el idle). Nunca hay fallback al texto crudo: el texto de una
+  // respuesta sale de adentro de un bloque <respuesta>; un rescate de un bloque mal
+  // cerrado queda wellFormed=false y el llamador fuerza revisión humana.
+  const finalDecision = noReply ? null : decideAgentOutput(responseText);
+  if (noReply || finalDecision?.kind === "no_reply") {
     return {
       responseText: "",
       rawResponseText: responseText.trim(),
       leak: { attempts: leakAttempts, reason: null, wellFormed: true },
-      noReply,
+      noReply: noReply ?? { reason: (finalDecision as { reason: string }).reason },
       toolCalls,
       durationMs: Date.now() - start,
       sessionId: session.id,
     };
   }
-
-  // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>. NO hay
-  // fallback al texto crudo (filtró razonamiento interno al cliente 171 veces en
-  // producción): si el bloque no cierra bien, extractResponseBlock marca
-  // wellFormed=false y el llamador está obligado a forzar revisión humana en vez
-  // de auto-enviar.
-  const extractedFinal = extractResponseBlock(responseText);
-  const clean = extractedFinal.text;
-  if (!extractedFinal.wellFormed) {
-    leakReason = leakReason ?? "el bloque <respuesta>...</respuesta> vino malformado o ausente";
+  const wellFormed = finalDecision?.kind === "reply";
+  const clean = finalDecision?.kind === "reply"
+    ? finalDecision.text
+    : finalDecision?.kind === "malformed"
+    ? finalDecision.rescue ?? ""
+    : "";
+  if (finalDecision?.kind === "malformed") {
+    leakReason = leakReason ?? finalDecision.reason;
     console.error(
-      `generate-response: VERIFICADOR fuga — bloque malformado tras ${leakAttempts} reintento(s) (draft ${opts.draftId ?? "?"}) → NO se auto-envía`
+      `generate-response: VERIFICADOR fuga — salida malformada tras ${leakAttempts} reintento(s) (draft ${opts.draftId ?? "?"}): ${finalDecision.reason} → NO se auto-envía`
     );
   }
-  // Chequeo final sobre el texto que efectivamente se devuelve, por si el turno
-  // que rompió el loop (p. ej. session.status_terminated) no pasó por el de arriba.
-  leakReason = leakReason ?? leakOf(clean);
+  // Chequeo final sobre el texto que efectivamente se devuelve (y que publish-to-kommo
+  // vuelve a verificar con outbound.ts antes de enviar).
+  leakReason = leakReason ?? (clean ? leakOf(clean) : null);
 
   return {
     responseText: clean,
     rawResponseText: responseText.trim(),
-    leak: { attempts: leakAttempts, reason: leakReason, wellFormed: extractedFinal.wellFormed },
+    leak: { attempts: leakAttempts, reason: leakReason, wellFormed },
     noReply: null,
     toolCalls,
     durationMs: Date.now() - start,
@@ -1789,7 +1796,7 @@ Deno.serve(async (req: Request) => {
 
       if (!outcome.responseText) {
         throw new AgentSessionError(
-          "agent devolvió respuesta vacía (sin texto ni <sin_respuesta> tras pedirle una decisión)",
+          `agent devolvió respuesta vacía: ${outcome.leak.reason ?? "sin texto ni <sin_respuesta>"} (tras ${outcome.leak.attempts} reintento(s) en sesión)`,
           outcome.sessionId,
         );
       }

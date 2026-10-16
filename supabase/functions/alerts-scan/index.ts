@@ -22,6 +22,7 @@ import { truncateGraphemes } from "../_shared/text-safe.ts";
 import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
 import { criticalKinds, shouldSweep } from "../_shared/alert-kinds.ts";
 import { type AlertInsert, insertAlert } from "../_shared/alerts.ts";
+import { detectRegressions, type OutcomeSample } from "../_shared/outcomes-regression.ts";
 import { buildWebhookPayload, isMissingClaimRpc, type WebhookAlert } from "../_shared/alert-webhook.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
@@ -223,61 +224,45 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
 }
 
 async function detectOutcomesRegression(): Promise<AlertInput[]> {
-  // Comparar últimas 24h vs 7 días previos por grader (solo si hay ≥5 muestras en cada ventana)
+  // Últimas 24 h vs 7 días previos por grader Y POR JUEZ (_shared/outcomes-regression.ts):
+  // un cambio de GRADER_MODEL mueve la escala sin que el agente cambie, así que solo se
+  // compara contra outcomes del mismo modelo de juez (≥5 muestras en cada ventana).
   const now = Date.now();
   const since24 = new Date(now - 24 * 3600 * 1000).toISOString();
   const since7d = new Date(now - 7 * 24 * 3600 * 1000).toISOString();
 
   const { data: recent } = await supabase
     .from("outcomes")
-    .select("grader_id, score, graders(slug)")
+    .select("grader_id, score, metadata, graders(slug, source)")
     .gte("created_at", since24)
     .not("score", "is", null);
   const { data: baseline } = await supabase
     .from("outcomes")
-    .select("grader_id, score")
+    .select("grader_id, score, metadata, graders(slug, source)")
     .gte("created_at", since7d)
     .lt("created_at", since24)
     .not("score", "is", null);
 
-  type Agg = { sum: number; count: number; slug: string };
-  const recentAgg = new Map<string, Agg>();
-  const baseAgg = new Map<string, Agg>();
-  for (const r of recent ?? []) {
-    // deno-lint-ignore no-explicit-any
-    const slug = (r as any).graders?.slug ?? "?";
-    const cur = recentAgg.get(r.grader_id as string) ?? { sum: 0, count: 0, slug };
-    cur.sum += Number(r.score);
-    cur.count += 1;
-    recentAgg.set(r.grader_id as string, cur);
-  }
-  for (const r of baseline ?? []) {
-    const cur = baseAgg.get(r.grader_id as string) ?? { sum: 0, count: 0, slug: "?" };
-    cur.sum += Number(r.score);
-    cur.count += 1;
-    baseAgg.set(r.grader_id as string, cur);
-  }
+  // deno-lint-ignore no-explicit-any
+  const toSample = (r: any): OutcomeSample => ({
+    grader_id: r.grader_id,
+    score: r.score,
+    slug: r.graders?.slug ?? null,
+    source: r.graders?.source ?? null,
+    metadata: r.metadata,
+  });
 
   const alerts: AlertInput[] = [];
-  for (const [graderId, recentVal] of recentAgg.entries()) {
-    if (recentVal.count < 5) continue;
-    const baseVal = baseAgg.get(graderId);
-    if (!baseVal || baseVal.count < 5) continue;
-    const recentAvg = recentVal.sum / recentVal.count;
-    const baseAvg = baseVal.sum / baseVal.count;
-    if (recentAvg < 0.7 * baseAvg) {
-      // Una alerta por grader por día (usamos ref_id = hash determinístico día+grader)
-      const dayKey = new Date().toISOString().slice(0, 10);
-      // Truco: simulamos un UUID determinístico usando un hash simple, pero como
-      // alerts.ref_id es uuid, en lugar pasamos null y dedupeamos por metadata.
-      alerts.push({
-        kind: "outcomes_regression",
-        severity: "warning",
-        title: `Regresión en grader ${recentVal.slug}`,
-        description: `Score 24h ${recentAvg.toFixed(3)} (n=${recentVal.count}) vs 7d prev ${baseAvg.toFixed(3)} (n=${baseVal.count}). Caída ${Math.round((1 - recentAvg / baseAvg) * 100)}%.`,
-        metadata: { grader_id: graderId, day: dayKey, recent_avg: recentAvg, base_avg: baseAvg },
-      });
-    }
+  for (const reg of detectRegressions((recent ?? []).map(toSample), (baseline ?? []).map(toSample))) {
+    // Una alerta por grader por día (dedupe por metadata: alerts.ref_id es uuid).
+    const dayKey = new Date().toISOString().slice(0, 10);
+    alerts.push({
+      kind: "outcomes_regression",
+      severity: "warning",
+      title: `Regresión en grader ${reg.slug}`,
+      description: `Score 24h ${reg.recentAvg.toFixed(3)} (n=${reg.recentCount}) vs 7d prev ${reg.baseAvg.toFixed(3)} (n=${reg.baseCount}), mismo juez (${reg.judge}). Caída ${Math.round((1 - reg.recentAvg / reg.baseAvg) * 100)}%.`,
+      metadata: { grader_id: reg.graderId, day: dayKey, recent_avg: reg.recentAvg, base_avg: reg.baseAvg, judge: reg.judge },
+    });
   }
 
   // Dedupe outcomes_regression por día+grader_id ya existente

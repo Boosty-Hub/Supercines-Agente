@@ -279,6 +279,9 @@ async function runAutomatic(
 }
 
 // ---------------- Evaluación principal ----------------
+function graderMetadata(grader: Grader, graderModel: string): Record<string, unknown> {
+  return grader.source === "llm_judge" ? { grader_model: graderModel } : {};
+}
 
 async function evaluateDraft(
   draft: DraftWithContext,
@@ -326,6 +329,9 @@ async function evaluateDraft(
           score: result.score,
           passed: result.passed,
           reasoning: result.reasoning,
+          // Modelo del juez: alerts-scan solo compara outcomes del MISMO juez (un cambio
+          // de modelo mueve la escala sin que el agente cambie).
+          metadata: graderMetadata(grader, graderModel),
         },
         { onConflict: "draft_id,grader_id" }
       );
@@ -360,7 +366,7 @@ async function evaluateDraft(
           score: null,
           passed: null,
           reasoning: `ERROR: ${msg}`,
-          metadata: { error: true, error_attempts: errorAttemptsOf(prev) + 1 },
+          metadata: { ...graderMetadata(grader, graderModel), error: true, error_attempts: errorAttemptsOf(prev) + 1 },
         },
         { onConflict: "draft_id,grader_id" }
       );

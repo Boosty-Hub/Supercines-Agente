@@ -18,7 +18,15 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
-import { buildGraderContext, graderNeedsVoiceReference, type VoiceReference, VOICE_REF_LIMITS } from "../_shared/grader-prompt.ts";
+import {
+  buildGraderContext,
+  type EvidenceReference,
+  graderReferences,
+  LEAD_BATCH_LIMITS,
+  type VoiceReference,
+  VOICE_REF_LIMITS,
+} from "../_shared/grader-prompt.ts";
+import { fetchSessionEvidence, type AgentEvidence, type SessionEventsClient } from "../_shared/grader-evidence.ts";
 import { errorAttemptsOf, shouldEvaluate, type ExistingOutcome } from "../_shared/outcome-retry.ts";
 import { GRADER_PASS_FAIL_SCHEMA, GRADER_SCORE_SCHEMA } from "../_shared/llm-schemas.ts";
 import { draftText } from "../_shared/draft-text.ts";
@@ -51,6 +59,7 @@ type DraftWithContext = {
   edited_body: string | null;
   sent_at: string | null;
   message_id: string;
+  agent_metadata: Record<string, unknown> | null;
   // deno-lint-ignore no-explicit-any
   messages: any;
 };
@@ -69,7 +78,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
     const { data, error } = await supabase
       .from("drafts")
       .select(
-        "id, body, edited_body, sent_at, message_id, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
+        "id, body, edited_body, sent_at, message_id, agent_metadata, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
       )
       .eq("id", draftId)
       .single();
@@ -81,7 +90,7 @@ async function getDraftsToEvaluate(draftId?: string): Promise<DraftWithContext[]
   const { data, error } = await supabase
     .from("drafts")
     .select(
-      "id, body, edited_body, sent_at, message_id, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
+      "id, body, edited_body, sent_at, message_id, agent_metadata, messages!drafts_message_id_fkey(content, source, lead_id, classification, verticals(slug))"
     )
     .in("status", ["auto_sent", "sent"])
     .gte("sent_at", cutoff)
@@ -102,11 +111,12 @@ async function getExistingOutcomes(draftId: string): Promise<Map<string, Existin
 }
 
 /**
- * Referencia de voz para los graders que la piden (voice_match): el SYSTEM_PROMPT del
- * operador (con su nombre sustituido) y algunos voice_samples. Una sola lectura por
- * invocación; fail-soft: sin referencia el grader sigue (y el prompt lo dice).
+ * Referencia del operador para los graders que la piden (graderReferences): el SYSTEM_PROMPT
+ * (con su nombre sustituido; voz para voice_match y datos del negocio para no_hallucination)
+ * y algunos voice_samples. Una sola lectura por invocación; fail-soft: sin referencia el
+ * grader sigue (y el prompt lo dice).
  */
-async function loadVoiceReference(cfg: ConfigReader): Promise<VoiceReference> {
+async function loadOperatorReference(cfg: ConfigReader): Promise<VoiceReference> {
   const operator = cfg.getOr("OPERATOR_NAME", "el operador");
   const systemPrompt = (cfg.get("SYSTEM_PROMPT") ?? "").replaceAll("{{OPERATOR_NAME}}", operator);
   let samples: string[] = [];
@@ -124,13 +134,44 @@ async function loadVoiceReference(cfg: ConfigReader): Promise<VoiceReference> {
   return { systemPrompt, samples };
 }
 
+/** Mensajes del lead que cubre el draft (su lote), en orden. Fail-soft: [] = usar draft.messages. */
+async function loadLeadBatch(draftId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("content, created_at")
+    .eq("answered_by_draft_id", draftId)
+    // Los ÚLTIMOS del lote (los que la respuesta contestó), luego en orden cronológico.
+    .order("created_at", { ascending: false })
+    .limit(LEAD_BATCH_LIMITS.messages);
+  if (error) {
+    console.warn("evaluate-outcomes: lote del draft no disponible (fail-soft):", error.message);
+    return [];
+  }
+  return (data ?? []).reverse().map((r) => String(r.content ?? "")).filter((x) => x.trim());
+}
+
+/**
+ * Evidencia de la sesión del agente para los graders que verifican hechos. Sin
+ * session_id → null (el prompt lo dice). Si la API de Anthropic falla, LANZA: el catch
+ * de evaluateDraft deja un ERROR reintentable (nunca se evalúa «sin KB» por un corte).
+ */
+async function loadSessionEvidence(draft: DraftWithContext, anthropic: Anthropic): Promise<AgentEvidence | null> {
+  const sid = draft.agent_metadata?.session_id;
+  if (typeof sid !== "string" || !sid) return null;
+  try {
+    return await fetchSessionEvidence(anthropic as unknown as SessionEventsClient, sid);
+  } catch (err) {
+    throw new Error(`evidencia de la sesión ${sid}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ---------------- LLM-judge ----------------
 async function runLlmJudge(
   grader: Grader,
   draft: DraftWithContext,
   anthropic: Anthropic,
   model: string,
-  voiceReference: VoiceReference | null,
+  refs: { voice: VoiceReference | null; evidence: EvidenceReference | null; leadTexts: string[] },
 ): Promise<{ score: number | null; passed: boolean | null; reasoning: string; __usage?: Anthropic.Usage }> {
   const msg = draft.messages;
   const verticalSlug = msg?.verticals?.slug ?? "(desconocida)";
@@ -142,9 +183,12 @@ async function runLlmJudge(
   const userContext = buildGraderContext({
     channel,
     vertical: verticalSlug,
-    leadText: msg?.content ?? "",
+    // El lote completo que cubre la respuesta (antes solo draft.message_id: con 3 mensajes
+    // cortados el juez veía uno solo y no podía saber qué se había preguntado).
+    leadText: refs.leadTexts.length > 0 ? refs.leadTexts : (msg?.content ?? ""),
     agentText: responseText,
-    voiceReference: graderNeedsVoiceReference(grader) ? voiceReference : null,
+    voiceReference: refs.voice,
+    evidence: refs.evidence,
   });
 
   const isPassFail = grader.scale === "pass_fail";
@@ -289,12 +333,15 @@ async function evaluateDraft(
   anthropic: Anthropic,
   cfg: ConfigReader,
   llmBlocked: boolean,
-  voiceReference: () => Promise<VoiceReference>,
+  operatorReference: () => Promise<VoiceReference>,
 ): Promise<number> {
   // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku 5.5).
   const graderModel = modelFor(cfg, "GRADER_MODEL");
   const existing = await getExistingOutcomes(draft.id);
   let count = 0;
+  // Por draft, perezoso: solo si algún grader pendiente lo usa (y una sola vez).
+  let batch: Promise<string[]> | null = null;
+  let session: Promise<AgentEvidence | null> | null = null;
 
   for (const grader of graders) {
     // Si ya existe, skip — excepto lead_replied (mutable) y las filas de ERROR, que se
@@ -307,16 +354,26 @@ async function evaluateDraft(
     if (llmBlocked && grader.source === "llm_judge") continue;
 
     try {
-      const result =
-        grader.source === "llm_judge"
-          ? await runLlmJudge(
-            grader,
-            draft,
-            anthropic,
-            graderModel,
-            graderNeedsVoiceReference(grader) ? await voiceReference() : null,
-          )
-          : await runAutomatic(grader, draft);
+      let result: { score: number | null; passed: boolean | null; reasoning: string; __usage?: Anthropic.Usage };
+      if (grader.source === "llm_judge") {
+        const needs = graderReferences(grader);
+        const operator = needs.size > 0 ? await operatorReference() : null;
+        const evidence: EvidenceReference | null = needs.has("evidence")
+          ? {
+            systemPrompt: operator?.systemPrompt ?? "",
+            session: await (session ??= loadSessionEvidence(draft, anthropic)),
+            // Se evalúa lo ENVIADO (draftText); si una persona lo corrigió, el juez lo sabe.
+            editedByHuman: draftText(draft) !== draft.body,
+          }
+          : null;
+        result = await runLlmJudge(grader, draft, anthropic, graderModel, {
+          voice: needs.has("voice") ? operator : null,
+          evidence,
+          leadTexts: await (batch ??= loadLeadBatch(draft.id)),
+        });
+      } else {
+        result = await runAutomatic(grader, draft);
+      }
 
       // null score = todavía no evaluable; skip insert
       if (result.score === null) continue;
@@ -414,9 +471,9 @@ Deno.serve(async (req: Request) => {
     const drafts = await getDraftsToEvaluate(body.draft_id);
     let totalEvaluated = 0;
     let voiceRef: Promise<VoiceReference> | null = null;
-    const voiceReference = () => (voiceRef ??= loadVoiceReference(cfg));
+    const operatorReference = () => (voiceRef ??= loadOperatorReference(cfg));
     for (const d of drafts) {
-      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg, llmBlocked, voiceReference);
+      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg, llmBlocked, operatorReference);
     }
     return new Response(
       JSON.stringify({

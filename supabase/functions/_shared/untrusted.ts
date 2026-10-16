@@ -106,17 +106,47 @@ function preservedLines(text: string, maxChars?: number): string {
   return lines.map((l) => (l ? `| ${l}` : "|")).join("\n");
 }
 
-export type ReferenceKind = "system_prompt" | "voice_sample";
-const REFERENCE_KINDS: ReadonlySet<string> = new Set(["system_prompt", "voice_sample"]);
+export type ReferenceKind =
+  | "system_prompt"
+  | "voice_sample"
+  | "contexto_agente"
+  | "consulta_herramienta"
+  | "resultado_herramienta";
+const REFERENCE_KINDS: ReadonlySet<string> = new Set([
+  "system_prompt",
+  "voice_sample",
+  "contexto_agente",
+  "consulta_herramienta",
+  "resultado_herramienta",
+]);
 
 /**
- * Material de REFERENCIA para un evaluador (p. ej. la voz del operador para el grader
- * voice_match): mismo saneado que turnPreservingLines, en un elemento propio que nada
- * de adentro puede cerrar. Es material bajo EVALUATION_NOTICE, nunca instrucciones.
+ * Nombre de herramienta como valor de atributo: solo un identificador (letras ASCII,
+ * dígitos, _ . : -, hasta 64). Cualquier otra cosa (lo eligió el modelo y podría traer
+ * comillas o texto de terceros) se reemplaza por "otra": así un resultado de herramienta
+ * no puede falsificar su encabezado ni cerrar el atributo.
  */
-export function referencePreservingLines(kind: ReferenceKind, text: string, opts: { maxChars?: number } = {}): string {
+export function safeToolName(name: unknown): string {
+  const s = String(name ?? "");
+  return /^[A-Za-z0-9_.:-]{1,64}$/.test(s) ? s : "otra";
+}
+
+/**
+ * Material de REFERENCIA para un evaluador (la voz del operador para voice_match; la
+ * evidencia de la sesión del agente para no_hallucination: contexto recibido, consultas y
+ * resultados de herramientas, que pueden traer texto de terceros): mismo saneado que
+ * turnPreservingLines, en un elemento propio que nada de adentro puede cerrar. Es material
+ * bajo EVALUATION_NOTICE, nunca instrucciones. `herramienta` va como atributo fijado por el
+ * sistema (safeToolName), fuera del texto: un renglón del resultado no puede imitarlo.
+ */
+export function referencePreservingLines(
+  kind: ReferenceKind,
+  text: string,
+  opts: { maxChars?: number; herramienta?: string } = {},
+): string {
   if (!REFERENCE_KINDS.has(kind)) throw new Error(`referencia inválida: ${String(kind)}`);
-  return `<referencia tipo="${kind}">\n${preservedLines(text, opts.maxChars)}\n</referencia>`;
+  const attr = opts.herramienta !== undefined ? ` herramienta="${safeToolName(opts.herramienta)}"` : "";
+  return `<referencia tipo="${kind}"${attr}>\n${preservedLines(text, opts.maxChars)}\n</referencia>`;
 }
 
 /** Varios turnos, uno por línea, en el orden dado. */

@@ -18,7 +18,7 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { jsonOf, LLM_PROFILES } from "../_shared/llm.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
-import { buildGraderContext } from "../_shared/grader-prompt.ts";
+import { buildGraderContext, graderNeedsVoiceReference, type VoiceReference, VOICE_REF_LIMITS } from "../_shared/grader-prompt.ts";
 import { errorAttemptsOf, shouldEvaluate, type ExistingOutcome } from "../_shared/outcome-retry.ts";
 import { GRADER_PASS_FAIL_SCHEMA, GRADER_SCORE_SCHEMA } from "../_shared/llm-schemas.ts";
 import { draftText } from "../_shared/draft-text.ts";
@@ -101,12 +101,36 @@ async function getExistingOutcomes(draftId: string): Promise<Map<string, Existin
   );
 }
 
+/**
+ * Referencia de voz para los graders que la piden (voice_match): el SYSTEM_PROMPT del
+ * operador (con su nombre sustituido) y algunos voice_samples. Una sola lectura por
+ * invocación; fail-soft: sin referencia el grader sigue (y el prompt lo dice).
+ */
+async function loadVoiceReference(cfg: ConfigReader): Promise<VoiceReference> {
+  const operator = cfg.getOr("OPERATOR_NAME", "el operador");
+  const systemPrompt = (cfg.get("SYSTEM_PROMPT") ?? "").replaceAll("{{OPERATOR_NAME}}", operator);
+  let samples: string[] = [];
+  try {
+    const { data, error } = await supabase
+      .from("voice_samples")
+      .select("content")
+      .order("created_at", { ascending: false })
+      .limit(VOICE_REF_LIMITS.samples);
+    if (error) throw error;
+    samples = (data ?? []).map((r) => String(r.content ?? "")).filter((x) => x.trim());
+  } catch (err) {
+    console.warn("evaluate-outcomes: voice_samples no disponible (fail-soft):", err instanceof Error ? err.message : String(err));
+  }
+  return { systemPrompt, samples };
+}
+
 // ---------------- LLM-judge ----------------
 async function runLlmJudge(
   grader: Grader,
   draft: DraftWithContext,
   anthropic: Anthropic,
-  model: string
+  model: string,
+  voiceReference: VoiceReference | null,
 ): Promise<{ score: number | null; passed: boolean | null; reasoning: string; __usage?: Anthropic.Usage }> {
   const msg = draft.messages;
   const verticalSlug = msg?.verticals?.slug ?? "(desconocida)";
@@ -120,6 +144,7 @@ async function runLlmJudge(
     vertical: verticalSlug,
     leadText: msg?.content ?? "",
     agentText: responseText,
+    voiceReference: graderNeedsVoiceReference(grader) ? voiceReference : null,
   });
 
   const isPassFail = grader.scale === "pass_fail";
@@ -261,6 +286,7 @@ async function evaluateDraft(
   anthropic: Anthropic,
   cfg: ConfigReader,
   llmBlocked: boolean,
+  voiceReference: () => Promise<VoiceReference>,
 ): Promise<number> {
   // Modelo de los graders: editable desde /consumo (DB-first, fallback Haiku 5.5).
   const graderModel = modelFor(cfg, "GRADER_MODEL");
@@ -280,7 +306,13 @@ async function evaluateDraft(
     try {
       const result =
         grader.source === "llm_judge"
-          ? await runLlmJudge(grader, draft, anthropic, graderModel)
+          ? await runLlmJudge(
+            grader,
+            draft,
+            anthropic,
+            graderModel,
+            graderNeedsVoiceReference(grader) ? await voiceReference() : null,
+          )
           : await runAutomatic(grader, draft);
 
       // null score = todavía no evaluable; skip insert
@@ -375,8 +407,10 @@ Deno.serve(async (req: Request) => {
     const graders = await getEnabledGraders();
     const drafts = await getDraftsToEvaluate(body.draft_id);
     let totalEvaluated = 0;
+    let voiceRef: Promise<VoiceReference> | null = null;
+    const voiceReference = () => (voiceRef ??= loadVoiceReference(cfg));
     for (const d of drafts) {
-      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg, llmBlocked);
+      totalEvaluated += await evaluateDraft(d, graders, anthropic, cfg, llmBlocked, voiceReference);
     }
     return new Response(
       JSON.stringify({

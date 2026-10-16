@@ -91,14 +91,32 @@ export function turnPreservingLines(
     const ms = new Date(opts.at).getTime();
     if (Number.isFinite(ms)) t = ` t="${new Date(ms).toISOString().slice(0, 16)}"`;
   }
+  return `<turno rol="${rol}"${t}>\n${preservedLines(text, opts.maxChars)}\n</turno>`;
+}
+
+/** Cuerpo saneado renglón por renglón, con prefijo "| " (ver turnPreservingLines). */
+function preservedLines(text: string, maxChars?: number): string {
   let raw = stripLoneSurrogates(String(text ?? "")).normalize("NFKC").replace(SALTOS, "\n");
-  if (opts.maxChars !== undefined && raw.length > opts.maxChars) {
-    raw = truncateGraphemes(raw, opts.maxChars, { ellipsis: "…" });
+  if (maxChars !== undefined && raw.length > maxChars) {
+    raw = truncateGraphemes(raw, maxChars, { ellipsis: "…" });
   }
   const lines = raw.split("\n").map((l) => sanitizeUntrusted(l.trim()));
   while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   while (lines.length > 0 && lines[0] === "") lines.shift();
-  return `<turno rol="${rol}"${t}>\n${lines.map((l) => (l ? `| ${l}` : "|")).join("\n")}\n</turno>`;
+  return lines.map((l) => (l ? `| ${l}` : "|")).join("\n");
+}
+
+export type ReferenceKind = "system_prompt" | "voice_sample";
+const REFERENCE_KINDS: ReadonlySet<string> = new Set(["system_prompt", "voice_sample"]);
+
+/**
+ * Material de REFERENCIA para un evaluador (p. ej. la voz del operador para el grader
+ * voice_match): mismo saneado que turnPreservingLines, en un elemento propio que nada
+ * de adentro puede cerrar. Es material bajo EVALUATION_NOTICE, nunca instrucciones.
+ */
+export function referencePreservingLines(kind: ReferenceKind, text: string, opts: { maxChars?: number } = {}): string {
+  if (!REFERENCE_KINDS.has(kind)) throw new Error(`referencia inválida: ${String(kind)}`);
+  return `<referencia tipo="${kind}">\n${preservedLines(text, opts.maxChars)}\n</referencia>`;
 }
 
 /** Varios turnos, uno por línea, en el orden dado. */

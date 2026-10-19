@@ -24,9 +24,11 @@ test("clearNoReplyReview filtra por esos ids Y por el lote del draft (nunca otro
     };
   }
   (chain as { then: unknown }).then = (r: (v: unknown) => void) => r({ error: null });
-  const supabase = { from: (t: string) => (calls.push(["from", t]), chain) };
-  // deno-lint-ignore no-explicit-any
-  await clearNoReplyReview(supabase as any, "draft-1", { no_reply: true, no_reply_marked_ids: [ID] });
+  // Doble mínimo del cliente: solo la cadena que usa clearNoReplyReview.
+  const supabase = { from: (t: string) => (calls.push(["from", t]), chain) } as unknown as Parameters<
+    typeof clearNoReplyReview
+  >[0];
+  await clearNoReplyReview(supabase, "draft-1", { no_reply: true, no_reply_marked_ids: [ID] });
   assert.deepEqual(calls, [
     ["from", "messages"],
     ["update", [{ requires_human_review: false }]],
@@ -35,8 +37,7 @@ test("clearNoReplyReview filtra por esos ids Y por el lote del draft (nunca otro
     ["eq", ["requires_human_review", true]],
   ]);
   calls.length = 0;
-  // deno-lint-ignore no-explicit-any
-  await clearNoReplyReview(supabase as any, "draft-1", { no_reply: true });
+  await clearNoReplyReview(supabase, "draft-1", { no_reply: true });
   assert.deepEqual(calls, [], "sin ids marcados no toca nada");
 });
 

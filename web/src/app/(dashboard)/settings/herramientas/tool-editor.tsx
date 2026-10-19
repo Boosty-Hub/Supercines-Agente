@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { HTTP_TOOL_DATA_KEYS, HTTP_TOOL_KOMMO_SECRET, secretKeysInHeaders } from "@/lib/http-tool-keys";
-import { Modal, Button, ConfirmDialog, Badge, SegmentedControl, type SegmentedItem } from "@/components/ui";
+import { Modal, Button, ConfirmDialog, Badge } from "@/components/ui";
 
 // El tipo vivía en la vieja tools/page.tsx (hoy un redirect a Ajustes), así que
 // pasa a vivir junto al editor que lo usa.

@@ -159,7 +159,6 @@ export function checkResolveHash(expected: string | null | undefined, liveSystem
 }
 
 const sameText = (a: string, b: string) => normalize(a) === normalize(b);
-const hasChange = (d: DiffLine[]) => d.some((l) => l.type !== "same");
 
 export function detectPromptConflict(input: {
   /** system del agente vivo (retrieveAgent). */

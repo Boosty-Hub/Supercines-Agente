@@ -5,7 +5,7 @@
 
 export type Tables = Record<string, unknown>;
 export type FakeMode =
-  | { kind: "ok"; tables: Tables; delayMs?: number }
+  | { kind: "ok"; tables: Tables; delayMs?: number; insertError?: (table: string, row: any) => unknown }
   | { kind: "fail" }
   | { kind: "missing" }
   | { kind: "hang" };
@@ -45,6 +45,8 @@ export function fakeClient(initial: FakeMode) {
         maybeSingle: () => answer(t),
         then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => answer(t).then(res, rej),
         insert: (row: any) => {
+          const err = mode.kind === "ok" && mode.insertError ? mode.insertError(t, row) : null;
+          if (err) return Promise.resolve({ error: err });
           inserts.push({ table: t, row });
           return Promise.resolve({ error: null });
         },

@@ -23,6 +23,8 @@ import {
   verifyOutgoingDelivery,
   addLeadNote,
   addLeadTags,
+  fetchTalk,
+  KommoHttpError,
 } from "./kommo.ts";
 
 // Reemplaza globalThis.fetch durante `run()` y lo restaura después, incluso si
@@ -360,4 +362,82 @@ Deno.test("sanitizeKommoFieldValue: saca surrogates sueltos (alto/bajo, medio y 
     assertEquals(out, "hola");
     assertEquals(JSON.parse(JSON.stringify({ v: out })).v, "hola");
   }
+});
+
+// ---- fetchTalk (GET /api/v4/talks/{id}) ----
+
+Deno.test("fetchTalk: pide /api/v4/talks/{id} con Bearer y devuelve el JSON", async () => {
+  let seenUrl = "";
+  let seenAuth = "";
+  const r = await withFetchMock(
+    ((url: string, init?: RequestInit) => {
+      seenUrl = String(url);
+      seenAuth = (init?.headers as Record<string, string>).Authorization;
+      return Promise.resolve(new Response(JSON.stringify({ talk_id: 9001, entity_id: 42, entity_type: "lead" }), { status: 200 }));
+    }) as typeof fetch,
+    () => fetchTalk("acme.kommo.com", "tok", 9001),
+  );
+  assertEquals(seenUrl, "https://acme.kommo.com/api/v4/talks/9001");
+  assertEquals(seenAuth, "Bearer tok");
+  assertEquals(r, { talk_id: 9001, entity_id: 42, entity_type: "lead" });
+});
+
+Deno.test("fetchTalk: 404 y 204 = null (el talk no existe)", async () => {
+  for (const status of [404, 204]) {
+    const r = await withFetchMock(
+      (() => Promise.resolve(new Response(status === 204 ? null : "no", { status }))) as typeof fetch,
+      () => fetchTalk("acme.kommo.com", "tok", 1),
+    );
+    assertEquals(r, null);
+  }
+});
+
+Deno.test("fetchTalk: 429 espera y reintenta (mismo manejo que el resto de la API)", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const r = await withFetchMock(
+    (() => {
+      calls++;
+      return Promise.resolve(
+        calls === 1
+          ? new Response("slow", { status: 429, headers: { "retry-after": "2" } })
+          : new Response(JSON.stringify({ entity_id: 5 }), { status: 200 }),
+      );
+    }) as typeof fetch,
+    () => fetchTalk("acme.kommo.com", "tok", 1, (ms) => { waits.push(ms); return Promise.resolve(); }),
+  );
+  assertEquals(calls, 2);
+  assertEquals(waits, [2000]);
+  assertEquals(r, { entity_id: 5 });
+});
+
+Deno.test("fetchTalk: 500 lanza KommoHttpError; cuerpo que no es JSON = null", async () => {
+  let err: unknown;
+  try {
+    await withFetchMock(
+      (() => Promise.resolve(new Response("boom", { status: 500 }))) as typeof fetch,
+      () => fetchTalk("acme.kommo.com", "tok", 1),
+    );
+  } catch (e) {
+    err = e;
+  }
+  assertEquals(err instanceof KommoHttpError, true);
+  const r = await withFetchMock(
+    (() => Promise.resolve(new Response("<html>", { status: 200 }))) as typeof fetch,
+    () => fetchTalk("acme.kommo.com", "tok", 1),
+  );
+  assertEquals(r, null);
+});
+
+Deno.test("fetchTalk: pasa el AbortSignal al fetch (L4: el presupuesto de la fila corta la consulta)", async () => {
+  const ctrl = new AbortController();
+  let seen: AbortSignal | undefined;
+  await withFetchMock(
+    ((_url: string, init?: RequestInit) => {
+      seen = init?.signal ?? undefined;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as typeof fetch,
+    () => fetchTalk("acme.kommo.com", "tok", 1, undefined, ctrl.signal),
+  );
+  assertEquals(seen, ctrl.signal);
 });

@@ -57,6 +57,7 @@ import { getBudgetGate } from "../_shared/budget.ts";
 import { leadsStoreInstructions, MASTER_STORE_INSTRUCTIONS } from "../_shared/memory-instructions.ts";
 import { dreamsDigestBlock } from "../_shared/dreams-digest-block.ts";
 import { sanitizeUntrusted, turn, UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
+import { deferRefsForContact, LEAD_WAIT_DEFER_SECONDS, shouldDeferForWaitingRow } from "../_shared/lead-resolver.ts";
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -721,6 +722,40 @@ async function checkLeadThrottle(
   return { blocked: false };
 }
 
+// ¿Hay una fila de inbound_queue que espera el lead de este contacto (waiting_refs, 0092),
+// creada hace menos de LEAD_WAIT_DEFER_SECONDS? Fail-open: ante un error (p. ej. 0092 sin
+// aplicar) no se difiere nada.
+async function leadHasWaitingInbound(leadId: string, oldestUnansweredMs: number): Promise<boolean> {
+  // Tope duro desde el mensaje sin responder MÁS VIEJO del lead: filas nuevas en la cola no lo
+  // extienden (el webhook es público; un tercero no puede diferir indefinidamente a otro).
+  if (!shouldDeferForWaitingRow({ nowMs: Date.now(), oldestUnansweredMs, hasWaitingRow: true })) return false;
+  const { data: ld, error: ldErr } = await supabase
+    .from("leads")
+    .select("kommo_contact_id")
+    .eq("id", leadId)
+    .maybeSingle();
+  if (ldErr) return false;
+  const refs = deferRefsForContact(ld?.kommo_contact_id);
+  if (refs.length === 0) return false;
+  const since = new Date(Date.now() - LEAD_WAIT_DEFER_SECONDS * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("inbound_queue")
+    .select("id")
+    .in("status", ["pending", "processing"])
+    .contains("waiting_refs", refs)
+    .gte("created_at", since)
+    .limit(1);
+  if (error) {
+    console.warn("leadHasWaitingInbound:", error.message);
+    return false;
+  }
+  if (data && data.length > 0) {
+    console.log(`lead ${leadId}: espera un mensaje anterior sin lead todavía (cola ${data[0].id})`);
+    return true;
+  }
+  return false;
+}
+
 async function pickLeadBatch(
   messageId?: string,
   bypass = false,
@@ -869,6 +904,11 @@ async function pickLeadBatch(
       .maybeSingle();
     const lastTs = lastIn ? new Date(lastIn.created_at as string).getTime() : 0;
     if (now - lastTs < debounceMs) continue;
+    // Primer mensaje que entra tarde (0092): si el contacto del lead tiene una fila de la cola
+    // esperando que Kommo cree el lead, ese mensaje es ANTERIOR a los que vemos acá. Responder
+    // ya dejaría el primero para un draft aparte y fuera de orden: se espera (como el debounce)
+    // hasta que entre o hasta LEAD_WAIT_DEFER_SECONDS; después se responde igual.
+    if (await leadHasWaitingInbound(leadId, new Date(msgs[0].created_at as string).getTime())) continue;
     // Etapa ignorada: si el lead está en una etapa silenciada de Kommo, el
     // agente no atiende. Stage null = atiende (igual que el gate de follow-up).
     if (ignoredStageIds && ignoredStageIds.length > 0) {

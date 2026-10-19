@@ -52,6 +52,7 @@ export const PUBLIC_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "AUTO_UPDATE_ENABLED",
   "DREAMS_AUTO_ACTIVATE",
   "DREAMS_FREQUENCY",
+  "DREAMS_RESUMED_AT",
   "MONTHLY_BUDGET_USD",
   "BUDGET_SAFETY_MARGIN_PCT",
   "BUDGET_EXCLUDE_BEFORE",
@@ -112,7 +113,7 @@ export function configView<K extends string>(
 // `configuracion` escribe cualquier clave. `contenido` solo lo que su vista edita (la política
 // de Dreams en /dreams). `operacion`, nada. Un alcance que no aparece acá no escribe nada.
 const WRITABLE_BY: Readonly<Record<Exclude<Scope, "configuracion">, ReadonlySet<string>>> = {
-  contenido: new Set(["DREAMS_AUTO_ACTIVATE", "DREAMS_FREQUENCY"]),
+  contenido: new Set(["DREAMS_AUTO_ACTIVATE", "DREAMS_FREQUENCY", "DREAMS_RESUMED_AT"]),
   operacion: new Set(),
 };
 

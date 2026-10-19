@@ -126,7 +126,7 @@ export default async function DreamsPage(props: { searchParams: Promise<SearchPa
   return (
     <PageShell
       title="Dreams"
-      description="Aprendizajes destilados de conversaciones. El análisis corre según la frecuencia elegida (el cron pasa a diario 3 AM UTC y respeta esa frecuencia)."
+      description="Aprendizajes destilados de conversaciones. El análisis corre según la frecuencia elegida (el cron pasa a diario 3 AM UTC y respeta esa frecuencia); en «Apagado» no corre solo, y al reactivarlo no analiza el período apagado."
       actions={
         <div className="flex flex-wrap items-center gap-2">
           {/* Acciones primarias: Run */}

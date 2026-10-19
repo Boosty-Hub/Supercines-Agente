@@ -9,8 +9,8 @@
 //   únicamente claim_alerts_for_webhook. Por eso el insert funciona igual con o sin la
 //   migración 0076 aplicada: desplegar las funciones antes que la migración no pierde alertas
 //   (ver «Orden de deploy» en CLAUDE.md).
-// · Una copia de un tipo `onePerRef` (draft_failed, human_review_needed) la rechaza la base
-//   (23505, índice único de 0091): NO es un error, vuelve como `{ error: null, duplicate: true }`.
+// · Una copia de un tipo `onePerRef` (draft_failed, human_review_needed, inbound_lead_unresolved, inbound_processing_failed)
+//   la rechaza la base (23505, índice único de 0091, ampliado en 0092): NO es un error, vuelve como `{ error: null, duplicate: true }`.
 // · Nunca lanza: devuelve `{ error }` y el que llama decide (casi todos solo lo loguean; una
 //   alerta que no se pudo guardar no debe tumbar el flujo que la detectó).
 

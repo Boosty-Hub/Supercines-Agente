@@ -1,4 +1,5 @@
--- Prueba de 0091: UNA alerta por entidad para draft_failed / human_review_needed.
+-- Prueba de 0091 (+ 0092): UNA alerta por entidad para draft_failed / human_review_needed /
+-- inbound_lead_unresolved.
 --   psql -v ON_ERROR_STOP=1 -f supabase/tests/alerts_una_por_entidad.sql   (ver supabase/tests/README.md)
 begin;
 
@@ -10,6 +11,7 @@ end $$;
 
 -- Una instalación de antes de 0091, con el bucle ya corriendo: copias de la misma entidad.
 drop index if exists public.alerts_una_por_entidad_uidx;
+drop index if exists public.alerts_una_por_entidad_v2_uidx;
 delete from public.alerts;
 insert into public.alerts (kind, severity, title, ref_table, ref_id, created_at, acknowledged_at) values
   ('human_review_needed', 'warning', 'vieja',    'messages', 'cccccccc-0000-0000-0000-000000000001', now() - interval '3 hours', null),
@@ -21,10 +23,21 @@ insert into public.alerts (kind, severity, title, ref_table, ref_id, created_at,
   ('outbound_blocked',    'warning', 'a',        'drafts',   'cccccccc-0000-0000-0000-000000000002', now(), null),
   ('outbound_blocked',    'warning', 'b',        'drafts',   'cccccccc-0000-0000-0000-000000000002', now(), null),
   ('human_review_needed', 'warning', 'sin ref',  'messages', null, now(), null),
-  ('human_review_needed', 'warning', 'sin ref',  'messages', null, now(), null);
+  ('human_review_needed', 'warning', 'sin ref',  'messages', null, now(), null),
+  ('inbound_lead_unresolved', 'critical', 'primera', 'inbound_queue', 'cccccccc-0000-0000-0000-000000000003', now() - interval '1 hour', null),
+  ('inbound_lead_unresolved', 'critical', 'copia',   'inbound_queue', 'cccccccc-0000-0000-0000-000000000003', now(), null);
 
 \ir ../migrations/0091_alerts_una_por_entidad.sql
 \ir ../migrations/0091_alerts_una_por_entidad.sql
+\ir ../migrations/0092_inbound_queue_not_before.sql
+\ir ../migrations/0092_inbound_queue_not_before.sql
+
+select pg_temp.expect('0092 deja una sola inbound_lead_unresolved por fila de la cola (la más vieja)',
+  (select array_agg(title) from public.alerts
+    where kind = 'inbound_lead_unresolved' and ref_id = 'cccccccc-0000-0000-0000-000000000003') = array['primera']);
+select pg_temp.expect('0092 reemplaza el índice de 0091 por el ampliado',
+  exists (select 1 from pg_indexes where schemaname = 'public' and indexname = 'alerts_una_por_entidad_v2_uidx')
+  and not exists (select 1 from pg_indexes where schemaname = 'public' and indexname = 'alerts_una_por_entidad_uidx'));
 
 select pg_temp.expect('queda una sola human_review_needed por mensaje, y es la ya atendida',
   (select array_agg(title) from public.alerts
@@ -45,6 +58,17 @@ begin
     raise exception 'FALLO: la copia no debió insertarse';
   exception when unique_violation then
     raise notice 'ok: una copia de draft_failed para la misma entidad es rechazada (23505)';
+  end;
+end $$;
+
+do $$
+begin
+  begin
+    insert into public.alerts (kind, severity, title, ref_table, ref_id)
+      values ('inbound_lead_unresolved', 'critical', 'otra', 'inbound_queue', 'cccccccc-0000-0000-0000-000000000003');
+    raise exception 'FALLO: la copia no debió insertarse';
+  exception when unique_violation then
+    raise notice 'ok: una copia de inbound_lead_unresolved para la misma fila es rechazada (23505)';
   end;
 end $$;
 

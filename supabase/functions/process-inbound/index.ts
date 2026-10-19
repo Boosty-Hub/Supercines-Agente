@@ -16,6 +16,39 @@ import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { stripLoneSurrogates, truncateGraphemes } from "../_shared/text-safe.ts";
 import { fetchLeadHistory } from "../_shared/history.ts";
 import { insertAlert } from "../_shared/alerts.ts";
+import {
+  decideProcessingFailure,
+  errorSummary,
+  hasIncomingMessage,
+  incomingCount,
+  isMissingColumnError,
+  isResumableDuplicate,
+  isFreshResumeMarker,
+  processingLossAlertFor,
+  processingRetryPatch,
+  recoverResumeOrFilter,
+  RESUME_MIN_AGE_SECONDS,
+  RESUME_RECOVER_GRACE_SECONDS,
+  resumeClaimMarker,
+  resumeInputsFromStored,
+} from "../_shared/queue-failure.ts";
+import {
+  aggregatedLossAlertFor,
+  applyWakeFilter,
+  droppedAlertFor,
+  messageOrderIndex,
+  newTalkCache,
+  newTalkLookup,
+  planUnresolved,
+  resolveLeadId,
+  retryPayload,
+  TALK_LOOKUP_RUN_BUDGET_MS,
+  type TalkCache,
+  type UnresolvedItem,
+  waitingRefsFor,
+  wakeRefsFor,
+} from "../_shared/lead-resolver.ts";
+import { fetchTalk } from "../_shared/kommo.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
 import {
   EXPIRED_ALERT_DEDUPE_HOURS,
@@ -71,8 +104,11 @@ type KommoMessage = {
   chat_id?: string;
   talk_id?: string | number;
   element_id?: string;
+  element_type?: string | number;
   entity_type?: string;
   created_at?: string;
+  // Posición en el payload ORIGINAL cuando la fila es un reintento (lead-resolver retryPayload).
+  _orig_idx?: number;
   // Adjuntos (formato documentado de Kommo; parseo defensivo en extractMedia).
   attachment?: KommoAttachment;
   attachments?: KommoAttachment[];
@@ -921,6 +957,51 @@ async function transcribeAudio(
   return text || null;
 }
 
+// ---- Retomar un mensaje insertado y sin clasificar (dedupe) ----
+type StoredResume = {
+  id: string;
+  content: string | null;
+  source: string | null;
+  media_url: string | null;
+  media_kind: string | null;
+  media_error: string | null;
+  created_at: string;
+};
+
+// Fila guardada con ese kommo_message_id. Un error de lectura LANZA (la fila de la cola se
+// reintenta): antes se ignoraba y el mensaje se insertaba de nuevo. Sin la columna
+// inserted_at (0092 sin aplicar) se lee sin ella y nunca se retoma.
+async function findDuplicateMessage(kommoMessageId: string): Promise<Record<string, unknown> | null> {
+  const read = (cols: string) =>
+    supabase.from("messages").select(cols).eq("kommo_message_id", kommoMessageId).limit(1).maybeSingle();
+  let { data, error } = await read("id, lead_id, direction, ignored, vertical_id, classification, inserted_at");
+  if (error && isMissingColumnError(error)) ({ data, error } = await read("id, lead_id, direction, ignored, vertical_id, classification"));
+  if (error) throw new Error(`dedupe messages: ${errorSummary(error)}`);
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+// Reserva ATÓMICA del retomar: UPDATE condicional (mismo lead y dirección, sigue sin vertical
+// ni clasificación, más viejo que RESUME_MIN_AGE_SECONDS) que deja la marca RESUME_CLAIM_ERROR con
+// su hora (resume_at). De dos invocaciones gana una; si esta muere a mitad, la marca es un
+// classification.error y recoverFailedClassifications lo retoma pasada la gracia
+// (RESUME_RECOVER_GRACE_SECONDS); antes no lo toca, para no clasificarlo dos veces. Devuelve la fila GUARDADA (insumos de la clasificación).
+async function claimResume(id: string, leadId: string, direction: string): Promise<StoredResume | null> {
+  const cutoff = new Date(Date.now() - RESUME_MIN_AGE_SECONDS * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("messages")
+    .update({ classification: resumeClaimMarker(Date.now()) })
+    .eq("id", id)
+    .eq("lead_id", leadId)
+    .eq("direction", direction)
+    .eq("ignored", false)
+    .is("vertical_id", null)
+    .is("classification", null)
+    .lt("inserted_at", cutoff)
+    .select("id, content, source, media_url, media_kind, media_error, created_at");
+  if (error) throw new Error(`resume claim: ${errorSummary(error)}`);
+  return ((data ?? [])[0] as StoredResume | undefined) ?? null;
+}
+
 // ---- Procesa un payload completo ----
 // queuedAt: created_at de la fila de inbound_queue (cuándo llegó el webhook
 // de verdad), NO el momento en que se procesa. Se usa para: a) sellar
@@ -928,10 +1009,18 @@ async function transcribeAudio(
 // la ventana de frescura de generate-response funcione con backlog viejo) y
 // b) decidir si esta fila es demasiado vieja para clasificar (ver
 // isStaleBacklog más abajo).
-async function processPayload(payload: KommoPayload, anthropic: Anthropic, operator: string, queuedAt: string) {
+async function processPayload(
+  payload: KommoPayload,
+  anthropic: Anthropic,
+  operator: string,
+  queuedAt: string,
+  talk: { cache: TalkCache; signed: boolean; runDeadlineMs?: number } = { cache: newTalkCache(), signed: true },
+) {
   const subdomain = payload.account?.subdomain ?? null;
   const inboundMessageIds: string[] = [];
   let staleBacklogSkipped = 0;
+  // Mensajes cuyo lead no se pudo ubicar (Kommo aún no lo creó): processBatch los reintenta.
+  const unresolved: UnresolvedMsg[] = [];
 
   // 0) Cambios de lead (leads.update / leads.status): sincroniza etapa +
   //    pipeline. `status` llega SOLO, sin `update` al lado — antes se descartaba
@@ -943,7 +1032,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   const arrivedMs = Number.isFinite(queuedAtParsed) ? queuedAtParsed : Date.now();
   if (leadChanges.length > 0) await syncLeadPositions(leadChanges, arrivedMs);
   if (!payload.leads?.add && !payload.message?.add) {
-    return { subdomain, leads_processed: 0, messages_processed: 0, inboundMessageIds, staleBacklogSkipped };
+    return { subdomain, leads_processed: 0, messages_processed: 0, inboundMessageIds, staleBacklogSkipped, unresolved };
   }
 
   const verticals = await getVerticals();
@@ -980,6 +1069,16 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
   }
 
   // 2) Procesar messages
+  const talkFetcher =
+    kommoDomain && kommoToken
+      ? (talkId: number, signal?: AbortSignal) => fetchTalk(kommoDomain, kommoToken, talkId, undefined, signal)
+      : null;
+  // Por fila: a lo sumo MAX_TALK_LOOKUPS_PER_ROW talks distintos (1 sin firma) y
+  // TALK_LOOKUP_ROW_BUDGET_MS de consultas, sin pasar el plazo de la corrida
+  // (TALK_LOOKUP_RUN_BUDGET_MS, compartido por todas sus filas): el webhook es público y un payload
+  // forjado no puede multiplicar las llamadas a Kommo ni comerse el wall clock del worker. La
+  // caché es de la corrida (drainQueue).
+  const talkLookup = newTalkLookup(talk.cache, { signed: talk.signed, runDeadlineMs: talk.runDeadlineMs });
   if (payload.message?.add) {
     // Hora base para el sello de messages.created_at: la de llegada real del
     // webhook (queuedAt), no now(). Si un mismo payload trae varios mensajes
@@ -990,11 +1089,24 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
     // (importa para el debounce y el orden de lectura del historial).
     const queuedAtMs = new Date(queuedAt).getTime();
     const baseTs = Number.isFinite(queuedAtMs) ? queuedAtMs : Date.now();
-    for (const [msgIdx, m] of payload.message.add.entries()) {
-      const leadKommoId = Number(m.entity_id ?? m.element_id);
-      if (!Number.isFinite(leadKommoId)) continue;
+    // Conversaciones (talk/chat) de los mensajes que SÍ ubicaron su lead: despiertan la fila
+    // que espera el lead de esa misma conversación (wakeWaitingRows, al final).
+    const wakeRefs = new Set<string>();
+    for (const [payloadIdx, m] of payload.message.add.entries()) {
+      // En un reintento el payload lleva solo los no resueltos: la posición ORIGINAL decide el
+      // desempate de created_at (si no, un reintentado podía empatar con otro del payload).
+      const msgIdx = messageOrderIndex(m, payloadIdx);
+      // Los message.add de onlinechat llegan SIN entity_id (Kommo crea el lead después de
+      // disparar el webhook): se ubica por talk_id; si aún no existe, se reintenta (no se pierde).
+      const resolution = await resolveLeadId(m, talkFetcher, talkLookup);
+      if (resolution.kind === "unresolved") {
+        unresolved.push({ message: m, reason: resolution.reason, index: msgIdx, verifiedContactId: resolution.verifiedContactId });
+        continue;
+      }
+      const leadKommoId = resolution.leadId;
+      for (const r of wakeRefsFor(m)) wakeRefs.add(r);
 
-      const channel = originToChannel(m.origin);
+      let channel = originToChannel(m.origin);
       const isInbound = m.type === "incoming";
       // status_id del payload. OJO: en un webhook `message.add` Kommo NO manda
       // `leads.add`, así que esto es undefined casi siempre; la etapa real se
@@ -1015,11 +1127,34 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       });
 
       const direction = m.type === "incoming" ? "inbound" : "outbound";
-      let text = (m.text ?? "").trim();
-      const media = extractMedia(m);
       // Mensaje realmente vacío (ni texto ni adjunto) → nada que hacer.
-      if (!text && !media) continue;
+      if (!(m.text ?? "").trim() && !extractMedia(m)) continue;
 
+      // Dedupe de webhooks re-entregados (0050): Kommo reintenta la entrega
+      // ante timeout/5xx — sin esta guarda, cada re-entrega creaba una fila
+      // nueva que se clasificaba de nuevo y podía disparar OTRA respuesta al
+      // mismo mensaje. El índice único parcial (mejor esfuerzo, 0050) cierra
+      // la ventana de carrera; esta guarda protege aunque el índice no exista.
+      // Va ANTES de procesar el adjunto: un duplicado no se re-transcribe.
+      // Un mensaje insertado por un intento anterior que murió antes de clasificar se RETOMA
+      // (si no, quedaría sin vertical ni error, invisible para recoverFailedClassifications),
+      // pero solo si la fila guardada es de ESTE lead y dirección (el webhook es público: un
+      // payload puede reusar el kommo_message_id de otro lead), tiene más de
+      // RESUME_MIN_AGE_SECONDS (puede estar clasificándose en otra invocación) y la reserva
+      // condicional la gana esta invocación. Los insumos salen de la fila GUARDADA.
+      let resumed: StoredResume | null = null;
+      if (m.id != null && String(m.id) !== "") {
+        const dup = await findDuplicateMessage(String(m.id));
+        if (dup) {
+          if (!isResumableDuplicate(dup, { leadId, direction, nowMs: Date.now() })) continue;
+          resumed = await claimResume(dup.id as string, leadId, direction);
+          if (!resumed) continue;
+        }
+      }
+
+      let text = "";
+      let media: ExtractedMedia | null = null;
+      let hasMedia = false;
       // ¿El adjunto es procesable y está habilitado?
       //
       // mediaStatus/mediaError se persisten en el mensaje: todo adjunto recibido
@@ -1032,61 +1167,73 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       let mediaIgnoreReason: string | null = null;
       let mediaStatus: "ok" | "failed" | "skipped" | null = null;
       let mediaError: string | null = null;
-      if (media) {
-        if (media.kind === "image") {
-          if (filters.media.images) {
-            mediaForClassify = { kind: "image", label: media.label, source: media.source };
-            mediaStatus = "ok";
-          } else {
-            mediaIgnoreReason = "media_image_off";
-            mediaStatus = "skipped";
-          }
-        } else if (media.kind === "document") {
-          if (filters.media.documents) {
-            mediaForClassify = { kind: "document", label: media.label, source: media.source };
-            mediaStatus = "ok";
-          } else {
-            mediaIgnoreReason = "media_document_off";
-            mediaStatus = "skipped";
-          }
-        } else if (media.kind === "audio") {
-          // Nota de voz → transcripción con Whisper si el toggle está prendido
-          // y hay key de OpenAI. El texto transcrito sigue el camino normal
-          // (clasificación + respuesta) como si el lead lo hubiera tecleado.
-          if (!filters.media.audio) {
-            mediaIgnoreReason = "media_audio_off";
-            mediaStatus = "skipped";
-          } else if (!openaiKey) {
-            mediaIgnoreReason = "media_audio_no_key";
-            mediaStatus = "failed";
-            mediaError = "sin OPENAI_API_KEY configurada";
-          } else if (isInbound && media.source.type === "url") {
-            try {
-              const transcript = await transcribeAudio(openaiKey, media.source.url, media.filename);
-              if (transcript) {
-                text = text ? `${text}\n🎙️ ${transcript}` : `🎙️ ${transcript}`;
-                mediaStatus = "ok";
-              } else {
+      if (resumed) {
+        const r = resumeInputsFromStored(resumed, filters.media);
+        text = r.text;
+        channel = r.channel;
+        hasMedia = r.hasMedia;
+        mediaForClassify = r.mediaForClassify;
+        mediaIgnoreReason = r.mediaIgnoreReason;
+      } else {
+        text = (m.text ?? "").trim();
+        media = extractMedia(m);
+        hasMedia = Boolean(media);
+        if (media) {
+          if (media.kind === "image") {
+            if (filters.media.images) {
+              mediaForClassify = { kind: "image", label: media.label, source: media.source };
+              mediaStatus = "ok";
+            } else {
+              mediaIgnoreReason = "media_image_off";
+              mediaStatus = "skipped";
+            }
+          } else if (media.kind === "document") {
+            if (filters.media.documents) {
+              mediaForClassify = { kind: "document", label: media.label, source: media.source };
+              mediaStatus = "ok";
+            } else {
+              mediaIgnoreReason = "media_document_off";
+              mediaStatus = "skipped";
+            }
+          } else if (media.kind === "audio") {
+            // Nota de voz → transcripción con Whisper si el toggle está prendido
+            // y hay key de OpenAI. El texto transcrito sigue el camino normal
+            // (clasificación + respuesta) como si el lead lo hubiera tecleado.
+            if (!filters.media.audio) {
+              mediaIgnoreReason = "media_audio_off";
+              mediaStatus = "skipped";
+            } else if (!openaiKey) {
+              mediaIgnoreReason = "media_audio_no_key";
+              mediaStatus = "failed";
+              mediaError = "sin OPENAI_API_KEY configurada";
+            } else if (isInbound && media.source.type === "url") {
+              try {
+                const transcript = await transcribeAudio(openaiKey, media.source.url, media.filename);
+                if (transcript) {
+                  text = text ? `${text}\n🎙️ ${transcript}` : `🎙️ ${transcript}`;
+                  mediaStatus = "ok";
+                } else {
+                  mediaIgnoreReason = "media_audio_transcribe_failed";
+                  mediaStatus = "failed";
+                  mediaError = "Whisper devolvió una transcripción vacía";
+                }
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err);
+                console.error("whisper:", detail);
                 mediaIgnoreReason = "media_audio_transcribe_failed";
                 mediaStatus = "failed";
-                mediaError = "Whisper devolvió una transcripción vacía";
+                mediaError = detail.slice(0, 300);
               }
-            } catch (err) {
-              const detail = err instanceof Error ? err.message : String(err);
-              console.error("whisper:", detail);
-              mediaIgnoreReason = "media_audio_transcribe_failed";
+            } else {
+              mediaIgnoreReason = "media_audio_unsupported";
               mediaStatus = "failed";
-              mediaError = detail.slice(0, 300);
+              mediaError = `audio no descargable (source=${media.source.type}, inbound=${isInbound})`;
             }
           } else {
-            mediaIgnoreReason = "media_audio_unsupported";
+            mediaIgnoreReason = "media_unsupported";
             mediaStatus = "failed";
-            mediaError = `audio no descargable (source=${media.source.type}, inbound=${isInbound})`;
+            mediaError = `tipo de adjunto no soportado: ${media.label}`;
           }
-        } else {
-          mediaIgnoreReason = "media_unsupported";
-          mediaStatus = "failed";
-          mediaError = `tipo de adjunto no soportado: ${media.label}`;
         }
       }
 
@@ -1094,29 +1241,19 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // por la descripción de Haiku tras clasificar, si el adjunto se procesa).
       const baseContent =
         stripLoneSurrogates(text) || (media ? `[${media.label}${media.filename ? ` ${media.filename}` : ""}]` : "");
-
-      // Dedupe de webhooks re-entregados (0050): Kommo reintenta la entrega
-      // ante timeout/5xx — sin esta guarda, cada re-entrega creaba una fila
-      // nueva que se clasificaba de nuevo y podía disparar OTRA respuesta al
-      // mismo mensaje. El índice único parcial (mejor esfuerzo, 0050) cierra
-      // la ventana de carrera; esta guarda protege aunque el índice no exista.
-      if (m.id != null && String(m.id) !== "") {
-        const { data: dup } = await supabase
-          .from("messages")
-          .select("id")
-          .eq("kommo_message_id", String(m.id))
-          .limit(1)
-          .maybeSingle();
-        if (dup) continue;
-      }
+      // Al retomar, las salidas «ignorado» limpian la marca de la reserva (classification).
+      const clearResume = resumed ? { classification: null } : {};
 
       // Insert message (sin classification al principio). created_at = hora
       // real de llegada del webhook (queuedAt + offset de orden), NO now():
       // ver el comentario sobre baseTs/msgIdx más arriba. Esto es lo que hace
       // que la ventana de frescura de generate-response (answer_max_age_hours)
       // vea el backlog como viejo en vez de "recién llegado" al reactivar.
-      const msgCreatedAt = new Date(baseTs + msgIdx).toISOString();
-      const { data: msg, error: msgErr } = await supabase
+      // Nunca en el futuro: ni un _orig_idx ni un queuedAt raro pueden congelar el debounce del lead.
+      const msgCreatedAt = resumed?.created_at ?? new Date(Math.min(baseTs + msgIdx, Date.now())).toISOString();
+      const { data: inserted, error: msgErr } = resumed
+        ? { data: { id: resumed.id }, error: null }
+        : await supabase
         .from("messages")
         .insert({
           lead_id: leadId,
@@ -1132,10 +1269,14 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         })
         .select("id")
         .single();
-      if (msgErr || !msg) {
-        console.error("insert message:", msgErr);
-        continue;
+      if (msgErr || !inserted) {
+        // 23505 = otra invocación lo insertó entre el chequeo y acá (carrera): ya está. Cualquier
+        // otro error es una falla real: se lanza para que la fila se reintente (antes se
+        // hacía `continue` y el mensaje desaparecía sin rastro).
+        if ((msgErr as { code?: string } | null)?.code === "23505") continue;
+        throw new Error(`insert message: ${errorSummary(msgErr)}`);
       }
+      const msg = inserted;
 
       // Verificador de adjuntos: si el adjunto no se pudo procesar, se levanta
       // una alerta. Un adjunto perdido es un lead perdido —la nota de voz que
@@ -1186,7 +1327,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
             if (!filters.respondToComments) {
               await supabase
                 .from("messages")
-                .update({ is_comment: true, ignored: true, ignored_reason: "comments_off" })
+                .update({ ...clearResume, is_comment: true, ignored: true, ignored_reason: "comments_off" })
                 .eq("id", msg.id);
               continue;
             }
@@ -1212,7 +1353,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       if (isStaleBacklog(msgCreatedAt, Date.now(), filters.answerMaxAgeHours)) {
         await supabase
           .from("messages")
-          .update({ ignored: true, ignored_reason: "backlog_stale", requires_human_review: true })
+          .update({ ...clearResume, ignored: true, ignored_reason: "backlog_stale", requires_human_review: true })
           .eq("id", msg.id);
         staleBacklogSkipped++;
         continue;
@@ -1243,7 +1384,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (state.agentOff) {
           await supabase
             .from("messages")
-            .update({ ignored: true, ignored_reason: "agent_off" })
+            .update({ ...clearResume, ignored: true, ignored_reason: "agent_off" })
             .eq("id", msg.id);
           continue;
         }
@@ -1260,7 +1401,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       // mantiene a generate-response fuera de este mensaje.
       let classifyOnly = false;
       if (filters.channels.size > 0) {
-        const originLc = (m.origin ?? "").toLowerCase();
+        const originLc = resumed ? "" : (m.origin ?? "").toLowerCase();
         const silenced =
           filters.channels.has(channel) || (originLc !== "" && filters.channels.has(originLc));
         if (silenced) {
@@ -1270,7 +1411,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
           if (!classifiable) {
             await supabase
               .from("messages")
-              .update({ ignored: true, ignored_reason: `channel:${channel}` })
+              .update({ ...clearResume, ignored: true, ignored_reason: `channel:${channel}` })
               .eq("id", msg.id);
             continue;
           }
@@ -1297,7 +1438,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (st != null && filters.stages.has(Number(st))) {
           await supabase
             .from("messages")
-            .update({ ignored: true, ignored_reason: `stage:${st}` })
+            .update({ ...clearResume, ignored: true, ignored_reason: `stage:${st}` })
             .eq("id", msg.id);
           continue;
         }
@@ -1310,7 +1451,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       if (skipHit) {
         await supabase
           .from("messages")
-          .update({ ignored: true, ignored_reason: `rule:${skipHit.id}` })
+          .update({ ...clearResume, ignored: true, ignored_reason: `rule:${skipHit.id}` })
           .eq("id", msg.id);
         continue;
       }
@@ -1327,10 +1468,10 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
       // Media sin texto que NO se puede/quiere procesar (toggle apagado, audio
       // sin STT, o tipo no soportado) → el agente no responde. No clasificamos.
-      if (!text && media && !mediaForClassify) {
+      if (!text && hasMedia && !mediaForClassify) {
         await supabase
           .from("messages")
-          .update({ ignored: true, ignored_reason: mediaIgnoreReason ?? "media_off" })
+          .update({ ...clearResume, ignored: true, ignored_reason: mediaIgnoreReason ?? "media_off" })
           .eq("id", msg.id);
         continue;
       }
@@ -1479,6 +1620,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         console.error("classify failed:", errMsg);
       }
     }
+    if (wakeRefs.size > 0) await wakeWaitingRows([...wakeRefs]);
   }
 
   return {
@@ -1487,6 +1629,7 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
     messages_processed: payload.message?.add?.length ?? 0,
     inboundMessageIds,
     staleBacklogSkipped,
+    unresolved,
   };
 }
 
@@ -1590,7 +1733,10 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
       .eq("ignored", false)
       .is("vertical_id", null)
       .not("classification->error", "is", null)
-      .not("classification->>error", "like", "recover:%");
+      .not("classification->>error", "like", "recover:%")
+      // Un retomar EN CURSO (marca con hora más joven que RESUME_RECOVER_GRACE_SECONDS) no se
+      // toca: lo está clasificando process-inbound. Pasada la gracia se da por muerto y se toma.
+      .or(recoverResumeOrFilter(Date.now()));
     // Ventana de frescura (0040/misma que isStaleBacklog): un mensaje más viejo que
     // answer_max_age_hours no lo va a contestar generate-response, así que
     // reclasificarlo solo quema tokens. Con 0 (sin límite) rige el tope de
@@ -1611,6 +1757,11 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
     let healed = 0;
 
     for (const msg of rows) {
+      // Doble guarda (el filtro de la consulta compara texto): un retomar reciente no se toca.
+      if (isFreshResumeMarker(msg.classification, Date.now())) {
+        console.log(`recover classify: ${msg.id} se está retomando (< ${RESUME_RECOVER_GRACE_SECONDS}s), se saltea`);
+        continue;
+      }
       const isPlaceholder = /^\[(Imagen|Documento|Audio|Archivo)/.test(msg.content ?? "");
       let mediaForClassify: MediaForClassify | null = null;
       if (isPlaceholder) {
@@ -1743,76 +1894,266 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
   }
 }
 
+type UnresolvedMsg = UnresolvedItem<KommoMessage>;
+
+// ---- Despertar filas que esperan lead ----
+// Un mensaje del MISMO talk/chat que ya trae lead significa que Kommo ya creó el lead: la fila
+// que esperaba ese talk deja de esperar (not_before = ahora) y el drenado la toma en el lote
+// siguiente de esta misma invocación. Así el primer mensaje entra (con su created_at real, el
+// más viejo) antes de que el debounce de generate-response responda los siguientes. Fail-soft:
+// sin despertar, la fila vence sola (backoff corto) y generate-response igual la espera.
+// SOLO filas que siguen esperando el lead (applyWakeFilter): una fila que volvió por una
+// EXCEPCIÓN tiene que cumplir su backoff, o el retomar de su mensaje insertado a medias no corre.
+async function wakeWaitingRows(refs: string[]): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await applyWakeFilter(
+    supabase.from("inbound_queue").update({ not_before: nowIso }),
+    refs,
+    nowIso,
+  ).select("id");
+  if (error) console.warn("wakeWaitingRows:", error.message);
+  else if (data && data.length > 0) console.log(`wakeWaitingRows: ${data.length} fila(s) en espera despertadas`);
+}
+
+// ---- UPDATE de cierre de una fila con red para una función desplegada antes de 0092 ----
+// Sin las columnas de 0092 (42703 / PGRST204) se aplica el UPDATE mínimo (status,
+// processed_at, last_error): la fila nunca queda en 'processing' por eso. Otro error se loguea
+// (la fila la recupera el reaper).
+async function updateQueueRow(
+  rowId: string,
+  full: Record<string, unknown>,
+  minimal: { status: string; processed_at?: string; last_error: string | null },
+): Promise<void> {
+  const { error } = await supabase.from("inbound_queue").update(full).eq("id", rowId);
+  if (!error) return;
+  if (isMissingColumnError(error)) {
+    console.warn(`inbound_queue ${rowId}: faltan columnas de 0092, cierre mínimo (${minimal.status})`);
+    const { error: e2 } = await supabase.from("inbound_queue").update(minimal).eq("id", rowId);
+    if (e2) console.error(`inbound_queue ${rowId}: no se pudo cerrar (${errorSummary(e2)})`);
+    return;
+  }
+  console.error(`inbound_queue ${rowId}: no se pudo cerrar como ${minimal.status} (${errorSummary(error)})`);
+}
+
+// ---- Cierre de una fila de la cola ----
+// 'done' si todo se procesó. Si hubo mensajes sin lead (Kommo aún no lo creó), la fila NO se
+// cierra: vuelve a 'pending' con SOLO los transitorios y una espera (not_before, 0092) hasta
+// LEAD_RESOLVE_MAX_ATTEMPTS (una fila SIN FIRMA no se reintenta). Lo que no puede cambiar entre intentos (sin talk, sin
+// credenciales, conversación que no es de un lead, talks por encima del cupo) se descarta YA.
+// Lo descartado del cliente alerta según planUnresolved: por fila (inbound_lead_unresolved) si
+// la fila llegó FIRMADA y era una conversación de lead; agregado (inbound_dropped) si llegó sin
+// firma o con forma desconocida; solo log si no es de un lead. Nunca silencioso.
+// Reprocesar es idempotente (messages.kommo_message_id único + guarda de duplicados).
+async function closeQueueRow(
+  rowId: string,
+  payload: KommoPayload,
+  attempts: number,
+  signed: boolean,
+  unresolved: UnresolvedMsg[],
+): Promise<void> {
+  const nowIso = () => new Date().toISOString();
+  if (unresolved.length === 0) {
+    // 'done' limpia lo que dejó una espera anterior: el motivo, la espera y las refs (una fila
+    // resuelta no puede seguir frenando a generate-response ni figurar como error).
+    await updateQueueRow(
+      rowId,
+      { status: "done", processed_at: nowIso(), last_error: null, not_before: null, waiting_refs: null },
+      { status: "done", processed_at: nowIso(), last_error: null },
+    );
+    return;
+  }
+  const plan = planUnresolved({ attempts, signed, unresolved });
+  const reasonsOf = (xs: UnresolvedMsg[]) => [...new Set(xs.map((u) => u.reason))].join(",");
+
+  if (plan.givenUp.length > 0) {
+    console.error(
+      `lead_unresolved: ${plan.givenUp.length} mensaje(s) descartados tras ${attempts} intento(s) (${reasonsOf(plan.givenUp)}) fila=${rowId}` +
+        (signed ? "" : " (sin firma)"),
+    );
+    if (plan.perRow.length > 0) {
+      const { error: alertErr } = await insertAlert(supabase, droppedAlertFor({ queueId: rowId, attempts, unresolved: plan.perRow }));
+      if (alertErr) console.error("no se pudo dejar la alerta de lead_unresolved:", alertErr);
+    }
+    if (plan.aggregated.length > 0) {
+      const { error: alertErr } = await insertAlert(
+        supabase,
+        aggregatedLossAlertFor({ queueId: rowId, attempts, signed, unresolved: plan.aggregated }),
+      );
+      if (alertErr) console.error("no se pudo dejar la alerta agregada de lead_unresolved:", alertErr);
+    }
+    if (plan.logOnly.length > 0) {
+      console.warn(`lead_unresolved: ${plan.logOnly.length} mensaje(s) de una conversación que no es de un lead (no se alerta) fila=${rowId}`);
+    }
+  }
+
+  if (plan.retry.length > 0 && plan.delaySeconds !== undefined) {
+    const reasons = reasonsOf(plan.retry);
+    const { error } = await supabase
+      .from("inbound_queue")
+      .update({
+        status: "pending",
+        payload: retryPayload(payload, plan.retry.map((u) => ({ message: u.message, index: u.index }))),
+        not_before: new Date(Date.now() + plan.delaySeconds * 1000).toISOString(),
+        waiting_refs: waitingRefsFor(
+          plan.retry.map((u) => u.message),
+          plan.retry.flatMap((u) => (u.verifiedContactId !== undefined ? [u.verifiedContactId] : [])),
+        ),
+        claimed_at: null,
+        last_error: `lead_unresolved (${reasons}): ${plan.retry.length} mensaje(s), intento ${attempts}`,
+      })
+      .eq("id", rowId);
+    // Sin poder reprogramar (p.ej. 0092 sin aplicar) NO se declara 'done': lanza y la fila queda
+    // 'failed' con el motivo, visible.
+    if (error) throw new Error(`lead_unresolved: no se pudo reprogramar la fila: ${error.message}`);
+    console.warn(`lead_unresolved (${reasons}): ${plan.retry.length} mensaje(s), reintento en ${plan.delaySeconds}s (intento ${attempts})`);
+    return;
+  }
+  const lastError = `lead_unresolved (${reasonsOf(plan.givenUp)}): descartado tras ${attempts} intento(s)`;
+  await updateQueueRow(
+    rowId,
+    { status: "done", processed_at: nowIso(), not_before: null, waiting_refs: null, last_error: lastError },
+    { status: "done", processed_at: nowIso(), last_error: lastError },
+  );
+}
+
+// ---- Falla de procesamiento de una fila (processPayload lanzó) ----
+// Antes pasaba directo a 'failed' y sus mensajes se perdían sin rastro. Ahora vuelve a 'pending'
+// con espera (not_before, 0092) hasta PROCESSING_MAX_ATTEMPTS FALLAS (processing_failures: los
+// claims gastados esperando el lead no cuentan); agotadas: 'failed' con la causa SANEADA (sin
+// texto del cliente) y, si el payload traía mensajes del cliente, alerta: por fila
+// (`inbound_processing_failed`) si la fila llegó firmada, agregada (`inbound_dropped`) si no.
+// El reintento re-ejecuta processPayload entero: es idempotente (ver _shared/queue-failure.ts).
+// Devuelve true si quedó reprogramada.
+async function failOrRetryRow(
+  rowId: string,
+  payload: KommoPayload,
+  attempts: number,
+  prevFailures: number,
+  signed: boolean,
+  err: unknown,
+): Promise<boolean> {
+  const summary = errorSummary(err);
+  const failures = (Number.isFinite(prevFailures) && prevFailures > 0 ? Math.floor(prevFailures) : 0) + 1;
+  const decision = decideProcessingFailure({ processingFailures: failures, attempts });
+  if (decision.action === "retry") {
+    // Sin waiting_refs: ya no espera el lead y no la despierta un mensaje del mismo talk.
+    const { error } = await supabase
+      .from("inbound_queue")
+      .update(processingRetryPatch({ failures, attempts, delaySeconds: decision.delaySeconds, summary, nowMs: Date.now() }))
+      .eq("id", rowId);
+    if (!error) {
+      console.warn(`process row ${rowId}: ${summary}; reintento en ${decision.delaySeconds}s (falla ${failures}, intento ${attempts})`);
+      return true;
+    }
+    console.error(`process row ${rowId}: no se pudo reprogramar (${errorSummary(error)}); se cierra como failed`);
+  }
+  const nowIso = new Date().toISOString();
+  await updateQueueRow(
+    rowId,
+    { status: "failed", processed_at: nowIso, last_error: summary, not_before: null, processing_failures: failures },
+    { status: "failed", processed_at: nowIso, last_error: summary },
+  );
+  console.error(`process row ${rowId} failed tras ${failures} falla(s) / ${attempts} intento(s): ${summary}`);
+  if (hasIncomingMessage(payload)) {
+    const { error: alertErr } = await insertAlert(
+      supabase,
+      processingLossAlertFor({ queueId: rowId, attempts, summary, incomingCount: incomingCount(payload), signed }),
+    );
+    if (alertErr) console.error("no se pudo dejar la alerta de inbound_processing_failed:", alertErr);
+  }
+  return false;
+}
+
 // ---- Tomar y procesar pending de la cola ----
-async function processBatch(anthropic: Anthropic, operator: string): Promise<{ processed: number; failed: number; messageIds: string[]; staleBacklogSkipped: number }> {
+type QueueRow = {
+  id: string;
+  payload: KommoPayload;
+  created_at: string;
+  attempts?: number;
+  signed?: boolean | null;
+  processing_failures?: number | null;
+};
+
+async function processBatch(
+  anthropic: Anthropic,
+  operator: string,
+  talkCache: TalkCache,
+  talkRunDeadlineMs: number,
+): Promise<{ processed: number; failed: number; messageIds: string[]; staleBacklogSkipped: number }> {
   // Tomar pending y marcarlos como processing (atómico)
   const { data: claimed, error: claimErr } = await supabase
     .rpc("claim_inbound_batch", { p_limit: MAX_BATCH });
 
   if (claimErr) {
-    // Si la RPC no existe aún (p.ej. 0058 sin aplicar), fallback a
-    // select+update — inbound_queue.created_at siempre está disponible acá.
-    const { data: rows } = await supabase
-      .from("inbound_queue")
-      .select("id, payload, attempts, created_at")
-      .eq("status", "pending")
-      .order("created_at", { ascending: true })
-      .limit(MAX_BATCH);
+    // Fallback SOLO si la RPC no existe (PGRST202: p.ej. 0063 sin aplicar). Cualquier otro error
+    // (red, timeout, lock) NO cae a un camino menos seguro: esta corrida no toma nada y la
+    // próxima (o el barrido de pg_cron) reintenta la RPC.
+    if ((claimErr as { code?: string }).code !== "PGRST202") {
+      console.error("claim_inbound_batch:", claimErr.message);
+      return { processed: 0, failed: 0, messageIds: [], staleBacklogSkipped: 0 };
+    }
+    // select+update: respeta not_before si la columna existe (42703 = no existe → sin filtro).
+    const selectPending = (withNotBefore: boolean) => {
+      let q = supabase
+        .from("inbound_queue")
+        .select(withNotBefore ? "id, payload, attempts, created_at, signed, processing_failures" : "id, payload, attempts, created_at")
+        .eq("status", "pending");
+      if (withNotBefore) q = q.or(`not_before.is.null,not_before.lte.${new Date().toISOString()}`);
+      return q.order("created_at", { ascending: true }).limit(MAX_BATCH);
+    };
+    let { data: rows, error: selErr } = await selectPending(true);
+    if ((selErr as { code?: string } | null)?.code === "42703") ({ data: rows, error: selErr } = await selectPending(false));
+    if (selErr) console.error("inbound_queue fallback select:", selErr.message);
 
     if (!rows || rows.length === 0) return { processed: 0, failed: 0, messageIds: [], staleBacklogSkipped: 0 };
 
     let processed = 0, failed = 0, staleBacklogSkipped = 0;
     const messageIds: string[] = [];
-    for (const row of rows) {
+    for (const row of rows as unknown as QueueRow[]) {
+      // Reserva condicional: solo si sigue 'pending' con el MISMO contador de intentos (otra
+      // invocación concurrente pudo tomarla entre el select y acá). Sin fila devuelta, se salta.
+      const { data: taken, error: takeErr } = await supabase
+        .from("inbound_queue")
+        .update({ status: "processing", attempts: (row.attempts ?? 0) + 1 })
+        .eq("id", row.id)
+        .eq("status", "pending")
+        .eq("attempts", row.attempts ?? 0)
+        .select("id");
+      if (takeErr || !taken || taken.length === 0) continue;
+      const attempts = (row.attempts ?? 0) + 1;
       try {
-        await supabase
-          .from("inbound_queue")
-          .update({ status: "processing", attempts: (row.attempts ?? 0) + 1 })
-          .eq("id", row.id);
-        const result = await processPayload(row.payload as KommoPayload, anthropic, operator, row.created_at as string);
+        const result = await processPayload(row.payload, anthropic, operator, row.created_at, {
+          cache: talkCache, signed: row.signed === true, runDeadlineMs: talkRunDeadlineMs,
+        });
         messageIds.push(...result.inboundMessageIds);
         staleBacklogSkipped += result.staleBacklogSkipped;
-        await supabase
-          .from("inbound_queue")
-          .update({ status: "done", processed_at: new Date().toISOString() })
-          .eq("id", row.id);
+        await closeQueueRow(row.id, row.payload, attempts, row.signed === true, result.unresolved);
         processed++;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await supabase
-          .from("inbound_queue")
-          .update({ status: "failed", last_error: msg })
-          .eq("id", row.id);
+        await failOrRetryRow(row.id, row.payload, attempts, row.processing_failures ?? 0, row.signed === true, err);
         failed++;
-        console.error("process row failed:", msg);
       }
     }
     return { processed, failed, messageIds, staleBacklogSkipped };
   }
 
-  const rows = (claimed ?? []) as Array<{ id: string; payload: KommoPayload; created_at: string }>;
+  const rows = (claimed ?? []) as QueueRow[];
   if (rows.length === 0) return { processed: 0, failed: 0, messageIds: [], staleBacklogSkipped: 0 };
 
   let processed = 0, failed = 0, staleBacklogSkipped = 0;
   const messageIds: string[] = [];
   for (const row of rows) {
     try {
-      const result = await processPayload(row.payload, anthropic, operator, row.created_at);
+      const result = await processPayload(row.payload, anthropic, operator, row.created_at, {
+        cache: talkCache, signed: row.signed === true, runDeadlineMs: talkRunDeadlineMs,
+      });
       messageIds.push(...result.inboundMessageIds);
       staleBacklogSkipped += result.staleBacklogSkipped;
-      await supabase
-        .from("inbound_queue")
-        .update({ status: "done", processed_at: new Date().toISOString() })
-        .eq("id", row.id);
+      await closeQueueRow(row.id, row.payload, row.attempts ?? 1, row.signed === true, result.unresolved);
       processed++;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await supabase
-        .from("inbound_queue")
-        .update({ status: "failed", last_error: msg })
-        .eq("id", row.id);
+      await failOrRetryRow(row.id, row.payload, row.attempts ?? 1, row.processing_failures ?? 0, row.signed === true, err);
       failed++;
-      console.error("process row failed:", msg);
     }
   }
   return { processed, failed, messageIds, staleBacklogSkipped };
@@ -1837,9 +2178,13 @@ async function drainQueue(anthropic: Anthropic, operator: string): Promise<{ pro
   let batches = 0;
   let staleBacklogSkipped = 0;
   const messageIds: string[] = [];
+  // Caché de talks de la corrida (positivos; negativos por NEGATIVE_TALK_CACHE_MS).
+  const talkCache = newTalkCache();
+  // Plazo de las consultas de talks de TODA la invocación (compartido por sus filas y lotes).
+  const talkRunDeadlineMs = startedAt + TALK_LOOKUP_RUN_BUDGET_MS;
   for (let i = 0; i < DRAIN_MAX_BATCHES; i++) {
     if (Date.now() - startedAt > DRAIN_BUDGET_MS) break;
-    const r = await processBatch(anthropic, operator);
+    const r = await processBatch(anthropic, operator, talkCache, talkRunDeadlineMs);
     batches++;
     processed += r.processed;
     failed += r.failed;

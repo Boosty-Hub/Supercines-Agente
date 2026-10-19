@@ -21,6 +21,7 @@
 // deno-lint-ignore-file no-explicit-any
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { insertAlert } from "./alerts.ts";
+import { stripOrderMarkers } from "./lead-resolver.ts";
 import { authorizeWebhook, extractToken, type LoadOptions, noteWebhookRequest, withTimeout } from "./webhook-auth.ts";
 
 /** Kommo manda payloads de pocos KB; algo mucho más grande no es Kommo. */
@@ -175,7 +176,16 @@ export type WebhookHandlerOptions = {
   insertTimeoutMs?: number;
   /** Espera entre reintentos del insert (tests). */
   retryDelayMs?: number;
+  /** Reloj (tests). */
+  now?: () => number;
 };
+
+/**
+ * Tras un PGRST204/42703 por la columna `signed` (0092 sin aplicar), cuánto se encola sin el
+ * marcador antes de volver a probarla. Sin esto una instancia caliente seguía encolando sin
+ * marcador (= SIN FIRMA, alertas agregadas) aunque 0092 ya estuviera aplicada.
+ */
+export const SIGNED_COLUMN_RETRY_MS = 5 * 60_000;
 
 function edgeWaitUntil(): ((p: Promise<unknown>) => void) | null {
   // @ts-ignore: EdgeRuntime existe en Supabase
@@ -205,17 +215,39 @@ export function createKommoWebhookHandler(supabase: SupabaseClient, rawOptions: 
   const options: WebhookHandlerOptions = Object.assign(Object.create(null), rawOptions);
   const insertTimeoutMs = options.insertTimeoutMs ?? INSERT_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? 1000;
+  const now = options.now ?? Date.now;
+
+  // Sin la columna `signed` (0092 sin aplicar) se encola sin el marcador: nunca se pierde un
+  // payload por eso. Una fila sin marcador cuenta como SIN FIRMA (alertas agregadas). Se guarda
+  // CUÁNDO se desactivó y se vuelve a probar a los SIGNED_COLUMN_RETRY_MS (0092 aplicada después).
+  let signedColumnOffAt: number | null = null;
+  const signedColumnOn = () => signedColumnOffAt === null || now() - signedColumnOffAt >= SIGNED_COLUMN_RETRY_MS;
 
   // Encola con reintentos. Agotados, deja una alerta: Kommo ya recibió su 200 y no
   // reintenta, y un console.error solo no es consultable después.
-  async function persist(payload: Record<string, unknown>): Promise<void> {
+  // `signed` (0092): si llegó con el token. process-inbound y el reaper solo dejan alertas
+  // críticas POR FILA para filas firmadas; las sin firma (las puede forjar cualquiera con la
+  // URL) avisan agregado (inbound_dropped). «Anti-inundación».
+  async function persist(payload: Record<string, unknown>, signed: boolean): Promise<void> {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const { error } = await withTimeout(
-          (supabase as any).from("inbound_queue").insert({ source: "kommo_webhook", payload, status: "pending" }),
+        const row: Record<string, unknown> = { source: "kommo_webhook", payload: stripOrderMarkers(payload), status: "pending" };
+        const withSigned = signedColumnOn();
+        if (withSigned) row.signed = signed;
+        let { error } = await withTimeout(
+          (supabase as any).from("inbound_queue").insert(row),
           insertTimeoutMs,
-        ) as { error: { message: string } | null };
+        ) as { error: { message: string; code?: string } | null };
+        if (error && withSigned && (error.code === "PGRST204" || error.code === "42703")) {
+          signedColumnOffAt = now();
+          console.warn("inbound_queue sin la columna signed (0092 sin aplicar): se encola sin el marcador");
+          delete row.signed;
+          ({ error } = await withTimeout((supabase as any).from("inbound_queue").insert(row), insertTimeoutMs) as {
+            error: { message: string; code?: string } | null;
+          });
+        }
         if (!error) {
+          if (withSigned && "signed" in row) signedColumnOffAt = null;
           if (isActionable(payload)) options.trigger?.();
           return;
         }
@@ -259,7 +291,7 @@ export function createKommoWebhookHandler(supabase: SupabaseClient, rawOptions: 
       await note;
       return;
     }
-    await Promise.all([note, persist(payload)]);
+    await Promise.all([note, persist(payload, decision.signed)]);
   }
 
   return async function handle(req: Request): Promise<Response> {

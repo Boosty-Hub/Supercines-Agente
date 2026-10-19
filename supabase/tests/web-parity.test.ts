@@ -149,3 +149,9 @@ Deno.test("alcances: /api/agent/sync (re-empuja el system prompt a producción) 
   assertEquals(scopeRequeridoPara("/api/agent/sync"), "configuracion");
   assertEquals(rutaPermitida("contenido", "/api/agent/sync"), false);
 });
+
+Deno.test("PARIDAD: las frecuencias de Dreams de web == Edge (si no, la web guarda un valor que la función ignora)", async () => {
+  const { DREAMS_FREQUENCIES: edge } = await import("../functions/_shared/dreams-frequency.ts");
+  const { DREAMS_FREQUENCIES: webFreq } = await import("../../web/src/lib/dreams-frequency.ts");
+  assertEquals([...webFreq], [...edge]);
+});

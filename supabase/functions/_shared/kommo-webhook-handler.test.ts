@@ -1,7 +1,7 @@
 // Correr con: deno test --node-modules-dir=auto --allow-read --allow-env supabase/functions/_shared/kommo-webhook-handler.test.ts
 // El handler responde ANTES de tocar la base y decide con el estado real en segundo plano.
 import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
-import { createKommoWebhookHandler, isActionable, MAX_BODY_BYTES, parseFormBracketed } from "./kommo-webhook-handler.ts";
+import { createKommoWebhookHandler, isActionable, SIGNED_COLUMN_RETRY_MS, MAX_BODY_BYTES, parseFormBracketed } from "./kommo-webhook-handler.ts";
 import { BAD_TOKEN_RECHECK_MS, resetWebhookAuthCache, resetWebhookNoteThrottle } from "./webhook-auth.ts";
 import { fakeClient, harness, tablesWith } from "./webhook-test-fakes.ts";
 
@@ -290,4 +290,76 @@ Deno.test("parseFormBracketed cuenta lo que descarta (profundidad, claves, prohi
   const st2 = newFormParseStats();
   parseFormBracketed(Array.from({ length: FORM_LIMITS.maxKeys + 3 }, (_, i) => `k${i}=v`).join("&"), st2);
   assertEquals(st2.keys, 1);
+});
+
+Deno.test("seguridad: un _orig_idx que llega por el webhook se descarta antes de encolar", async () => {
+  const { c, handle, drain } = setup({ kind: "ok", tables: tablesWith(S, "strict") });
+  const body = JSON.stringify({ message: { add: [{ id: "m1", type: "incoming", text: "hola", _orig_idx: 999999999999 }] }, _orig_idx: 5 });
+  const res = await handle(
+    new Request(`${URL_BASE}?token=${S}`, { method: "POST", headers: { "content-type": "application/json" }, body }),
+  );
+  assertEquals(res.status, 200);
+  await drain();
+  const q = c.inserts("inbound_queue");
+  assertEquals(q.length, 1);
+  assert(!JSON.stringify(q[0].payload).includes("_orig_idx"));
+  assertEquals((q[0].payload as { message: { add: Array<{ text: string }> } }).message.add[0].text, "hola");
+});
+
+Deno.test("H2: la fila encolada lleva `signed` (true con token, false sin firma) para decidir cómo se alerta una pérdida", async () => {
+  const { c, handle, drain } = setup({ kind: "ok", tables: tablesWith(S, "permissive") });
+  await handle(post(S));
+  await handle(post(null));
+  await drain();
+  const q = c.inserts("inbound_queue");
+  assertEquals(q.map((r) => r.signed).sort(), [false, true]);
+});
+
+Deno.test("H2: sin la columna `signed` (0092 sin aplicar) encola igual, sin el marcador (nunca pierde el payload)", async () => {
+  const insertError = (t: string, row: Record<string, unknown>) =>
+    t === "inbound_queue" && "signed" in row ? { code: "PGRST204", message: "Could not find the 'signed' column of 'inbound_queue'" } : null;
+  const { c, handle, drain, triggers } = setup({ kind: "ok", tables: tablesWith(S, "strict"), insertError });
+  await handle(post(S));
+  await drain();
+  const q = c.inserts("inbound_queue");
+  assertEquals(q.length, 1);
+  assertEquals("signed" in q[0], false);
+  assertEquals(triggers(), 1);
+  assertEquals(c.inserts("alerts").length, 0);
+});
+
+Deno.test("H2: tras un PGRST204 la columna `signed` se vuelve a probar a los ~5 min (instancia caliente tras aplicar 0092)", async () => {
+  resetWebhookAuthCache();
+  resetWebhookNoteThrottle();
+  let columnExists = false;
+  const insertError = (t: string, row: Record<string, unknown>) =>
+    t === "inbound_queue" && "signed" in row && !columnExists
+      ? { code: "PGRST204", message: "Could not find the 'signed' column of 'inbound_queue'" }
+      : null;
+  const c = fakeClient({ kind: "ok", tables: tablesWith(S, "strict"), insertError });
+  const bg: Promise<unknown>[] = [];
+  let now = 1_000_000;
+  const handle = createKommoWebhookHandler(c.sb, {
+    background: (p) => void bg.push(p),
+    retryDelayMs: 1,
+    now: () => now,
+    auth: { background: (p: Promise<unknown>) => void bg.push(p) },
+  });
+  const drain = () => Promise.allSettled(bg);
+  await handle(post(S));
+  await drain();
+  columnExists = true; // se aplica 0092
+  now += SIGNED_COLUMN_RETRY_MS - 1;
+  await handle(post(S));
+  await drain();
+  let q = c.inserts("inbound_queue");
+  assertEquals(q.length, 2);
+  assertEquals(q.map((r) => "signed" in r), [false, false]);
+  now += 2;
+  await handle(post(S));
+  await drain();
+  q = c.inserts("inbound_queue");
+  assertEquals(q.length, 3);
+  assertEquals(q[2].signed, true);
+  assert(SIGNED_COLUMN_RETRY_MS >= 60_000 && SIGNED_COLUMN_RETRY_MS <= 10 * 60_000);
 });

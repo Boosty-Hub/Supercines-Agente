@@ -39,6 +39,8 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   salesbot_not_delivered: { label: "No se pudo confirmar un envío", icon: "❓" },
   provider_credit_exhausted: { label: "Sin crédito del proveedor de IA", icon: "🪫" },
   inbound_dropped: { label: "Se perdió un mensaje entrante", icon: "📭" },
+  inbound_lead_unresolved: { label: "Mensaje sin lead en Kommo", icon: "📭" },
+  inbound_processing_failed: { label: "Falló el procesamiento de un mensaje", icon: "📭" },
   inbound_silence: { label: "No entran mensajes", icon: "🔇" },
   kommo_webhook_disabled: { label: "Kommo deshabilitó el webhook", icon: "🔌" },
   dream_error: { label: "Aprendizaje con error del agente", icon: "💭" },

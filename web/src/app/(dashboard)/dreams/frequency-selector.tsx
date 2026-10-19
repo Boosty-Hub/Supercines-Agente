@@ -2,13 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-const OPTIONS: { value: string; label: string; hint: string }[] = [
-  { value: "daily", label: "Diario", hint: "El agente aprende todas las noches." },
-  { value: "3d", label: "Cada 3 días", hint: "Analiza las conversaciones cada 3 días." },
-  { value: "7d", label: "Cada 7 días", hint: "Un análisis semanal de lo aprendido." },
-  { value: "15d", label: "Cada 15 días", hint: "Análisis quincenal; menos frecuente." },
-];
+import { DREAMS_FREQUENCY_OPTIONS as OPTIONS } from "@/lib/dreams-frequency";
 
 export default function FrequencySelector({ initial }: { initial: string }) {
   const router = useRouter();

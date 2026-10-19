@@ -160,9 +160,11 @@ Deno.test("las ventanas del registro coinciden con las de la migración 0073 (we
   assertEquals(win("webhook_unsigned"), ALERT_KINDS.webhook_unsigned.aggregateMinutes);
 });
 
-Deno.test("los tipos de UNA alerta por entidad coinciden con el índice único de la migración 0091", async () => {
+// El índice vigente lo crea la última migración que amplió la lista (hoy 0092, que sumó
+// inbound_lead_unresolved; 0091 creó el original).
+Deno.test("los tipos de UNA alerta por entidad coinciden con el índice único vigente (0092)", async () => {
   const { onePerRefKinds } = await import("./alert-kinds.ts");
-  const sql = Deno.readTextFileSync(new URL("../../migrations/0091_alerts_una_por_entidad.sql", import.meta.url));
+  const sql = Deno.readTextFileSync(new URL("../../migrations/0092_inbound_queue_not_before.sql", import.meta.url));
   const idx = sql.match(/create unique index[\s\S]*?where kind in \(([^)]*)\)/);
   const enIndice = (idx?.[1] ?? "").split(",").map((k) => k.trim().replace(/'/g, "")).filter(Boolean).sort();
   assertEquals(enIndice, onePerRefKinds().sort());

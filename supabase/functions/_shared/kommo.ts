@@ -388,6 +388,57 @@ export type KommoLeadsRead = {
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
+ * GET autenticado con el manejo común de 429: espera (Retry-After si viene) y reintenta hasta
+ * KOMMO_MAX_429_RETRIES. Devuelve la primera respuesta que no sea un 429 reintentable; el
+ * caller decide qué hacer con el resto de los estados. ÚNICO camino de lectura con reintento.
+ */
+async function kommoGet(
+  url: string,
+  kommoToken: string,
+  sleep: (ms: number) => Promise<void>,
+  signal?: AbortSignal
+): Promise<Response> {
+  for (let intento = 0; ; intento++) {
+    const res = await fetch(url, signal ? { headers: { Authorization: `Bearer ${kommoToken}` }, signal } : { headers: { Authorization: `Bearer ${kommoToken}` } });
+    if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
+      const retryAfter = Number(res.headers.get("retry-after"));
+      await res.body?.cancel();
+      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : KOMMO_DEFAULT_RETRY_MS * (intento + 1));
+      continue;
+    }
+    return res;
+  }
+}
+
+/**
+ * GET /api/v4/talks/{id}: la conversación (talk) con su `entity_id`/`entity_type` (null mientras
+ * Kommo no creó el lead) y `_embedded.leads`. `null` = no existe (404/204) o cuerpo ilegible;
+ * cualquier otro error HTTP lanza KommoHttpError. La interpretación vive en lead-resolver.ts.
+ */
+export async function fetchTalk(
+  kommoDomain: string,
+  kommoToken: string,
+  talkId: number,
+  sleep: (ms: number) => Promise<void> = sleepMs,
+  /** Corta la consulta al vencer el presupuesto de tiempo de la fila (lead-resolver). */
+  signal?: AbortSignal
+): Promise<unknown | null> {
+  const res = await kommoGet(`https://${kommoDomain}/api/v4/talks/${talkId}`, kommoToken, sleep, signal);
+  if (res.status === 404 || res.status === 204) {
+    await res.body?.cancel();
+    return null;
+  }
+  if (!res.ok) {
+    throw new KommoHttpError(res.status, `fetch talk ${talkId}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * GET /api/v4/leads con el manejo común: 204 = vacío; 429 espera (Retry-After si
  * viene) y reintenta hasta KOMMO_MAX_429_RETRIES (Kommo permite ~7 req/s por
  * cuenta, compartidos con el webhook, el agente y el panel); el resto de los
@@ -400,42 +451,34 @@ async function fetchLeadsList(
   sleep: (ms: number) => Promise<void>
 ): Promise<KommoLeadsRead> {
   const readAtMs = Date.now();
-  for (let intento = 0; ; intento++) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (res.status === 204) return { leads: [], ids: [], hasMore: false, readAtMs };
-    if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
-      const retryAfter = Number(res.headers.get("retry-after"));
-      await res.body?.cancel();
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : KOMMO_DEFAULT_RETRY_MS * (intento + 1));
-      continue;
-    }
-    if (!res.ok) {
-      throw new KommoHttpError(res.status, `fetch leads ${label}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-    }
-    let json: {
-      _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
-      _links?: { next?: unknown };
-    };
-    try {
-      json = await res.json();
-    } catch {
-      throw new KommoMalformedError(`fetch leads ${label}: 200 con un cuerpo que no es JSON`);
-    }
-    const raw = json?._embedded?.leads;
-    if (!Array.isArray(raw)) {
-      throw new KommoMalformedError(`fetch leads ${label}: 200 sin _embedded.leads`);
-    }
-    const leads: KommoLeadPosition[] = [];
-    const ids: number[] = [];
-    for (const l of raw) {
-      if (!l || typeof l.id !== "number") continue;
-      ids.push(l.id);
-      if (typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
-        leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
-      }
-    }
-    return { leads, ids, hasMore: Boolean(json._links?.next), readAtMs };
+  const res = await kommoGet(url, kommoToken, sleep);
+  if (res.status === 204) return { leads: [], ids: [], hasMore: false, readAtMs };
+  if (!res.ok) {
+    throw new KommoHttpError(res.status, `fetch leads ${label}: ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
+  let json: {
+    _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
+    _links?: { next?: unknown };
+  };
+  try {
+    json = await res.json();
+  } catch {
+    throw new KommoMalformedError(`fetch leads ${label}: 200 con un cuerpo que no es JSON`);
+  }
+  const raw = json?._embedded?.leads;
+  if (!Array.isArray(raw)) {
+    throw new KommoMalformedError(`fetch leads ${label}: 200 sin _embedded.leads`);
+  }
+  const leads: KommoLeadPosition[] = [];
+  const ids: number[] = [];
+  for (const l of raw) {
+    if (!l || typeof l.id !== "number") continue;
+    ids.push(l.id);
+    if (typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
+      leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
+    }
+  }
+  return { leads, ids, hasMore: Boolean(json._links?.next), readAtMs };
 }
 
 /**

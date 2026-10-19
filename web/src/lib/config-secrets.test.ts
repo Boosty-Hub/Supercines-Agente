@@ -111,6 +111,8 @@ test("estado del setup (viaja al drawer, cliente): solo enmascarado, nunca el se
 test("escritura: configuracion todo; contenido solo la política de Dreams; operacion nada", () => {
   assert.deepEqual(configKeysDenied("configuracion", ["ANTHROPIC_API_KEY", "SYSTEM_PROMPT", "TOOL_X_HOSTS"]), []);
   assert.deepEqual(configKeysDenied("contenido", ["DREAMS_AUTO_ACTIVATE", "DREAMS_FREQUENCY"]), []);
+  // Reactivar Dreams desde /dreams registra el momento (frequencyChangeValues).
+  assert.deepEqual(configKeysDenied("contenido", ["DREAMS_FREQUENCY", "DREAMS_RESUMED_AT"]), []);
   assert.deepEqual(configKeysDenied("contenido", ["DREAMS_FREQUENCY", "KOMMO_API_DOMAIN"]), ["KOMMO_API_DOMAIN"]);
   assert.deepEqual(configKeysDenied("contenido", ["ANTHROPIC_API_KEY"]), ["ANTHROPIC_API_KEY"]);
   assert.deepEqual(configKeysDenied("operacion", ["DREAMS_FREQUENCY", "OPERATOR_NAME"]), ["DREAMS_FREQUENCY", "OPERATOR_NAME"]);

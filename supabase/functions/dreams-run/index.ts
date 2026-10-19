@@ -30,6 +30,7 @@ import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
 import { LEARNINGS_DATA_RULE } from "../_shared/dreams-digest-block.ts";
+import { DREAMS_FREQ_DAYS, dreamsGate, dreamsWindowStartMs } from "../_shared/dreams-frequency.ts";
 
 import { collectKeyset, keysetFilter } from "../_shared/keyset-pages.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -730,6 +731,22 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Dreams apagado (DREAMS_FREQUENCY=off): las corridas del cron (daily y weekly) no llaman
+    // al modelo. `force` (botón manual) y `digest_only` siguen: el operador que lo apagó puede
+    // igual reconstruir o vaciar el digest.
+    const gate = dreamsGate({
+      frequency: cfg.getOr("DREAMS_FREQUENCY", "daily"),
+      force,
+      digestOnly: body.digest_only === true,
+      period,
+    });
+    if (gate.skip) {
+      return new Response(JSON.stringify({ ok: true, skipped: true, reason: gate.reason, period }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     // Modo digest_only: reconstruir SOLO el digest, sin correr el análisis.
     // Lo disparan las mutaciones del dashboard (aprobar/borrar/importar dreams)
     // para que el cambio llegue al agente en <60s, y la consolidación inicial.
@@ -760,8 +777,7 @@ Deno.serve(async (req: Request) => {
     const DAY = 86_400_000;
     let sinceIso: string | undefined;
     if (period === "daily") {
-      const FREQ_DAYS: Record<string, number> = { daily: 1, "3d": 3, "7d": 7, "15d": 15 };
-      const freqDays = FREQ_DAYS[cfg.getOr("DREAMS_FREQUENCY", "daily")] ?? 1;
+      const freqDays = DREAMS_FREQ_DAYS[cfg.getOr("DREAMS_FREQUENCY", "daily")] ?? 1;
       const lastRunRaw = cfg.get("DREAMS_LAST_RUN");
       const lastRunMs = lastRunRaw ? Date.parse(lastRunRaw) : NaN;
       if (!force && Number.isFinite(lastRunMs)) {
@@ -775,11 +791,12 @@ Deno.serve(async (req: Request) => {
         }
       }
       // Ventana = hueco real desde la última corrida (clamp 1..30 días), o freqDays
-      // días si es la primera corrida. Así 3d/7d/15d no pierden los días previos.
-      const spanMs = Number.isFinite(lastRunMs)
-        ? Math.min(Math.max(Date.now() - lastRunMs, DAY), 30 * DAY)
-        : Math.min(freqDays * DAY, 30 * DAY);
-      sinceIso = new Date(Date.now() - spanMs).toISOString();
+      // días si es la primera corrida. Así 3d/7d/15d no pierden los días previos. Tras
+      // reactivar Dreams (DREAMS_RESUMED_AT), nunca más de freqDays antes de la reactivación:
+      // el período apagado no se analiza.
+      const resumedRaw = cfg.get("DREAMS_RESUMED_AT");
+      const resumedAtMs = resumedRaw ? Date.parse(resumedRaw) : NaN;
+      sinceIso = new Date(dreamsWindowStartMs({ nowMs: Date.now(), lastRunMs, freqDays, resumedAtMs })).toISOString();
     }
 
     const apiKey = cfg.require("ANTHROPIC_API_KEY");

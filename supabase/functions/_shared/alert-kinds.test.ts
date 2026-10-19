@@ -174,8 +174,10 @@ export function sqlAlertKinds(sqlRaw: string): string[] {
 
 // ---------------------------------------------------------------------------------------------
 
-Deno.test("el default de webhook_kinds de 0076 es EXACTAMENTE el del registro (y dream_error no está)", () => {
-  const sql = read("migrations/0076_alert_webhook_delivery.sql");
+// El default VIGENTE de webhook_kinds lo fija la última migración que lo cambió (hoy 0092, que
+// sumó inbound_lead_unresolved). Un tipo nuevo notificable: migración nueva y apuntar acá.
+Deno.test("el default de webhook_kinds vigente (0092) es EXACTAMENTE el del registro (y dream_error no está)", () => {
+  const sql = read("migrations/0092_inbound_queue_not_before.sql");
   const m = sql.match(/set default array\[([\s\S]*?)\]::text\[\]/);
   assert(m, "no se encontró el default de webhook_kinds");
   const kinds = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
@@ -204,6 +206,16 @@ Deno.test("0076 suma a las configs EXISTENTES exactamente los tipos que no exist
   const added = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
   assertEquals(added, ["outbound_blocked", "webhook_unsigned", "webhook_rejected", "salesbot_not_delivered", "provider_credit_exhausted", "registro_abierto"]);
   for (const k of added) assertEquals(ALERT_KINDS[k as RegisteredKind].webhook, true, k);
+});
+
+Deno.test("0092 suma inbound_lead_unresolved a las configs EXISTENTES (tipo nuevo: nadie pudo haberlo quitado)", () => {
+  const sql = read("migrations/0092_inbound_queue_not_before.sql");
+  const m = sql.match(/foreach k in array array\[([\s\S]*?)\]::text\[\]/);
+  assert(m, "no se encontró la lista de tipos nuevos para configs existentes en 0092");
+  const added = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
+  assertEquals(added, ["inbound_lead_unresolved", "inbound_processing_failed"]);
+  assertEquals(ALERT_KINDS.inbound_processing_failed.webhook, true);
+  assertEquals(ALERT_KINDS.inbound_lead_unresolved.webhook, true);
 });
 
 Deno.test("ningún insert directo a `alerts` fuera del helper (_shared/alerts.ts), ni en las funciones ni en web/src", async () => {

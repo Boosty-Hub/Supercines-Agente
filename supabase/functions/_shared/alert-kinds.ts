@@ -5,7 +5,7 @@
 // la detecta: alerts-scan, health-scan, kommo-webhook, publish-to-kommo, follow-up-scan,
 // dreams-run, funciones SQL… Notificar por webhook es una decisión POR TIPO (alert_config.
 // webhook_kinds): acá se documenta cuáles van y cuáles no, con su motivo. Lo verifica
-// alert-kinds.test.ts contra la migración 0076 (el default de webhook_kinds) y contra los
+// alert-kinds.test.ts contra la migración 0092 (el default vigente de webhook_kinds) y contra los
 // tipos que de verdad se insertan en el código y en el SQL, para que un tipo nuevo no
 // pueda quedar fuera del registro sin que falle un test.
 //
@@ -50,6 +50,20 @@ export const ALERT_KINDS = {
   outcomes_regression: { webhook: true, table: "alerts", severity: "warning", reason: "la calidad de las respuestas bajó de forma sostenida" },
   inbound_silence: { webhook: true, table: "alerts", severity: "critical", reason: "no entra ningún mensaje en horario laboral: síntoma de webhook deshabilitado" },
   inbound_dropped: { webhook: true, table: "alerts", severity: "critical", reason: "se perdió un payload de Kommo (Kommo no lo reintenta): mensaje de un cliente sin entrar", aggregateMinutes: 15 },
+  inbound_lead_unresolved: {
+    webhook: true,
+    table: "alerts",
+    severity: "critical",
+    reason: "un mensaje de un cliente llegó sin lead y Kommo no lo creó tras varios intentos: no entró al sistema (una por fila de la cola, no agregada: cada caso es un cliente sin respuesta)",
+    onePerRef: true,
+  },
+  inbound_processing_failed: {
+    webhook: true,
+    table: "alerts",
+    severity: "critical",
+    reason: "el procesamiento de un mensaje de un cliente falló tras varios intentos (o el worker murió) y no entró al sistema (una por fila de la cola, con la causa saneada)",
+    onePerRef: true,
+  },
   kommo_webhook_disabled: { webhook: true, table: "alerts", severity: "critical", reason: "Kommo deshabilitó el webhook: el agente está mudo" },
   budget_exceeded: { webhook: true, table: "alerts", severity: "critical", reason: "el techo de gasto mensual frenó al agente" },
   outbound_blocked: { webhook: true, table: "alerts", severity: "warning", reason: "un texto con residuo interno se frenó antes de llegar al cliente: hay que revisarlo a mano" },

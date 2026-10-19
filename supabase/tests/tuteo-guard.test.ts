@@ -49,6 +49,7 @@ const OPERATOR_OK: Record<string, string[]> = {
   "agent/system-prompt.example.md": ["nunca vos/tenés/decís"],
   // Alertas y errores que lee el operador en el panel (el panel habla en voseo).
   "supabase/functions/follow-up-scan/index.ts": [
+    "reintentalo desde Seguimiento",
     "Revisá si le llegó un seguimiento automático",
     "Revisá la conversación en Kommo y, si no le llegó, ",
     "Revisá la plantilla y las instrucciones del seguimiento.",
@@ -66,6 +67,8 @@ const OPERATOR_OK: Record<string, string[]> = {
     "Describí qué plantilla de seguimiento querés crear.",
     "Configurá primero la API key",
   ],
+  "supabase/functions/dreams-run/index.ts": ["aprobalo en /dreams"],
+  "supabase/functions/process-inbound/index.ts": ["revisalo a mano en Kommo"],
 };
 
 // Formas de voseo. Verbos con acento final (imperativo voseante) a partir de una lista
@@ -97,11 +100,20 @@ const STEMS_I = [
   "compart", "divid", "unifi", "sumi", "combin", "mostr",
 ];
 const CLITIC = "(?:lo|la|le|los|las|me|te|nos)?";
-const ACCENT_FORMS = [
+const ACCENT_FORMS: string[] = [
   `(?:${STEMS_A.join("|")})á`,
   `(?:${STEMS_E.join("|")})é`,
   `(?:${STEMS_I.join("|")})í`,
 ].map((p) => `${p}${CLITIC}`);
+// Imperativo voseante con enclítico: pierde la tilde («usala», «decilo», «leelo»), mientras
+// que el tuteo la conserva («úsala», «dilo», «léelo»). Sin tilde y con pronombre = voseo.
+// Sin «les»: chocaría con adjetivos en -ales («generales», «actuales», «terminales»).
+const ENCLITIC = "(?:lo|la|le|los|las|me|nos)";
+ACCENT_FORMS.push(
+  `(?:${STEMS_A.join("|")})a${ENCLITIC}`,
+  `(?:${STEMS_E.join("|")})e${ENCLITIC}`,
+  `(?:${STEMS_I.join("|")})i${ENCLITIC}`,
+);
 
 // Pronombres/verbos conjugados al voseo + «acá» (usar «aquí»).
 const FIXED = [

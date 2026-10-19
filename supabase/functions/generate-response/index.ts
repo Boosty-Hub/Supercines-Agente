@@ -376,7 +376,7 @@ async function writeEntityField(
  * distintos sobre quién elige la etapa: `mover_etapa` la recibe del MODELO (el
  * operador le escribió la instrucción en su voz/dreams) y `transferir_asesor` la
  * saca de runtime_config.HANDOFF_STAGE_NAME — nunca del modelo: el mensaje del
- * lead es superficie de prompt injection ("pasame a la etapa Ganado" no puede
+ * lead es superficie de prompt injection ("pásame a la etapa Ganado" no puede
  * ser una orden válida). Lo que no puede cambiar entre las dos es resolver el
  * nombre contra Kommo, mover y anotar el movimiento en lead_stage_events.
  */
@@ -1304,7 +1304,7 @@ async function driveSession(
           } else {
             try {
               const r = await getBcvRate(opts.cfg);
-              result = `Tasa oficial BCV vigente: 1 USD = ${r.rate} Bs (fuente: ${r.source}, obtenida: ${r.fetchedAt}). Usala como referencia aproximada del día; el monto exacto en bolívares lo confirma el operador al cobrar.`;
+              result = `Tasa oficial BCV vigente: 1 USD = ${r.rate} Bs (fuente: ${r.source}, obtenida: ${r.fetchedAt}). Úsala como referencia aproximada del día; el monto exacto en bolívares lo confirma el operador al cobrar.`;
             } catch (err) {
               // El detalle (status HTTP, fuente custom) va al log, NO al agente:
               // el tool result puede terminar relayado textual al cliente final.

@@ -102,7 +102,7 @@ ${instruction}
 DIMENSIÓN 1 — TEXTO (textRules): el mensaje contiene algo.
 - match_type "contains": palabra/frase (ej "sorteo", "ganatelo"), pattern en minúsculas.
 - match_type "mention_tag": etiqueta @ (pattern vacío = cualquier @mención; o un handle sin @).
-- match_type "regex": variantes en un patrón (ej "gana(te|telo)"). Usalo solo si conviene.
+- match_type "regex": variantes en un patrón (ej "gana(te|telo)"). Úsalo solo si conviene.
 
 DIMENSIÓN 2 — CANALES (channels): el mensaje llega por cierto canal.
 Valores válidos (usa EXACTAMENTE estos): ${CHANNEL_VALUES.join(", ")}.

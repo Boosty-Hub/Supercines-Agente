@@ -9,9 +9,9 @@
 //   headers: x-api-key · anthropic-version: 2023-06-01 · anthropic-beta: managed-agents-2026-04-01
 //   methods: create = POST /v1/<resource>; update = POST /v1/<resource>/<id>; list = GET /v1/<resource>
 
-import { truncateGraphemes } from "@/lib/text-safe";
-import { renameAgentVersioned, type AgentRenameResult } from "@/lib/agent-rename";
-import { collectMemoryPages, parseMemoryPage } from "@/lib/memory-pages";
+import { truncateGraphemes } from "./text-safe.ts";
+import { renameAgentVersioned, type AgentRenameResult } from "./agent-rename.ts";
+import { collectMemoryPages, parseMemoryPage } from "./memory-pages.ts";
 
 const BASE = "https://api.anthropic.com";
 const BETA = "managed-agents-2026-04-01";
@@ -28,8 +28,11 @@ function authHeaders(apiKey: string): Record<string, string> {
 /** Error HTTP con status accesible — permite distinguir 404 (no existe) de
  *  401/429/5xx (Anthropic degradado) en los llamadores. */
 export class AnthropicHttpError extends Error {
-  constructor(message: string, public readonly status: number) {
+  // Sin «parameter properties»: scripts/sync-agent.mjs importa este archivo con el type-stripping de Node.
+  readonly status: number;
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
     this.name = "AnthropicHttpError";
   }
 }

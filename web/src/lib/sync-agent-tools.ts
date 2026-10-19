@@ -13,93 +13,27 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { configValues, configValuesFresh, setConfigValues } from "@/lib/runtime-config";
 import type { ConfigWriter } from "@/lib/auth/scope-guard";
-import {
-  scaffoldHash,
-  buildAgentTools,
-  composeSystem,
-  renderToolsList,
-  type PlaceholderValues,
-  filterToolRowsByGates,
-  type AgentToolRow,
-  type ToolGateFlags,
-} from "@/lib/agent-prompt";
-import { listMemories, renameAgentResource, retrieveAgent, updateAgent, type NamedResource } from "@/lib/anthropic-managed";
+import type { AgentToolRow, ToolGateFlags } from "@/lib/agent-prompt";
+import { renameAgentResource, retrieveAgent, updateAgent, type NamedResource } from "@/lib/anthropic-managed";
 import { versionToRecordAfterRename } from "@/lib/agent-rename";
-import { guardedPush } from "@/lib/guarded-push";
-import { placeholderize, type PlaceholderizeResult } from "@/lib/prompt-placeholders";
+import { detectVoiceFiles } from "@/lib/voice-detect";
 import type { AgentRetriever } from "@/lib/once-retriever";
+import type { PromptConflict } from "@/lib/agent-prompt-sync";
 import {
-  conflictMessage,
-  detectPromptConflict,
-  checkResolveHash,
-  extractOperatorPrompt,
-  hashPrompt,
-  type PromptConflict,
-} from "@/lib/agent-prompt-sync";
+  PAYLOAD_CONFIG_KEYS,
+  composeSyncPayload,
+  conflictFor,
+  runAgentSync,
+  type Baseline,
+  type ConflictResolution,
+  type SyncPayload,
+  type SyncResult,
+} from "@/lib/agent-sync-core";
 
-/**
- * Detecta si el master Memory Store tiene archivos de voz (/voice/). Con la
- * carpeta vacía, el paso de voz del scaffold era un turno muerto en CADA
- * sesión del agente. Fail-open: ante cualquier error devuelve true (mantener
- * el paso = comportamiento previo, nunca se pierde una voz real).
- */
-export async function detectVoiceFiles(
-  apiKey: string,
-  masterStoreId: string | undefined
-): Promise<boolean> {
-  if (!masterStoreId) return true;
-  try {
-    const items = await listMemories(apiKey, masterStoreId, "/voice/");
-    return items.length > 0;
-  } catch {
-    return true;
-  }
-}
+export type { ConflictResolution, SyncResult };
+export { detectVoiceFiles };
 
-export interface SyncResult {
-  version: number | null;
-  synced: boolean;
-  error?: string;
-  /**
-   * El prompt vivo en Anthropic fue modificado fuera del dashboard (o no hay
-   * sincronización previa registrada y difiere): NO se sincronizó. El llamador debe
-   * ofrecer «importar el vivo» o «sobrescribir con el de la DB» (ver agent-prompt-sync.ts).
-   */
-  conflict?: PromptConflict;
-  /**
-   * La resolución se ABORTÓ porque el prompt vivo cambió desde que se le mostró al operador
-   * (`expectedLiveHash` distinto). `conflict` (si lo hay) es el vivo de ahora; hay que volver a mostrarlo.
-   */
-  stale?: boolean;
-  /** Se importó el prompt vivo a la DB (resolve = import_live); no se empujó nada. */
-  imported?: boolean;
-  /** Con import_live: qué placeholders se restituyeron y cuáles valores quedaron ambiguos (sin tocar). */
-  placeholders?: PlaceholderizeResult;
-}
-
-/** Cómo resolver un conflicto de prompt (decisión EXPLÍCITA del usuario). */
-export type ConflictResolution = "overwrite" | "import_live";
-
-const STALE_ERROR =
-  "El prompt del agente en Anthropic cambió mientras lo revisabas. No se hizo nada: revisá el diff actualizado y elegí de nuevo.";
-
-const conflictError = (c: PromptConflict) =>
-  `${conflictMessage(c)} No se sincronizó: resolvelo en la página Agente (importar el vivo o sobrescribir).`;
-
-type Payload = {
-  apiKey: string;
-  agentId: string;
-  system: string;
-  tools: unknown[];
-  /** Línea base de la sincronización segura (releída de la DB, no memoizada). */
-  baseline: Baseline;
-  values: PlaceholderValues;
-  /** Texto con que se sustituyó {{TOOLS_LIST}} (para restituirlo al importar el vivo). */
-  toolsList: string;
-};
-
-/** Hash del último system enviado y versión registrada: contra lo que se detecta una edición externa. */
-type Baseline = { syncedHash: string | undefined; registeredVersion: number | null };
+type Payload = SyncPayload & { apiKey: string; agentId: string };
 
 /**
  * Lee la línea base DIRECTO de la tabla (sin la memoización por request de configValues):
@@ -136,15 +70,7 @@ export async function renameAgent(apiKey: string, agentId: string, name: string,
  */
 async function buildPayload(): Promise<Payload | null | { error: string }> {
   // 1. Resolve required config keys.
-  const cfg = await configValues([
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AGENT_ID",
-    "ANTHROPIC_MEMORY_MASTER_ID",
-    "OPERATOR_NAME",
-    "MEMORY_STORE_MASTER_NAME",
-    "MEMORY_STORE_LEADS_NAME",
-    "SYSTEM_PROMPT",
-  ]);
+  const cfg = await configValues(PAYLOAD_CONFIG_KEYS);
 
   const apiKey = cfg.ANTHROPIC_API_KEY;
   const agentId = cfg.ANTHROPIC_AGENT_ID;
@@ -187,52 +113,23 @@ async function buildPayload(): Promise<Payload | null | { error: string }> {
     return { error: gateErr.message };
   }
 
-  const rows = filterToolRowsByGates(
-    (data ?? []) as AgentToolRow[],
-    (gateRow ?? null) as ToolGateFlags | null
-  );
-
-  // 3. Build tools array and substitute system-prompt placeholders.
-  const tools = buildAgentTools(rows);
-  const httpRows = rows.filter((r) => r.tool_type === "http");
-
-  // Paso de voz condicional: si /voice/ está vacío en el master store, el
-  // scaffold omite ese paso (era un turno muerto por sesión).
+  // 3. Voice step: si /voice/ está vacío en el master store, el scaffold omite ese paso.
   const hasVoice = await detectVoiceFiles(apiKey, cfg.ANTHROPIC_MEMORY_MASTER_ID);
 
-  // composeSystem prepends the operator's editable prompt and appends the
-  // fixed CORE_SCAFFOLD (machinery + security), then substitutes placeholders.
-  // The declared tool names drive the scaffold's CRM actions block so the
-  // prompt only mentions tools the agent can actually call.
-  const values: PlaceholderValues = {
-    operatorName: cfg.OPERATOR_NAME || "el operador",
-    masterStoreName: cfg.MEMORY_STORE_MASTER_NAME || "master",
-    leadsStoreName: cfg.MEMORY_STORE_LEADS_NAME || "leads",
-  };
-  const system = composeSystem(
-    cfg.SYSTEM_PROMPT ?? "",
-    values,
-    httpRows,
-    rows.map((r) => r.name),
-    { hasVoice }
-  );
-
-  return { apiKey, agentId, system, tools, baseline: await readBaseline(), values, toolsList: renderToolsList(httpRows) };
-}
-
-const liveSystemOf = (agent: NamedResource): string | null => (typeof agent.system === "string" ? agent.system : null);
-
-function conflictOf(p: Payload, live: NamedResource, baseline: Baseline = p.baseline): PromptConflict | null {
-  return detectPromptConflict({
-    liveSystem: liveSystemOf(live),
-    liveVersion: typeof live.version === "number" ? live.version : null,
-    syncedHash: baseline.syncedHash,
-    registeredVersion: baseline.registeredVersion,
-    composedSystem: p.system,
-    placeholderValues: p.values,
-    toolsList: p.toolsList,
+  // 4. La composición (prompt del operador + CORE_SCAFFOLD, tools por compuertas, placeholders)
+  //    vive en agent-sync-core: la usa también la CLI scripts/sync-agent.mjs.
+  const composed = composeSyncPayload({
+    cfg,
+    toolRows: (data ?? []) as AgentToolRow[],
+    gateRow: (gateRow ?? null) as ToolGateFlags | null,
+    hasVoice,
+    baseline: await readBaseline(),
   });
+  return { ...composed, apiKey, agentId };
 }
+
+const conflictOf = (p: Payload, live: NamedResource, baseline: Baseline = p.baseline): PromptConflict | null =>
+  conflictFor(p, live, baseline);
 
 /**
  * ¿El prompt vivo fue modificado fuera del dashboard? Para los caminos que cambian el
@@ -287,98 +184,23 @@ export async function syncAgentTools(
     const payload = await buildPayload();
     if (!payload) return { version: null, synced: false };
     if ("error" in payload) return { version: null, synced: false, error: payload.error };
-    const { apiKey, agentId, system, tools, values, toolsList } = payload;
-    if (opts.resolve && !opts.expectedLiveHash) {
-      return { version: null, synced: false, error: "Falta el hash del prompt vivo que se revisó (expectedLiveHash): recargá la página y volvé a elegir." };
-    }
-
-    // Importar lo vivo a la DB: no se empuja nada.
-    if (opts.resolve === "import_live") {
-      const live = await retrieveAgent(apiKey, agentId);
-      const liveSystem = liveSystemOf(live);
-      // TOCTOU: el operador eligió mirando un vivo; si cambió, NO se importa algo que no vio.
-      if (!checkResolveHash(opts.expectedLiveHash, liveSystem).ok) {
-        return {
-          version: null,
-          synced: false,
-          stale: true,
-          conflict: conflictOf(payload, live) ?? undefined,
-          error: STALE_ERROR,
-        };
-      }
-      const operatorPrompt = liveSystem ? extractOperatorPrompt(liveSystem) : null;
-      if (!liveSystem || operatorPrompt === null) {
-        return {
-          version: null,
-          synced: false,
-          error:
-            "No se pudo separar el prompt del operador del agente vivo (el bloque del sistema fue modificado). Sobrescribí con el de la DB o editalo a mano.",
-        };
-      }
-      const version = typeof live.version === "number" ? live.version : 0;
-      // El vivo trae los placeholders YA sustituidos: se restituyen los valores conocidos
-      // (inversa de substitutePlaceholders) para que renombrar el operador o un store siga
-      // propagándose. Los valores ambiguos (cortos / palabras comunes) NO se tocan y se informan.
-      const placeholders = placeholderize(operatorPrompt, values, { toolsList });
-      await setConfigValues(
-        {
-          SYSTEM_PROMPT: placeholders.text,
-          AGENT_PROMPT_SYNCED_HASH: hashPrompt(liveSystem),
-          ANTHROPIC_AGENT_VERSION: String(version),
-        },
-        writer
-      );
-      return { version, synced: true, imported: true, placeholders };
-    }
-
-    // 4. Concurrencia optimista + sincronización segura (lib/guarded-push): ante un 409 se
-    //    reintenta una vez RELEYENDO la línea base registrada.
-    const pushed = await guardedPush(
+    const { apiKey, agentId } = payload;
+    // Decisión y escritura: agent-sync-core.runAgentSync (compartida con la CLI).
+    const res = await runAgentSync(
       {
         readBaseline,
         retrieve: () => retrieveAgent(apiKey, agentId),
-        detect: (live, baseline) => conflictOf(payload, live, baseline),
-        push: async (version) => {
-          const updated = await updateAgent(apiKey, agentId, { version, system, tools });
+        update: async (version, body) => {
+          const updated = await updateAgent(apiKey, agentId, { version, ...body });
           return (updated.version as number) ?? 0;
         },
-        // El 409 de versión, o un «conflict» explícito — NO la palabra «version» suelta (aparece
-        // también en errores ajenos, p. ej. un header anthropic-version inválido).
-        isVersionConflict: (err) => /\b409\b|conflict/i.test(err instanceof Error ? err.message : String(err)),
-        liveHash: (live) => hashPrompt(liveSystemOf(live) ?? ""),
+        writeConfig: (values) => setConfigValues(values, writer),
       },
-      {
-        overwrite: opts.resolve === "overwrite",
-        initialBaseline: payload.baseline,
-        // La guardia solo aplica a una resolución explícita (la sincronización normal no tiene un diff mostrado).
-        expectedLiveHash: opts.resolve ? opts.expectedLiveHash : undefined,
-      }
+      payload,
+      opts
     );
-    if (!pushed.ok) {
-      if ("stale" in pushed) {
-        return { version: null, synced: false, stale: true, conflict: pushed.freshConflict ?? undefined, error: STALE_ERROR };
-      }
-      if ("conflict" in pushed) {
-        return { version: null, synced: false, error: conflictError(pushed.conflict), conflict: pushed.conflict };
-      }
-      console.error("syncAgentTools: updateAgent failed:", pushed.error);
-      return { version: null, synced: false, error: pushed.error };
-    }
-    const newVersion = pushed.version;
-
-    // 5. Persist the bumped version so the editor page can show it, y el hash del
-    //    system EXACTO que se envió: es la referencia contra la que la próxima
-    //    sincronización detecta una edición externa.
-    await setConfigValues(
-      {
-        ANTHROPIC_AGENT_VERSION: String(newVersion),
-        AGENT_SCAFFOLD_HASH: scaffoldHash(),
-        AGENT_PROMPT_SYNCED_HASH: hashPrompt(system),
-      },
-      writer
-    );
-
-    return { version: newVersion, synced: true };
+    if (!res.synced && res.error && !res.conflict && !res.stale) console.error("syncAgentTools: updateAgent failed:", res.error);
+    return res;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("syncAgentTools: unexpected error:", msg);

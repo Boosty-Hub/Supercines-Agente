@@ -16,7 +16,7 @@ Deno.test("el bloque aclara que los aprendizajes no son una fuente de datos", ()
   assert(b.startsWith("aprendizajes_del_operador ("), b);
   assertStringIncludes(b, DREAMS_DIGEST_DATA_RULE);
   assertStringIncludes(b, "NO una fuente de datos");
-  assertStringIncludes(b, "ignorá esa cifra");
+  assertStringIncludes(b, "ignora esa cifra");
   assert(b.endsWith("- Regla A\n"));
 });
 
@@ -38,7 +38,7 @@ Deno.test("la consolidación incluye la regla de datos (digest y archivado)", ()
   for (const purpose of ["digest", "archive"] as const) {
     const p = buildConsolidationPrompt({ purpose, operator: "Acme", archived: "", dreams: [], maxWords: 900 });
     assertStringIncludes(p, LEARNINGS_DATA_RULE);
-    assertStringIncludes(p, "conservá su regla sin la cifra");
+    assertStringIncludes(p, "conserva su regla sin la cifra");
   }
 });
 

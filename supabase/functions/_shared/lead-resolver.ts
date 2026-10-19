@@ -213,6 +213,28 @@ export function wakeRefsFor(m: MessageLeadRefs): string[] {
 }
 
 /**
+ * Tope de despertares por fila en espera (inbound_queue.wake_count, 0094; paridad con
+ * `v_max_wakes` de wake_waiting_rows, lo verifica un test).
+ */
+export const MAX_WAKES_PER_ROW = 3;
+
+/**
+ * Refs con las que un mensaje puede DESPERTAR filas en espera. El webhook es público: una fila SIN
+ * firma la pudo forjar cualquiera con la URL, y un talk_id ajeno despertaría (y gastaría el
+ * backoff de) filas de otras conversaciones. Solo despierta una fila firmada, y solo con mensajes
+ * cuyo lead vino del propio payload firmado (`via: "payload"`) o lo confirmó la API de talks
+ * (`via: "talk"`).
+ */
+export function wakeRefsForTrusted(
+  m: MessageLeadRefs,
+  ctx: { signed: boolean; via: "payload" | "talk" },
+): string[] {
+  if (ctx.signed !== true) return [];
+  if (ctx.via !== "payload" && ctx.via !== "talk") return [];
+  return wakeRefsFor(m);
+}
+
+/**
  * Lo que una fila en espera deja en `inbound_queue.waiting_refs`: talk y chat (solo despiertan
  * la fila) y los contactos VERIFICADOS por la API de Kommo (los únicos que difieren respuestas).
  */

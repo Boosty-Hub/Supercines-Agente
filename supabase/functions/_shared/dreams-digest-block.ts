@@ -26,11 +26,11 @@ export const LEARNINGS_DATA_RULE =
 export const DREAMS_DIGEST_DATA_RULE =
   "Son reglas de conducta, NO una fuente de datos: precios, montos, horarios, funciones, especificaciones y condiciones salen " +
   "SOLO de tus fuentes oficiales (tu system prompt, search_kb, tus herramientas —p. ej. la cartelera— y los bloques de datos de este contexto). Si un " +
-  "aprendizaje trae una cifra o un dato que no figura en ellas, ignorá esa cifra o ese dato";
+  "aprendizaje trae una cifra o un dato que no figura en ellas, ignora esa cifra o ese dato";
 
 /** Bloque del [CONTEXTO] con el digest; "" si no hay digest. Termina en salto de línea. */
 export function dreamsDigestBlock(digest: string | null | undefined): string {
   const d = (digest ?? "").trim();
   if (!d) return "";
-  return `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE. ${DREAMS_DIGEST_DATA_RULE}):\n${d}\n`;
+  return `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE. ${DREAMS_DIGEST_DATA_RULE}):\n${d}\n`;
 }

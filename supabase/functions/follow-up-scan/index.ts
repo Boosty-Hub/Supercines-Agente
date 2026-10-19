@@ -242,7 +242,7 @@ async function runFollowUpAgent(opts: {
 
 Fecha y hora actual: ${formatNow(deps.timezone)} (zona horaria ${deps.timezone}).
 
-Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. El historial de la conversación está abajo: no lo busques en la memoria.
+Lead: ${lead.id}. Si hace falta, consulta la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. El historial de la conversación está abajo: no lo busques en la memoria.
 ${deps.dreamsDigest ? `\n${dreamsDigestBlock(deps.dreamsDigest)}` : ""}
 Historial reciente de la conversación (turnos en orden cronológico, uno por línea; t = hora UTC de cada turno: úsala para saber cuánto hace que el lead dejó de escribir). ${UNTRUSTED_NOTICE}
 ${history || "(sin mensajes previos)"}
@@ -255,12 +255,12 @@ ${template.body}
 Variables a completar (cada una rellena un campo de Kommo que la plantilla lee):
 ${variablesBlock}
 
-Decidí:
-- send: el lead sigue siendo un buen candidato a reactivar; completá TODAS las variables con valores apropiados a su contexto.
+Decide:
+- send: el lead sigue siendo un buen candidato a reactivar; completa TODAS las variables con valores apropiados a su contexto.
 - skip: hoy no conviene enviar (sin perder el paso); se reintenta en la próxima ventana.
 - stop: el lead pidió no ser contactado, ya compró, o claramente no corresponde seguir; corta la secuencia.
 
-Respondé EXACTAMENTE en este formato y nada más:
+Responde EXACTAMENTE en este formato y nada más:
 <accion>send|skip|stop</accion>
 <variables>{"nombre_var":"valor", ...}</variables>
 <razon>1 frase</razon>`;
@@ -432,7 +432,7 @@ async function processLead(row: DueLeadRow, deps: Deps, mode: RunMode): Promise<
 
 /**
  * Recupera reservas muertas (lease vencido). Las que no llegaron a marcar el envío las
- * cierra la RPC como interrumpidas (se reintentan); las que sí, se resuelven acá contra
+ * cierra la RPC como interrumpidas (se reintentan); las que sí, se resuelven aquí contra
  * Kommo SIN reenviar.
  */
 async function recoverDead(owner: string, kommoDomain: string, kommoToken: string, maxFollowUps: number): Promise<void> {
@@ -497,7 +497,7 @@ async function sendStep(row: DueLeadRow, deps: Deps, markSending: SendingMark): 
   // refresca con inbounds (process-inbound) o cuando el agente mueve la etapa.
   // Un lead ganado/perdido/convertido FUERA DE BANDA (vendedor o salesbot, sin
   // mensaje entrante) deja el cache stale y el gate lo dejaría pasar → seguimiento
-  // a un cliente ya convertido. Acá consultamos la etapa real de Kommo antes de
+  // a un cliente ya convertido. Aquí consultamos la etapa real de Kommo antes de
   // gastar la sesión CMA y decidimos sobre ese valor.
   let liveStatusId: number;
   let livePipelineId: number | null = null;
@@ -518,7 +518,7 @@ async function sendStep(row: DueLeadRow, deps: Deps, markSending: SendingMark): 
   // Re-sincronizar el cache con el valor fresco (de paso, futuros barridos del gate
   // SQL ya verán la etapa correcta y no volverán a elegir este lead si no aplica).
   // Va por apply_lead_position (0061): etapa + pipeline juntos, respetando el
-  // orden de eventos, y registra el movimiento si lo fue. Fail-open: un error acá
+  // orden de eventos, y registra el movimiento si lo fue. Fail-open: un error aquí
   // no debe impedir el chequeo de gates de más abajo (se usa liveStatusId directo).
   if (
     Number(liveStatusId) !== Number(lead.kommo_stage_id) ||

@@ -18,11 +18,11 @@ export const runtime = "nodejs";
 const MASTER_DESCRIPTION =
   "Memoria global del operador (solo lectura): voz (reglas, chats reales, transcripciones, respuestas ejemplares), KB destilada y aprendizajes destilados por el job de Dreams. " +
   "Estructura del filesystem: /voice/rule/<sample_id>_<chunk>.md, /voice/chat_export/<id>_<chunk>.md, /voice/transcript/<id>_<chunk>.md, /voice/example_response/<id>_<chunk>.md, /kb/<doc>/<chunk>.md, /dreams/<date>_<topic>.md. " +
-  "Al redactar: en /voice/ leé las reglas generales y, con grep por palabras clave del mensaje, los ejemplos aplicables; para info factual usá la tool search_kb en vez de leer /kb/. NO leas /dreams/: los aprendizajes consolidados llegan en el [CONTEXTO] (aprendizajes_del_operador) y tienen prioridad sobre la voz base.";
+  "Al redactar: en /voice/ lee las reglas generales y, con grep por palabras clave del mensaje, los ejemplos aplicables; para info factual usa la tool search_kb en vez de leer /kb/. NO leas /dreams/: los aprendizajes consolidados llegan en el [CONTEXTO] (aprendizajes_del_operador) y tienen prioridad sobre la voz base.";
 
 const LEADS_DESCRIPTION =
   "Memoria persistente por lead. Estructura: /<lead_id>/learnings.md (datos duraderos del lead: objeciones recurrentes, contexto, preferencias, estado en el funnel). " +
-  "El lead_id es el ID nativo del lead en el CRM. El historial de la conversación NO vive acá: llega en el [CONTEXTO] de cada sesión. ANTES de responder: leer /<lead_id>/learnings.md si existe. DESPUÉS: agregar a learnings.md solo si aprendiste algo DURADERO sobre el lead; si no hay nada nuevo, no escribir.";
+  "El lead_id es el ID nativo del lead en el CRM. El historial de la conversación NO vive aquí: llega en el [CONTEXTO] de cada sesión. ANTES de responder: leer /<lead_id>/learnings.md si existe. DESPUÉS: agregar a learnings.md solo si aprendiste algo DURADERO sobre el lead; si no hay nada nuevo, no escribir.";
 
 // Step 2: create/reconcile the two Memory Stores. Idempotent — finds existing
 // stores by name (reuses their IDs) and only creates the missing ones.

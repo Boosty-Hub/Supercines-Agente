@@ -28,6 +28,8 @@ import {
   retryPayload,
   waitingRefsFor,
   wakeRefsFor,
+  wakeRefsForTrusted,
+  MAX_WAKES_PER_ROW,
 } from "./lead-resolver.ts";
 
 // Forma REAL (Vitalicia, 2026-10-19): message.add de origin onlinechat llega SIN
@@ -479,4 +481,22 @@ Deno.test("despertar: SOLO filas que siguen esperando el lead (sin fallas de pro
     ["gt", "not_before", "2026-10-19T12:00:00.000Z"],
   ]);
   assertEquals(WAKE_LAST_ERROR_PREFIX, "lead_unresolved");
+});
+
+Deno.test("despertar: una fila SIN firma no junta refs (no puede despertar filas de otras conversaciones)", () => {
+  const m = { talk_id: "77", chat_id: "abc-1" };
+  assertEquals(wakeRefsForTrusted(m, { signed: false, via: "payload" }), []);
+  assertEquals(wakeRefsForTrusted(m, { signed: false, via: "talk" }), []);
+});
+
+Deno.test("despertar: una fila firmada junta refs si el lead vino del payload firmado o lo confirmó la API de talks", () => {
+  const m = { talk_id: "77", chat_id: "abc-1" };
+  assertEquals(wakeRefsForTrusted(m, { signed: true, via: "payload" }), ["talk:77", "chat:abc-1"]);
+  assertEquals(wakeRefsForTrusted(m, { signed: true, via: "talk" }), ["talk:77", "chat:abc-1"]);
+});
+
+Deno.test("despertar: tope de despertares por fila, paridad con la migración 0094", async () => {
+  assertEquals(MAX_WAKES_PER_ROW, 3);
+  const sql = await Deno.readTextFile(new URL("../../migrations/0094_wake_waiting_rows.sql", import.meta.url));
+  assert(sql.includes(`v_max_wakes constant int := ${MAX_WAKES_PER_ROW};`), "el tope de la migración no coincide");
 });

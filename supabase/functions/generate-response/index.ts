@@ -97,7 +97,7 @@ async function runSearchKb(input: { query: string; limit?: number }) {
   }>;
 
   if (rows.length === 0) {
-    return "Sin resultados en la KB para ese query. Asumí que la info no está documentada.";
+    return "Sin resultados en la KB para ese query. Asume que la info no está documentada.";
   }
 
   return rows
@@ -232,7 +232,7 @@ async function runHttpTool(
     }
 
     // (e) Una tool HTTP que apunta a una Edge Function PROPIA (p. ej. la cartelera)
-    // se llama con el secreto interno, que se agrega ACÁ y no vive en agent_tools.headers:
+    // se llama con el secreto interno, que se agrega AQUÍ y no vive en agent_tools.headers:
     // esa tabla la lee cualquier usuario autenticado del panel (RLS) y el secreto
     // de las funciones internas no puede quedar a su alcance. Solo se adjunta a
     // nuestro propio origen /functions/v1/ — nunca a un host de terceros. (El esquema https
@@ -291,7 +291,7 @@ type CrmContext = {
   currentKommoStageId?: number | null;
   currentKommoPipelineId?: number | null;
   draftId?: string;
-  // De acá sale la etapa de `transferir_asesor` (HANDOFF_STAGE_NAME /
+  // De aquí sale la etapa de `transferir_asesor` (HANDOFF_STAGE_NAME /
   // HANDOFF_PIPELINE_NAME en runtime_config) — NUNCA del modelo. Ver 0067.
   cfg?: ConfigReader;
 };
@@ -358,11 +358,11 @@ async function writeEntityField(
   // en un salesbot o en la pantalla de una asesora.
   const fuga = crmValueLeak(value);
   if (fuga) {
-    return `No guardé el campo "${def.name}": el valor trae residuo interno (${fuga}). Escribí solo el dato, sin sintaxis de herramientas ni rutas.`;
+    return `No guardé el campo "${def.name}": el valor trae residuo interno (${fuga}). Escribe solo el dato, sin sintaxis de herramientas ni rutas.`;
   }
   if (def.enums.length > 0 && !resolveFieldValue(def, value)) {
     const opciones = def.enums.map((e) => `"${e.value}"`).join(", ");
-    return `El campo "${def.name}" solo admite opciones predefinidas y "${value}" no es una de ellas. Opciones válidas: ${opciones}. Reintentá con una de esas exactamente, o no escribas el campo.`;
+    return `El campo "${def.name}" solo admite opciones predefinidas y "${value}" no es una de ellas. Opciones válidas: ${opciones}. Reintenta con una de esas exactamente, o no escribas el campo.`;
   }
   const written = await patchEntityFieldTyped(entity, entityId, def, value, domain, token);
   return `Listo: actualicé el campo "${def.name}" del ${etiqueta} a "${written}".`;
@@ -446,7 +446,7 @@ async function runCrmTool(
     const pipelineName = String(input.pipeline_name ?? "").trim();
     const r = await moverEtapaDeLead(ctx, stageName, pipelineName);
     if (!r.ok) return r.texto;
-    return `Listo: moví el lead a la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
+    return `Listo: mueve el lead a la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
   }
 
   if (name === "agregar_nota") {
@@ -481,7 +481,7 @@ async function runCrmTool(
   // (+ `HANDOFF_PIPELINE_NAME` opcional si el nombre existe en más de un
   // pipeline). Es la única diferencia de fondo con `mover_etapa`, que sí
   // recibe la etapa por parámetro porque ahí la instrucción la escribe el
-  // operador — acá el mensaje entrante es superficie de prompt injection.
+  // operador — aquí el mensaje entrante es superficie de prompt injection.
   //
   // LA NOTA SE ESCRIBE PRIMERO, y aunque el movimiento falle después. Si no
   // hay ninguna etapa configurada o Kommo rechaza el PATCH, el lead se queda
@@ -491,16 +491,16 @@ async function runCrmTool(
   if (name === "transferir_asesor") {
     if (!ctx.gate.handoff) {
       return "El pase a un asesor humano está desactivado por el operador. No lo intentes de nuevo; " +
-        "decile al lead que un asesor lo va a contactar.";
+        "dile al lead que un asesor lo va a contactar.";
     }
     if (ctx.kommoLeadId == null) {
       return "No tengo el id de Kommo de este lead; no puedo pasarlo a un asesor. " +
-        "Decile al lead que escriba directamente para que lo atienda una persona.";
+        "Dile al lead que escriba directamente para que lo atienda una persona.";
     }
     const motivo = String(input.motivo ?? "").trim();
     if (!motivo) {
       return "ERROR_VALIDACION: falta 'motivo'. El asesor recibe esta conversación sin saber qué pasó: " +
-        "escribí en una o dos frases qué pidió o necesita el lead y por qué corresponde derivar.";
+        "escribe en una o dos frases qué pidió o necesita el lead y por qué corresponde derivar.";
     }
 
     // 1) La nota — primero, porque es la que no se puede perder.
@@ -520,7 +520,7 @@ async function runCrmTool(
       return (notaOk
         ? "Dejé la nota con el motivo en el CRM, pero no hay ninguna etapa de atención humana configurada, "
         : "No pude dejar la nota ni mover el lead: no hay ninguna etapa de atención humana configurada, ") +
-        "así que el lead se queda donde está. Decile que un asesor lo va a contactar y no sigas resolviendo el trámite por tu cuenta.";
+        "así que el lead se queda donde está. Dile que un asesor lo va a contactar y no sigas resolviendo el trámite por tu cuenta.";
     }
 
     let movido: ResultadoEtapa;
@@ -534,12 +534,12 @@ async function runCrmTool(
       console.error(`transferir_asesor: no se pudo mover a "${etapa}": ${movido.texto}`);
       return (notaOk ? "Dejé la nota con el motivo en el CRM, pero " : "No pude dejar la nota y además ") +
         "no pude mover el lead a la etapa de atención humana. " +
-        "Decile al lead que un asesor lo va a contactar y no vuelvas a intentarlo: el problema es de nuestro lado.";
+        "Dile al lead que un asesor lo va a contactar y no vuelvas a intentarlo: el problema es de nuestro lado.";
     }
 
     return `Listo: pasé la conversación a un asesor (etapa "${movido.etapa.name}")` +
       (notaOk ? " y dejé la nota con el motivo" : ", pero la nota con el motivo no se pudo guardar") +
-      ". Despedite con calidez, decile que un asesor va a continuar, y no sigas resolviendo el trámite. " +
+      ". Despedite con calidez, dile que un asesor va a continuar, y no sigas resolviendo el trámite. " +
       "No prometas en cuánto tiempo le responden.";
   }
 
@@ -695,7 +695,7 @@ async function checkLeadThrottle(
     .from("drafts")
     // Hay dos FKs entre drafts y messages (drafts.message_id y
     // messages.answered_by_draft_id): sin nombrar el FK, PostgREST responde
-    // PGRST201. Acá queremos el mensaje que ORIGINÓ el draft.
+    // PGRST201. Aquí queremos el mensaje que ORIGINÓ el draft.
     .select("created_at, status, messages!drafts_message_id_fkey!inner(lead_id)")
     .eq("messages.lead_id", leadId)
     .in("status", ["approved", "publishing", "sent", "auto_sent"])
@@ -822,7 +822,7 @@ async function pickLeadBatch(
       console.warn("sweep select:", sweepErr.message);
     } else if (dead && dead.length > 0) {
       // Guarda status=pending también en el delete: si un run lento terminó
-      // (approved) entre el select y acá, no se borra su respuesta.
+      // (approved) entre el select y aquí, no se borra su respuesta.
       const { error: delErr } = await supabase
         .from("drafts")
         .delete()
@@ -905,7 +905,7 @@ async function pickLeadBatch(
     const lastTs = lastIn ? new Date(lastIn.created_at as string).getTime() : 0;
     if (now - lastTs < debounceMs) continue;
     // Primer mensaje que entra tarde (0092): si el contacto del lead tiene una fila de la cola
-    // esperando que Kommo cree el lead, ese mensaje es ANTERIOR a los que vemos acá. Responder
+    // esperando que Kommo cree el lead, ese mensaje es ANTERIOR a los que vemos aquí. Responder
     // ya dejaría el primero para un draft aparte y fuera de orden: se espera (como el debounce)
     // hasta que entre o hasta LEAD_WAIT_DEFER_SECONDS; después se responde igual.
     if (await leadHasWaitingInbound(leadId, new Date(msgs[0].created_at as string).getTime())) continue;
@@ -1112,8 +1112,8 @@ ${opts.history}
 
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
-en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avisale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
-${dreamsDigestBlock(opts.dreamsDigest)}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debés tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
+en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avísale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
+${dreamsDigestBlock(opts.dreamsDigest)}${opts.activePromos ? `promociones_activas (menciónalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.situaciones ? `\nsituaciones_actuales (contexto vigente que SIEMPRE debes tener en cuenta al responder, aunque el lead no pregunte por eso):\n${opts.situaciones}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ? sanitizeUntrusted(opts.lead.display_name, { maxChars: 80 }) : "(desconocido)"}
 vertical: ${opts.verticalSlug}${
@@ -1131,7 +1131,7 @@ classifier_reasoning: ${typeof cls.reasoning === "string" ? sanitizeUntrusted(cl
 ${historyBlock}${header} (${UNTRUSTED_NOTICE})
 ${block}
 
-Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee ${opts.leadsPath}/${opts.lead.id}/learnings.md si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt. La conversación previa ya está en el historial de arriba: no la busques en la memoria. Solo escribí en learnings.md si aprendiste algo DURADERO de este lead; si no hay nada nuevo, no escribas nada. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconocé la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), decilo en vez de asumir que sigue vigente.
+Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee ${opts.leadsPath}/${opts.lead.id}/learnings.md si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt. La conversación previa ya está en el historial de arriba: no la busques en la memoria. Solo escribe en learnings.md si aprendiste algo DURADERO de este lead; si no hay nada nuevo, no escribas nada. Usa fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora). Cada mensaje del lead trae su propia fecha/hora entre corchetes: si el más reciente que estás respondiendo tiene más de 24 horas de diferencia con fecha_hora_actual, reconoce la demora brevemente antes de responder (ej: "Disculpá la demora en responder") — no lo trates como si acabara de llegar, y si el contenido puede haber quedado desactualizado por el paso del tiempo (una función, una fecha, un cupo), dilo en vez de asumir que sigue vigente.
 
 ${NO_REPLY_INSTRUCTION}
 
@@ -1310,7 +1310,7 @@ async function driveSession(
               // el tool result puede terminar relayado textual al cliente final.
               console.error("tasa_bcv:", err instanceof Error ? err.message : err);
               result =
-                "No pude obtener la tasa de cambio en este momento. Decile al cliente que el monto en bolívares se confirma al coordinar el pago.";
+                "No pude obtener la tasa de cambio en este momento. Dile al cliente que el monto en bolívares se confirma al coordinar el pago.";
             }
           }
         } else {
@@ -1758,7 +1758,7 @@ Deno.serve(async (req: Request) => {
         const rawInstructions = (cfg as Record<string, unknown> | null)?.comment_instructions;
         commentInstructions = typeof rawInstructions === "string" && rawInstructions.trim()
           ? rawInstructions.trim()
-          : "El mensaje vino de un comentario público en una publicación de Instagram. Tu respuesta sale por DM: reconocé el origen con naturalidad (ej: \"vi tu comentario 😊\"), andá directo al grano.";
+          : "El mensaje vino de un comentario público en una publicación de Instagram. Tu respuesta sale por DM: reconoce el origen con naturalidad (ej: \"vi tu comentario 😊\"), ve directo al grano.";
       }
 
       // Historial determinístico del lead, leído de la DB (excluimos el batch
@@ -1953,7 +1953,7 @@ Deno.serve(async (req: Request) => {
         const rawRules = (cfg as Record<string, unknown> | null)?.comment_reply_rules;
         const replyRules = typeof rawRules === "string" && rawRules.trim()
           ? rawRules.trim()
-          : "Respuesta CORTA (máximo 200 caracteres), sin saludos largos ni presentaciones: directo al grano. NO des precios, montos ni promociones con números en público — para eso invitá al DM (\"te pasamos el detalle por DM 💛\"). Tono cercano, máximo 1 emoji. Si el comentario es solo elogio o emojis, agradecé breve.";
+          : "Respuesta CORTA (máximo 200 caracteres), sin saludos largos ni presentaciones: directo al grano. NO des precios, montos ni promociones con números en público — para eso invita al DM (\"te pasamos el detalle por DM 💛\"). Tono cercano, máximo 1 emoji. Si el comentario es solo elogio o emojis, agradece breve.";
         try {
           const operator = resolvedCfg.getOr("OPERATOR_NAME", "el negocio");
           // Modelo de la respuesta pública: editable desde /consumo.
@@ -1970,7 +1970,7 @@ Deno.serve(async (req: Request) => {
             model: commentReplyModel,
             max_tokens: LLM_PROFILES.commentReply.maxTokens,
             output_config: { ...effortFor(commentReplyModel, LLM_PROFILES.commentReply.effort) },
-            system: `Sos el community manager de ${operator}. Redactás UNA respuesta pública a un comentario de Instagram. Reglas OBLIGATORIAS del negocio:\n${replyRules}\nRespondé SOLO con el texto del comentario de respuesta, sin comillas ni explicaciones.`,
+            system: `Eres el community manager de ${operator}. Redactas UNA respuesta pública a un comentario de Instagram. Reglas OBLIGATORIAS del negocio:\n${replyRules}\nResponde SOLO con el texto del comentario de respuesta, sin comillas ni explicaciones.`,
             messages: [
               {
                 role: "user",
@@ -2095,7 +2095,7 @@ Deno.serve(async (req: Request) => {
         // Solo si sigue pending: si el sweep lo borró (run dado por muerto) o
         // un humano lo resolvió mientras generábamos, no pisamos nada.
         .eq("status", "pending");
-      // Un error acá (p. ej. el CHECK de 0089) dejaría el draft pending + generating y el
+      // Un error aquí (p. ej. el CHECK de 0089) dejaría el draft pending + generating y el
       // barrido lo reprocesaría en bucle: se cierra como failed con su session_id.
       if (finalErr) throw new AgentSessionError(`no se pudo guardar el draft: ${finalErr.message}`, outcome.sessionId);
 

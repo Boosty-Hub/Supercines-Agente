@@ -106,7 +106,7 @@ Deno.test("payload que viaja a través del agente: queda como DATO dentro del tu
   // el payload solo aparece dentro de bloques de datos (con prefijo "| "), nunca como renglón libre
   for (const l of body(p).split("\n")) if (l.includes(PAYLOAD)) assert(l.startsWith("| "), l);
   // la única instrucción de cierre es la del propio grader
-  assert(p.trimEnd().endsWith("devolvé JSON estricto."));
+  assert(p.trimEnd().endsWith("devuelve JSON estricto."));
 });
 
 Deno.test("turnPreservingLines: rol inválido lanza, y el texto vacío no rompe el bloque", () => {

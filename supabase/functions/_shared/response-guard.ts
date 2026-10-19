@@ -34,7 +34,7 @@
  * positivo es bajo. Los nombres de tool y las rutas de Memory Store son los
  * genéricos que declara ESTE template (`generate-response/index.ts`); un
  * cliente del gremio que agregue tools propias por HTTP (`agent_tools`) no
- * queda cubierto por nombre acá — pero cualquier fuga de esas queda igual
+ * queda cubierto por nombre aquí — pero cualquier fuga de esas queda igual
  * atrapada por los patrones de sintaxis de tool-calling (`<invoke>`,
  * `<function_calls>`, `tool_use`, etc.), que no dependen del nombre.
  */
@@ -98,7 +98,7 @@ export function detectInternalLeak(text: string | null | undefined): string | nu
  *
  * Antes esto vivía inline en generate-response con un fallback fatal: si el
  * tag no matcheaba, usaba el texto CRUDO — que es exactamente cómo el
- * razonamiento del agente terminó en el chat de un cliente. Acá el fallback
+ * razonamiento del agente terminó en el chat de un cliente. Aquí el fallback
  * NO existe: si no hay un bloque bien formado, `wellFormed` es false y el
  * llamador está obligado a NO auto-enviar (forzar revisión humana), no a
  * reprocesar en silencio y confiar en el texto rescatado.

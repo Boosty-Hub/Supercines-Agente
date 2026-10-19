@@ -68,7 +68,7 @@ export async function POST(request: Request) {
     .join("\n\n");
 
   const currentBlock = current
-    ? `GRADER ACTUAL (refinálo, no empieces de cero):
+    ? `GRADER ACTUAL (refínalo, no empieces de cero):
 nombre: ${current.name ?? ""}
 descripción: ${current.description ?? ""}
 escala: ${current.scale ?? "numeric_0_1"}
@@ -96,12 +96,12 @@ ${current.prompt ?? ""}`
         prompt: z
           .string()
           .describe(
-            "El PROMPT del juez LLM: una instrucción imparcial que evalúa la respuesta del agente y devuelve SOLO un JSON {\"score\": ..., \"reasoning\": \"...\"}. Para numeric_0_1 el score va de 0.0 a 1.0; para pass_fail usá 1.0 (cumple) o 0.0 (no cumple). Indicá claramente qué se considera bueno y qué malo. Si dudás, bajá el score."
+            "El PROMPT del juez LLM: una instrucción imparcial que evalúa la respuesta del agente y devuelve SOLO un JSON {\"score\": ..., \"reasoning\": \"...\"}. Para numeric_0_1 el score va de 0.0 a 1.0; para pass_fail usa 1.0 (cumple) o 0.0 (no cumple). Indica claramente qué se considera bueno y qué malo. Si dudas, baja el score."
           ),
       }),
-      prompt: `Sos un experto en evaluación de calidad (graders / LLM-as-judge) para respuestas de un agente conversacional de ventas/atención.
+      prompt: `Eres un experto en evaluación de calidad (graders / LLM-as-judge) para respuestas de un agente conversacional de ventas/atención.
 
-Construí UN grader que mida exactamente lo que pide el operador, alineado al agente ya configurado.
+Construye UN grader que mida exactamente lo que pide el operador, alineado al agente ya configurado.
 
 PEDIDO DEL OPERADOR:
 ${instruction}
@@ -115,7 +115,7 @@ Reglas:
 - El prompt del juez DEBE pedir que devuelva únicamente un JSON {"score": ..., "reasoning": "..."}.
 - numeric_0_1: score 0.0-1.0 (gradual). pass_fail: score 1.0 (cumple) o 0.0 (no cumple).
 - Sé concreto sobre qué es un buen vs mal resultado. slug en snake_case.
-- Si te pasaron un GRADER ACTUAL, conservá su intención y solo aplicá el ajuste pedido.`,
+- Si te pasaron un GRADER ACTUAL, conserva su intención y solo aplica el ajuste pedido.`,
     });
     await recordWebUsage({ component: "dashboard_graders_generate", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, grader: object });

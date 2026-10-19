@@ -20,7 +20,7 @@
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
-// Estructural a propósito: acepta Anthropic.Message sin importar el SDK acá
+// Estructural a propósito: acepta Anthropic.Message sin importar el SDK aquí
 // (este módulo es puro y testeable sin red).
 export type MessageLike = {
   content: ReadonlyArray<{ type: string; text?: string }>;

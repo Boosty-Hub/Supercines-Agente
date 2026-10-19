@@ -52,7 +52,7 @@ export async function POST(request: Request) {
             "Nombre corto y amigable para mostrar en el panel/dashboard (ej: 'Agente SUPERCINES', 'Asistente de Ventas')"
           ),
       }),
-      prompt: `Del siguiente negocio, extraé el nombre del operador/marca y un nombre para el panel.\n\n${description}`,
+      prompt: `Del siguiente negocio, extrae el nombre del operador/marca y un nombre para el panel.\n\n${description}`,
     });
     await recordWebUsage({ component: "dashboard_suggest_identity", model: DASHBOARD_MODEL, usage });
     return NextResponse.json({ ok: true, ...object });

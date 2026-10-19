@@ -98,9 +98,9 @@ export async function POST(request: Request) {
             "Horas de inactividad tras las cuales se envía este seguimiento (paso de la secuencia). Ej: 24 para un primer recordatorio, 48/72 para los siguientes. Default 24 si no hay pista."
           ),
       }),
-      prompt: `Sos un experto en WhatsApp Business y seguimiento automático de leads para agentes de ventas.
+      prompt: `Eres un experto en WhatsApp Business y seguimiento automático de leads para agentes de ventas.
 
-El operador quiere crear UNA plantilla de seguimiento de WhatsApp. Construila a partir de su pedido, alineada al agente ya configurado.
+El operador quiere crear UNA plantilla de seguimiento de WhatsApp. Constrúyela a partir de su pedido, alineada al agente ya configurado.
 
 PEDIDO DEL OPERADOR:
 ${instruction}
@@ -113,9 +113,9 @@ ${existingFields.length > 0 ? existingFields.map((f) => `- ${f}`).join("\n") : "
 
 Reglas:
 - El cuerpo (body) debe ser un mensaje que Meta aprobaría: sin spam, conciso, útil.
-- Usá {{nombre_variable}} en el body para los placeholders. Las variables son completadas por el agente en runtime.
+- Usa {{nombre_variable}} en el body para los placeholders. Las variables son completadas por el agente en runtime.
 - Las variables deben ser pocas (idealmente 1-3) y con descripciones claras para que el agente sepa qué poner.
-- IMPORTANTE: si una variable corresponde a un campo que YA EXISTE en Kommo (lista de arriba), nombrala EXACTAMENTE igual que ese campo para que se reuse automáticamente y no se creen duplicados.
+- IMPORTANTE: si una variable corresponde a un campo que YA EXISTE en Kommo (lista de arriba), nómbrala EXACTAMENTE igual que ese campo para que se reuse automáticamente y no se creen duplicados.
 - La plantilla es fija (texto aprobado) — el agente NO modifica el body, solo rellena los placeholders.
 - name en snake_case, sin espacios.`,
     });

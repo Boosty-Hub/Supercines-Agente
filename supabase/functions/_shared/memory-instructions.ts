@@ -18,15 +18,15 @@
 // conversación (y que alimentan a Dreams).
 
 export const MASTER_STORE_INSTRUCTIONS =
-  "Memoria del operador (solo lectura). /voice/: voz, reglas y ejemplos del operador; si hace falta, listá con glob y leé solo lo que aplica al mensaje (grep por palabras clave), no todo. " +
-  "/kb/: conocimiento destilado; para datos factuales usá la tool search_kb en lugar de leer archivos. " +
+  "Memoria del operador (solo lectura). /voice/: voz, reglas y ejemplos del operador; si hace falta, lista con glob y lee solo lo que aplica al mensaje (grep por palabras clave), no todo. " +
+  "/kb/: conocimiento destilado; para datos factuales usa la tool search_kb en lugar de leer archivos. " +
   "/dreams/: NO lo leas; los aprendizajes consolidados ya vienen en el [CONTEXTO] (bloque aprendizajes_del_operador).";
 
 export function leadsStoreInstructions(leadId: string): string {
   return (
-    `Memoria por lead. El lead actual es ${leadId}. Si existe, leé /${leadId}/learnings.md (datos duraderos de este lead). ` +
+    `Memoria por lead. El lead actual es ${leadId}. Si existe, lee /${leadId}/learnings.md (datos duraderos de este lead). ` +
     "El historial de la conversación ya viene en el mensaje de la sesión (historial reciente, tanto al responder como en seguimientos); no lo busques en este store ni lo reescribas. " +
-    `Solo si aprendiste algo DURADERO sobre este lead en este turno (preferencia, dato de contacto verificado, reclamo abierto, estado en el funnel), agregalo a /${leadId}/learnings.md. ` +
+    `Solo si aprendiste algo DURADERO sobre este lead en este turno (preferencia, dato de contacto verificado, reclamo abierto, estado en el funnel), agrégalo a /${leadId}/learnings.md. ` +
     "Si no hay nada duradero que registrar, no escribas nada."
   );
 }

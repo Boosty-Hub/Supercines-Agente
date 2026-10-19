@@ -45,7 +45,7 @@ export async function buildCrmActionsContext(): Promise<string> {
     "- mover el lead de ETAPA del embudo,",
     "- completar CAMPOS del lead o del contacto con datos que surjan de la conversación.",
     "Cómo aprovecharlo al redactar:",
-    "- Si el negocio o el pedido implica una de estas acciones (ej: «cuando confirme la compra, movelo a la etapa Ganado» o «si te da el presupuesto, guardalo en el campo Presupuesto»), incluí la instrucción de forma natural usando los nombres EXACTOS de Kommo de abajo.",
+    "- Si el negocio o el pedido implica una de estas acciones (ej: «cuando confirme la compra, muévelo a la etapa Ganado» o «si te da el presupuesto, guárdalo en el campo Presupuesto»), incluye la instrucción de forma natural usando los nombres EXACTOS de Kommo de abajo.",
     "- Si no aplica, NO la fuerces ni inventes etapas/campos que no existan.",
     "- Estas acciones el operador las activa en «Agente → Acciones»; mientras estén apagadas el agente simplemente las ignora (no rompe nada).",
     stagesLine,

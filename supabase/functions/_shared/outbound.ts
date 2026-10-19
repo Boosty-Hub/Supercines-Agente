@@ -15,9 +15,9 @@
 // variables del seguimiento salían sin verificar. Y el texto EDITADO a mano en el
 // inbox (`edited_body`) ni siquiera se publicaba: publish-to-kommo mandaba
 // `draft.body`, así que lo que el operador corregía NUNCA le llegaba al cliente.
-// Validar en cada llamador es exactamente cómo uno se queda sin validar; acá se
+// Validar en cada llamador es exactamente cómo uno se queda sin validar; aquí se
 // valida una vez, donde se escribe. `outbound.test.ts` falla si aparece otro camino
-// que llame a `patchLeadField` / `patchContactField` / `runSalesbot` sin pasar por acá.
+// que llame a `patchLeadField` / `patchContactField` / `runSalesbot` sin pasar por aquí.
 
 import { draftText } from "./draft-text.ts";
 import { detectInternalLeak } from "./response-guard.ts";

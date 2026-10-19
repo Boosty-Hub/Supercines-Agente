@@ -94,7 +94,7 @@ export async function POST(request: Request) {
           ),
         summary: z.string().describe("Resumen de 1 frase de lo que vas a configurar."),
       }),
-      prompt: `Sos un asistente que configura los filtros de un agente de atención sobre Kommo CRM. El operador describe qué NO quiere que el agente responda y vos armás los filtros concretos. Hay tres dimensiones; usá las que correspondan al pedido (pueden ser varias o una sola).
+      prompt: `Eres un asistente que configura los filtros de un agente de atención sobre Kommo CRM. El operador describe qué NO quiere que el agente responda y tú armas los filtros concretos. Hay tres dimensiones; usa las que correspondan al pedido (pueden ser varias o una sola).
 
 PEDIDO DEL OPERADOR:
 ${instruction}
@@ -105,17 +105,17 @@ DIMENSIÓN 1 — TEXTO (textRules): el mensaje contiene algo.
 - match_type "regex": variantes en un patrón (ej "gana(te|telo)"). Usalo solo si conviene.
 
 DIMENSIÓN 2 — CANALES (channels): el mensaje llega por cierto canal.
-Valores válidos (usá EXACTAMENTE estos): ${CHANNEL_VALUES.join(", ")}.
+Valores válidos (usa EXACTAMENTE estos): ${CHANNEL_VALUES.join(", ")}.
 Equivalencias: whatsapp=waba, instagram_dm=instagram/instagram_business, onlinechat=chat web, tiktok_kommo=tiktok.
 
 DIMENSIÓN 3 — ETAPAS (stageIds): el lead está en cierta etapa del pipeline.
-Etapas disponibles en Kommo (elegí status_id por nombre; si el pedido no menciona etapas, dejá vacío):
+Etapas disponibles en Kommo (elige status_id por nombre; si el pedido no menciona etapas, deja vacío):
 ${stageList}
 
 Reglas:
-- Devolvé SOLO lo que el pedido pide. No inventes filtros de dimensiones no mencionadas (dejalas en array vacío).
-- En channels usá únicamente los valores válidos listados. En stageIds usá únicamente status_id de la lista de etapas.
-- Para texto, cubrí variantes comunes (ej "sorteos" → "sorteo", "ganatelo", "etiquetá", y un mention_tag vacío).
+- Devuelve SOLO lo que el pedido pide. No inventes filtros de dimensiones no mencionadas (déjalas en array vacío).
+- En channels usa únicamente los valores válidos listados. En stageIds usa únicamente status_id de la lista de etapas.
+- Para texto, cubre variantes comunes (ej "sorteos" → "sorteo", "ganatelo", "etiqueta", y un mention_tag vacío).
 - summary: una frase clara en español de lo que vas a configurar.`,
     });
 

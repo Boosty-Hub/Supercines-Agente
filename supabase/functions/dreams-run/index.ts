@@ -29,6 +29,7 @@ import { DREAMS_LEARNINGS_SCHEMA } from "../_shared/llm-schemas.ts";
 import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
+import { LEARNINGS_DATA_RULE } from "../_shared/dreams-digest-block.ts";
 
 import { collectKeyset, keysetFilter } from "../_shared/keyset-pages.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -208,6 +209,7 @@ Reglas:
 - Cada aprendizaje debe ser ESPECÍFICO, no genérico ("siempre sé empático" NO sirve).
 - Citá brevemente la evidencia (qué turno/conversación la respalda).
 - Sé conservador con "error": resérvalo para fallas reales del agente, no para gaps de información.
+- ${LEARNINGS_DATA_RULE}
 - Máximo 8 learnings por run.
 
 Formato JSON:
@@ -341,7 +343,7 @@ const DIGEST_MAX_WORDS_DEFAULT = 900;
 const ARCHIVE_BATCH = 50;
 // Subir al cambiar el prompt de consolidación: invalida el fingerprint guardado y
 // fuerza un rebuild en el próximo run.
-const DIGEST_PROMPT_VERSION = "2";
+const DIGEST_PROMPT_VERSION = "3";
 
 function digestMaxWords(cfg: ConfigReader): number {
   const n = parseInt(cfg.getOr("DREAMS_DIGEST_MAX_WORDS", String(DIGEST_MAX_WORDS_DEFAULT)), 10);

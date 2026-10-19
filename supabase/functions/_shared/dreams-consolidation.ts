@@ -10,6 +10,8 @@
 // BORRABA un dream su regla seguía viva dentro del digest anterior y el consolidador
 // la conservaba: borrar no tenía efecto. Ver dreams-run/index.ts.
 
+import { LEARNINGS_DATA_RULE } from "./dreams-digest-block.ts";
+
 export type DreamLike = { path: string; content: string };
 
 export type ConsolidationPurpose = "digest" | "archive";
@@ -40,5 +42,6 @@ Reglas:
 - Fusioná duplicados y variantes del mismo aprendizaje en una sola viñeta.
 - Priorizá SIEMPRE los errores; si hay que recortar, recortá sugerencias.
 - Descartá lo obsoleto o contradicho por aprendizajes más nuevos (gana el más nuevo).
+- ${LEARNINGS_DATA_RULE} Si un aprendizaje trae una cifra que solo respalda lo que dijo el agente, conservá su regla sin la cifra.
 - NO agregues aprendizajes que no estén en las fuentes. Sin preámbulo ni cierre: solo el texto.`;
 }

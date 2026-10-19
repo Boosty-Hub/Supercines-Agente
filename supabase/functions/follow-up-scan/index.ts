@@ -73,6 +73,7 @@ import { UNTRUSTED_NOTICE } from "../_shared/untrusted.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
 import { resolveTemplateVariables } from "../_shared/followup-variables.ts";
 import { insertAlert } from "../_shared/alerts.ts";
+import { dreamsDigestBlock } from "../_shared/dreams-digest-block.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -242,7 +243,7 @@ async function runFollowUpAgent(opts: {
 Fecha y hora actual: ${formatNow(deps.timezone)} (zona horaria ${deps.timezone}).
 
 Lead: ${lead.id}. Si hace falta, consultá la voz del operador en ${masterPath}/voice/ y, si existe, ${leadsPath}/${lead.id}/learnings.md. El historial de la conversación está abajo: no lo busques en la memoria.
-${deps.dreamsDigest ? `\naprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${deps.dreamsDigest}\n` : ""}
+${deps.dreamsDigest ? `\n${dreamsDigestBlock(deps.dreamsDigest)}` : ""}
 Historial reciente de la conversación (turnos en orden cronológico, uno por línea; t = hora UTC de cada turno: úsala para saber cuánto hace que el lead dejó de escribir). ${UNTRUSTED_NOTICE}
 ${history || "(sin mensajes previos)"}
 

@@ -1,6 +1,6 @@
 // _shared/crm-etapa.ts
 // Resolución PURA de una etapa de Kommo por nombre — sin I/O, sin fetch. Vive
-// acá (y no inline en generate-response/index.ts) porque DOS tools la
+// aquí (y no inline en generate-response/index.ts) porque DOS tools la
 // necesitan con la MISMA regla y solo difieren en quién elige el nombre:
 //
 //   `mover_etapa`       → el nombre lo recibe del MODELO (el operador le
@@ -58,7 +58,7 @@ export function resolverEtapa(
     const opciones = matches.map((s) => `pipeline "${s.pipelineName}"`).join(", ");
     return {
       ok: false,
-      texto: `La etapa "${stageName}" existe en varios pipelines (${opciones}). Especificá 'pipeline_name' y reintentá.`,
+      texto: `La etapa "${stageName}" existe en varios pipelines (${opciones}). Especifica 'pipeline_name' y vuelve a intentarlo.`,
     };
   }
   return { ok: true, etapa: matches[0] };

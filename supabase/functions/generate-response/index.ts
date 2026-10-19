@@ -446,7 +446,7 @@ async function runCrmTool(
     const pipelineName = String(input.pipeline_name ?? "").trim();
     const r = await moverEtapaDeLead(ctx, stageName, pipelineName);
     if (!r.ok) return r.texto;
-    return `Listo: mueve el lead a la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
+    return `Listo: el lead quedó en la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
   }
 
   if (name === "agregar_nota") {

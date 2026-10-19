@@ -15,6 +15,7 @@ const FILES = [
   "web/src/lib/agent-prompt.ts",
   "web/src/lib/crm-context.ts",
   "web/src/lib/dashboard-ai.ts",
+  "supabase/functions/_shared/crm-etapa.ts",
   "supabase/functions/_shared/memory-instructions.ts",
   "supabase/functions/_shared/untrusted.ts",
   "supabase/functions/_shared/grader-prompt.ts",

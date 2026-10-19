@@ -65,7 +65,7 @@ export async function POST(request: Request): Promise<Response> {
       // Pendiente = no desplegada o desplegada con OTRA versión (hash registrado distinto o
       // ausente). Con solo «falta en vivo», una función desplegada fuera del wizard (CLI) sin hash
       // registrado quedaba «hecha» acá y «faltante» para /status, y el /first-run no avanzaba.
-      // Orden de FUNCTIONS = DEPLOY_ORDER (scripts/embed-provision.mjs): invocadores
+      // Orden de FUNCTIONS = DEPLOY_ORDER (scripts/lib/function-bundles.mjs): invocadores
       // antes que invocados, para que ninguna función empiece a exigir el secreto
       // interno antes de que quienes la llaman lo manden. NO ordenar alfabéticamente.
       const deployed = await listFunctions(ref, token);

@@ -8,22 +8,11 @@
 // Auto-run: predev / prebuild hooks in web/package.json
 
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join, resolve, basename, dirname } from "path";
+import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { createHash } from "crypto";
-
-// Hash determinista del contenido de una función (sus archivos), para detectar
-// cuándo una Edge Function cambió respecto a la desplegada (centro de updates).
-function hashFiles(files) {
-  const h = createHash("sha256");
-  for (const f of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
-    h.update(f.path);
-    h.update("\0");
-    h.update(f.body);
-    h.update("\0");
-  }
-  return h.digest("hex").slice(0, 16);
-}
+// Bundles y huella en un módulo compartido con record-function-hashes.mjs: la huella que
+// registra un deploy por CLI tiene que ser EXACTAMENTE la que compara la web.
+import { readFunctionBundles } from "./lib/function-bundles.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,7 +34,6 @@ if (!existsSync(supabaseDir)) {
 
 const migrationsDir = join(supabaseDir, "migrations");
 const functionsDir = join(supabaseDir, "functions");
-const sharedDir = join(functionsDir, "_shared");
 
 if (!existsSync(migrationsDir)) {
   console.error(`ERROR: migrations directory not found at: ${migrationsDir}`);
@@ -94,95 +82,13 @@ console.log(`[embed-provision] Wrote ${migrations.length} migrations → src/lib
 
 // ─── FUNCTIONS ───────────────────────────────────────────────────────────────
 
-// Read all _shared files (included in every function bundle)
-const sharedFiles = existsSync(sharedDir)
-  ? readdirSync(sharedDir)
-      // Los tests no son parte del runtime: subirlos en CADA bundle de función
-      // es peso muerto y arrastra imports (deno.land/std) que el deployer no
-      // necesita resolver.
-      .filter((f) => !f.startsWith(".") && !f.endsWith(".test.ts"))
-      .map((filename) => {
-        const body = readFileSync(join(sharedDir, filename), "utf8");
-        // In the deploy bundle, _shared/ sits as a SIBLING of the <slug>/ dir
-        // that holds index.ts. From "<slug>/index.ts", the import
-        // "../_shared/config.ts" then resolves to this "_shared/<file>" at the
-        // bundle root. (Proven against the Management API: a root-level index.ts
-        // would make "../_shared" escape above the root and fail to resolve.)
-        return { path: `_shared/${filename}`, body };
-      })
-  : [];
-
-// Read each function slug (exclude _shared)
-// ORDEN DE DESPLIEGUE: INVOCADORES antes que INVOCADOS. Las funciones internas
-// exigen el secreto x-internal-secret (_shared/auth.ts) y las que se llaman entre
-// sí lo mandan. Durante un despliegue función por función, si el invocado (ya con
-// gate) se desplegara antes que su invocador (viejo, sin secreto), esa llamada
-// recibiría 401 hasta que el invocador se actualice. Desplegando de la cabeza de la
-// cadena hacia las hojas, cuando una función empieza a exigir el secreto, quienes
-// la llaman ya lo mandan. Cadena: kommo-webhook → process-inbound → generate-response
-// → (embed | publish-to-kommo → evaluate-outcomes); el resto solo las llama pg_cron.
-// Una función NUEVA tiene que figurar acá (el build falla si no): decidir su lugar es
-// una decisión de diseño, no un accidente del orden alfabético.
-const DEPLOY_ORDER = [
-  "kommo-webhook",
-  "process-inbound",
-  "generate-response",
-  "publish-to-kommo",
-  "follow-up-scan",
-  "dreams-run",
-  "alerts-scan",
-  "health-scan",
-  "sync-pipelines",
-  "kommo-funnel-sync", // solo pg_cron (SuperCines)
-  "evaluate-outcomes",
-  "embed",
-  "cartelera", // la llama el agente (tool http de generate-response): invocado, va al final
-];
-
-const discovered = readdirSync(functionsDir, { withFileTypes: true })
-  .filter((d) => d.isDirectory() && d.name !== "_shared")
-  .map((d) => d.name);
-const missingFromOrder = discovered.filter((s) => !DEPLOY_ORDER.includes(s));
-if (missingFromOrder.length > 0) {
-  console.error(
-    `ERROR: función(es) sin lugar en DEPLOY_ORDER (scripts/embed-provision.mjs): ${missingFromOrder.join(", ")}.\n` +
-      `Agregalas respetando invocadores antes que invocados.`
-  );
+let functions;
+try {
+  functions = readFunctionBundles(functionsDir);
+} catch (e) {
+  console.error(`ERROR: ${e.message}`);
   process.exit(1);
 }
-const functionSlugs = DEPLOY_ORDER.filter((s) => discovered.includes(s));
-
-if (functionSlugs.length === 0) {
-  console.error(`ERROR: No function directories found in ${functionsDir}`);
-  process.exit(1);
-}
-
-const functions = functionSlugs.map((slug) => {
-  const indexPath = join(functionsDir, slug, "index.ts");
-  if (!existsSync(indexPath)) {
-    console.error(`ERROR: Missing index.ts for function '${slug}' at: ${indexPath}`);
-    process.exit(1);
-  }
-  const indexBody = readFileSync(indexPath, "utf8");
-
-  // Bundle layout (multipart virtual FS root):
-  //   <slug>/index.ts        ← entrypoint, nested one level deep
-  //   _shared/config.ts      ← sibling of <slug>/
-  // So "../_shared/config.ts" from the entrypoint resolves to "_shared/...".
-  // Emitting index.ts at the root instead would make "../_shared" escape the
-  // bundle root and the function would crash on boot.
-  const files = [
-    { path: `${slug}/index.ts`, body: indexBody },
-    ...sharedFiles,
-  ];
-
-  return {
-    slug,
-    entrypoint: `${slug}/index.ts`,
-    files,
-    hash: hashFiles(files),
-  };
-});
 
 const functionsTs = `// AUTO-GENERATED by scripts/embed-provision.mjs — DO NOT EDIT
 // Re-generated on every \`pnpm dev\` and \`pnpm build\` via predev/prebuild hooks.

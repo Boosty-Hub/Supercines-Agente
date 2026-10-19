@@ -146,7 +146,7 @@ Panel **"Actualizaciones del sistema"**:
 
 > **Orden**: siempre migraciones → funciones (el panel y el aviso del header lo hacen así y se detienen si una migración falla). Si actualizás a mano por CLI, respetalo. P. ej. la `0076` (alertas al webhook): con las funciones nuevas y sin la migración no se pierde ninguna alerta, pero solo salen por Slack/Discord las que crea `alerts-scan`.
 
-> **Cómo detecta el drift**: migraciones = array `MIGRATIONS` embebido por el codegen vs la tabla `_migrations` (aplicadas); funciones = hash del bundle de cada función vs `runtime_config.DEPLOYED_FUNCTION_HASHES` + presencia real en Supabase.
+> **Cómo detecta el drift**: migraciones = array `MIGRATIONS` embebido por el codegen vs la tabla `_migrations` (aplicadas); funciones = hash del bundle de cada función vs `runtime_config.DEPLOYED_FUNCTION_HASHES` + presencia real en Supabase. Si desplegás funciones por CLI, registrá la huella después con `node web/scripts/record-function-hashes.mjs --project-ref <ref> --site https://<sitio>` (verifica que lo desplegado = repo antes de registrar); si no, el panel las ve como faltantes y ofrece redesplegarlas.
 >
 > Como `_shared/*` se bundlea en **todas** las funciones, un cambio en un archivo compartido marca las 9 como `cambió` y se redespliegan todas — es esperado y seguro (las que no usan ese archivo quedan idénticas).
 
@@ -190,7 +190,10 @@ npx tsc --noEmit
 
 # Re-deploy de una Edge Function puntual
 SUPABASE_ACCESS_TOKEN=<token> \
-  npx supabase functions deploy <fn> --project-ref <ref>
+  npx supabase functions deploy <fn> --project-ref <ref> --no-verify-jwt
+# ...y después registrar la huella que compara el panel (con el código commiteado y pusheado)
+SUPABASE_ACCESS_TOKEN=<token> \
+  node web/scripts/record-function-hashes.mjs --project-ref <ref> --site https://<sitio>
 ```
 
 Para desarrollo local necesitás `web/.env.local`. Copiá desde `web/.env.example`:

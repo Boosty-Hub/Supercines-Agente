@@ -43,8 +43,12 @@ pnpm build
 npx tsc --noEmit    # typecheck — correr SIEMPRE tras editar el front (no hay test suite)
 
 # Re-deploy de una Edge Function puntual
-SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy <fn> --project-ref <ref>
+SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy <fn> --project-ref <ref> --no-verify-jwt
+# ...y SIEMPRE después (commiteado y pusheado): registrar la huella que compara el panel
+SUPABASE_ACCESS_TOKEN=<token> node web/scripts/record-function-hashes.mjs --project-ref <ref> --site https://supercines.netlify.app
 ```
+
+> **Huella de un deploy por CLI** (`web/scripts/record-function-hashes.mjs`, del template): el panel (`/api/provision/status`) decide «al día» comparando el `hash` de cada bundle embebido en la web contra `runtime_config.DEPLOYED_FUNCTION_HASHES`. El wizard lo registra al desplegar; `supabase functions deploy` no. Sin el registro el panel ve todas las funciones «faltantes» (count 0) y ofrece redesplegarlas — con una web vieja publicada, eso las revierte. El script baja lo desplegado (`supabase functions download --use-api`), lo compara byte a byte con el repo, exige `verify_jwt=false` y solo entonces registra (fusiona) la huella; con `--site` confirma que la web publicada embebe el mismo código (count = total). La huella sale de `scripts/lib/function-bundles.mjs`, el MISMO módulo del codegen (test `scripts/function-bundles.test.mjs`; en SuperCines el bundle excluye los `*.test.ts` de `_shared/`). Cualquier cambio en `_shared/` cambia la huella de las 13 funciones: correr el script sobre TODAS; las que no importan lo cambiado siguen idénticas al repo y registran sin redeploy, las que corren código distinto quedan «NO» y hay que desplegarlas.
 
 > No hay `pnpm bootstrap`, `pnpm migrate` ni `pnpm user:master`. Esos scripts fueron eliminados. Todo sucede desde el browser vía `/first-run`. Para desarrollo local, el codegen corre automáticamente en `predev`.
 

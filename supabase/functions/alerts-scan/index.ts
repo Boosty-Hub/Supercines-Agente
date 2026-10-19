@@ -54,14 +54,24 @@ async function getConfig(): Promise<AlertConfig | null> {
   return data;
 }
 
+// De a tandas: PostgREST corta toda respuesta en 1.000 filas, y una respuesta cortada hacía
+// que las entidades que quedaban afuera parecieran sin alerta y se les creara otra cada 5 min
+// (ver 0091). Con el índice único de 0091 cada id trae a lo sumo una fila, así que una tanda
+// de 200 nunca llega al corte. Un error LANZA: tomarlo como «no hay ninguna» era duplicar todo.
+const EXISTING_CHUNK = 200;
+
 async function existingAlerts(kind: string, refIds: string[]): Promise<Set<string>> {
-  if (refIds.length === 0) return new Set();
-  const { data } = await supabase
-    .from("alerts")
-    .select("ref_id")
-    .eq("kind", kind)
-    .in("ref_id", refIds);
-  return new Set((data ?? []).map((a) => a.ref_id as string));
+  const found = new Set<string>();
+  for (let i = 0; i < refIds.length; i += EXISTING_CHUNK) {
+    const { data, error } = await supabase
+      .from("alerts")
+      .select("ref_id")
+      .eq("kind", kind)
+      .in("ref_id", refIds.slice(i, i + EXISTING_CHUNK));
+    if (error) throw new Error(`existingAlerts ${kind}: ${error.message}`);
+    for (const a of data ?? []) found.add(a.ref_id as string);
+  }
+  return found;
 }
 
 // Toda alerta que crea este barrido pasa por el helper único (_shared/alerts.ts): nace
@@ -70,9 +80,9 @@ async function existingAlerts(kind: string, refIds: string[]): Promise<Set<strin
 type AlertInput = AlertInsert & { description: string };
 
 async function createAlert(a: AlertInput): Promise<boolean> {
-  const { error } = await insertAlert(supabase, a);
+  const { error, duplicate } = await insertAlert(supabase, a);
   if (error) console.error(`create alert ${a.kind}:`, error);
-  return !error;
+  return !error && !duplicate;
 }
 
 const WEBHOOK_TIMEOUT_MS = 10_000;
@@ -161,7 +171,15 @@ async function detectFailedDrafts(): Promise<AlertInput[]> {
     messages: any;
   }>;
   const ids = rows.map((r) => r.id);
-  const existing = await existingAlerts("draft_failed", ids);
+  let existing: Set<string>;
+  try {
+    existing = await existingAlerts("draft_failed", ids);
+  } catch (err) {
+    // Sin saber cuáles existen no se crea ninguna: la próxima vuelta (5 min) reintenta.
+    // console.error: si falla siempre, ninguna alerta nueva sale, y eso tiene que verse en los logs.
+    console.error(err instanceof Error ? err.message : String(err));
+    return [];
+  }
   return rows
     .filter((r) => !existing.has(r.id))
     .map((r) => {
@@ -205,7 +223,15 @@ async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
     leads: any;
   }>;
   const ids = rows.map((r) => r.id);
-  const existing = await existingAlerts("human_review_needed", ids);
+  let existing: Set<string>;
+  try {
+    existing = await existingAlerts("human_review_needed", ids);
+  } catch (err) {
+    // Sin saber cuáles existen no se crea ninguna: la próxima vuelta (5 min) reintenta.
+    // console.error: si falla siempre, ninguna alerta nueva sale, y eso tiene que verse en los logs.
+    console.error(err instanceof Error ? err.message : String(err));
+    return [];
+  }
   return rows
     // Defensa en profundidad: la decisión real vive en shouldAlertHumanReview
     // (testeada), no en la forma del query: cambiar el `.eq("ignored", false)` de

@@ -35,11 +35,18 @@ export type AlertKindInfo = {
    * (insert_alert_aggregated, 0076), para que ni la tabla ni el webhook crezcan con una inundación.
    */
   aggregateMinutes?: number;
+  /**
+   * UNA alerta por entidad (`ref_id`), para siempre: la base rechaza la copia con 23505
+   * (índice único parcial de la migración 0091, cuya lista de tipos alert-kinds.test.ts
+   * verifica contra este registro). Sin esto, un chequeo previo que falla o llega cortado
+   * vuelve a crear la alerta en cada barrido.
+   */
+  onePerRef?: true;
 };
 
 export const ALERT_KINDS = {
-  draft_failed: { webhook: true, table: "alerts", severity: "warning", reason: "una respuesta del agente falló y el cliente puede quedar sin contestación" },
-  human_review_needed: { webhook: true, table: "alerts", severity: "warning", reason: "un mensaje requiere que una persona lo atienda (toxicidad, queja seria)" },
+  draft_failed: { webhook: true, table: "alerts", severity: "warning", reason: "una respuesta del agente falló y el cliente puede quedar sin contestación", onePerRef: true },
+  human_review_needed: { webhook: true, table: "alerts", severity: "warning", reason: "un mensaje requiere que una persona lo atienda (toxicidad, queja seria)", onePerRef: true },
   outcomes_regression: { webhook: true, table: "alerts", severity: "warning", reason: "la calidad de las respuestas bajó de forma sostenida" },
   inbound_silence: { webhook: true, table: "alerts", severity: "critical", reason: "no entra ningún mensaje en horario laboral: síntoma de webhook deshabilitado" },
   inbound_dropped: { webhook: true, table: "alerts", severity: "critical", reason: "se perdió un payload de Kommo (Kommo no lo reintenta): mensaje de un cliente sin entrar", aggregateMinutes: 15 },
@@ -92,6 +99,11 @@ export function criticalKinds(): string[] {
 export function aggregateWindowMinutes(kind: string): number | undefined {
   const info = (ALERT_KINDS as Record<string, AlertKindInfo>)[kind];
   return info?.aggregateMinutes;
+}
+
+/** Tipos de UNA alerta por entidad (índice único de 0091), en el orden del registro. */
+export function onePerRefKinds(): string[] {
+  return Object.entries(ALERT_KINDS as Record<string, AlertKindInfo>).filter(([, v]) => v.onePerRef).map(([k]) => k);
 }
 
 /** Tipos que salen por webhook, en el orden del registro. */

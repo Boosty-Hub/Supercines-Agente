@@ -59,6 +59,16 @@ Deno.test("insertAlert nunca lanza: un error o una excepción vuelven como { err
   assertEquals(await insertAlert(throwing, { kind: "draft_failed", severity: "critical", title: "t" }), { error: "red caída" });
 });
 
+Deno.test("una copia de un tipo onePerRef que la base rechaza (23505) no es un error: vuelve como duplicate", async () => {
+  const dup = {
+    from: () => ({ insert: () => Promise.resolve({ error: { code: "23505", message: "duplicate key value violates unique constraint" } }) }),
+  } as unknown as SupabaseClient;
+  assertEquals(await insertAlert(dup, { kind: "human_review_needed", title: "t", ref_table: "messages", ref_id: "00000000-0000-0000-0000-000000000001" }), {
+    error: null,
+    duplicate: true,
+  });
+});
+
 // Chequeo de TIPOS (deno test typechequea): un tipo no registrado, o uno de system_incidents,
 // no compila. Si alguno de estos @ts-expect-error deja de ser un error, el test no compila.
 function _typeOnly(sb: SupabaseClient) {
@@ -148,4 +158,16 @@ Deno.test("las ventanas del registro coinciden con las de la migración 0073 (we
   };
   assertEquals(win("webhook_rejected"), ALERT_KINDS.webhook_rejected.aggregateMinutes);
   assertEquals(win("webhook_unsigned"), ALERT_KINDS.webhook_unsigned.aggregateMinutes);
+});
+
+Deno.test("los tipos de UNA alerta por entidad coinciden con el índice único de la migración 0091", async () => {
+  const { onePerRefKinds } = await import("./alert-kinds.ts");
+  const sql = Deno.readTextFileSync(new URL("../../migrations/0091_alerts_una_por_entidad.sql", import.meta.url));
+  const idx = sql.match(/create unique index[\s\S]*?where kind in \(([^)]*)\)/);
+  const enIndice = (idx?.[1] ?? "").split(",").map((k) => k.trim().replace(/'/g, "")).filter(Boolean).sort();
+  assertEquals(enIndice, onePerRefKinds().sort());
+  // El DELETE de las copias barre exactamente los mismos tipos que el índice protege.
+  const del = sql.match(/delete from public\.alerts[\s\S]*?where kind in \(([^)]*)\)/);
+  const enDelete = (del?.[1] ?? "").split(",").map((k) => k.trim().replace(/'/g, "")).filter(Boolean).sort();
+  assertEquals(enDelete, enIndice);
 });

@@ -9,6 +9,8 @@
 //   únicamente claim_alerts_for_webhook. Por eso el insert funciona igual con o sin la
 //   migración 0076 aplicada: desplegar las funciones antes que la migración no pierde alertas
 //   (ver «Orden de deploy» en CLAUDE.md).
+// · Una copia de un tipo `onePerRef` (draft_failed, human_review_needed) la rechaza la base
+//   (23505, índice único de 0091): NO es un error, vuelve como `{ error: null, duplicate: true }`.
 // · Nunca lanza: devuelve `{ error }` y el que llama decide (casi todos solo lo loguean; una
 //   alerta que no se pudo guardar no debe tumbar el flujo que la detectó).
 
@@ -42,7 +44,10 @@ export function alertRow(alert: AlertInsert): Record<string, unknown> {
   return row;
 }
 
-export async function insertAlert(supabase: SupabaseClient, alert: AlertInsert): Promise<{ error: string | null }> {
+export async function insertAlert(
+  supabase: SupabaseClient,
+  alert: AlertInsert,
+): Promise<{ error: string | null; duplicate?: true }> {
   try {
     // Tipos de alta frecuencia y origen externo (webhook_rejected, webhook_unsigned,
     // inbound_dropped…): UNA fila por ventana con contador, en el INSERT mismo (RPC de 0076).
@@ -64,6 +69,7 @@ export async function insertAlert(supabase: SupabaseClient, alert: AlertInsert):
       if ((error as { code?: string }).code !== "PGRST202") return { error: error.message };
     }
     const { error } = await supabase.from("alerts").insert(alertRow(alert));
+    if ((error as { code?: string } | null)?.code === "23505") return { error: null, duplicate: true };
     return { error: error ? error.message : null };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };

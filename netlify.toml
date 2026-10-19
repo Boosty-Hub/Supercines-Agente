@@ -2,6 +2,13 @@
   base    = "web"
   command = "pnpm build"
   publish = ".next"
+  # Con base = "web", Netlify cancela el build si no cambió nada DENTRO de web/
+  # («Canceled build due to no content change»). Pero la web embebe las migraciones y
+  # las Edge Functions de ../supabase (codegen del prebuild): un commit que solo toca
+  # supabase/ dejaba publicada una web vieja, y el panel comparaba contra código viejo.
+  # Corre desde web/: exit 0 = saltar el build, cualquier otro código (incluido el error
+  # sin CACHED_COMMIT_REF del primer build) = construir.
+  ignore  = "git diff --quiet \"$CACHED_COMMIT_REF\" \"$COMMIT_REF\" -- . ../supabase ../netlify.toml"
 
 [build.environment]
   # Node 20 llegó a EOL (abril 2026); Next 15 corre en 22 LTS.

@@ -69,7 +69,7 @@ docker rm -f sql-tests
 | `agent_tools_scope.sql` | 0078 | `agent_tools` solo alcance configuracion |
 | `scope_backfill.sql` | 0078 | Backfill del rol: solo el MAESTRO sin rol queda en configuracion; el resto y los nuevos sin rol no ven nada |
 | `revoke_user_sessions.sql` | 0082 | Corte de sesiones de un usuario, solo service_role |
-| `claim_kommo_backfill.sql`, `kommo_webhook_auth.sql` | 0061, 0073 | Recorrido de Kommo y autenticidad del webhook |
+| `claim_kommo_backfill.sql`, `kommo_webhook_auth.sql` | 0061, 0073, 0090 | Recorrido de Kommo, verificación de borrados con el recorrido terminado y autenticidad del webhook |
 | `draft_publish_claim.sql`, `follow_up_claim.sql` | 0074, 0075, 0077 | Reservas de envío (a lo sumo un envío) |
 | `alert_webhook_sweep.sql` | 0076 | Barrido del webhook de alertas (prioridad por severidad, agregación, dedupe) |
 | `provisioned_marker.sql` | 0083 | Marcador `PROVISIONED_AT`: una instalación con usuarios queda sellada |

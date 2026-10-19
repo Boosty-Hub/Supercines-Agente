@@ -23,6 +23,10 @@ import { shouldAlertHumanReview } from "../_shared/alerts-human-review.ts";
 import { criticalKinds, shouldSweep } from "../_shared/alert-kinds.ts";
 import { type AlertInsert, insertAlert } from "../_shared/alerts.ts";
 import { detectRegressions, type OutcomeSample } from "../_shared/outcomes-regression.ts";
+import { collectKeyset, keysetFilter } from "../_shared/keyset-pages.ts";
+
+/** Tope de filas por ventana de la regresión de outcomes (24 h y 7 días). */
+const OUTCOMES_REGRESSION_MAX_ROWS = 50_000;
 import { buildWebhookPayload, isMissingClaimRpc, type WebhookAlert } from "../_shared/alert-webhook.ts";
 import { filterOurWebhooks, shouldAlertKommoWebhookDisabled } from "../_shared/alerts-kommo-webhook.ts";
 import { loadConfig } from "../_shared/config.ts";
@@ -231,17 +235,37 @@ async function detectOutcomesRegression(): Promise<AlertInput[]> {
   const since24 = new Date(now - 24 * 3600 * 1000).toISOString();
   const since7d = new Date(now - 7 * 24 * 3600 * 1000).toISOString();
 
-  const { data: recent } = await supabase
-    .from("outcomes")
-    .select("grader_id, score, metadata, graders(slug, source)")
-    .gte("created_at", since24)
-    .not("score", "is", null);
-  const { data: baseline } = await supabase
-    .from("outcomes")
-    .select("grader_id, score, metadata, graders(slug, source)")
-    .gte("created_at", since7d)
-    .lt("created_at", since24)
-    .not("score", "is", null);
+  // Paginado por keyset (_shared/keyset-pages.ts): PostgREST corta en max_rows (1000) sin
+  // avisar y una semana de outcomes pasa de eso (KIA: ~14.000), así que se comparaba una
+  // muestra arbitraria. Si una ventana pasa el tope, no se decide con ella (sin alerta).
+  const fetchWindow = async (from: string, to: string | null, label: string) => {
+    const { rows, truncated } = await collectKeyset(
+      (cursor, limit) => {
+        let q = supabase
+          .from("outcomes")
+          .select("id, created_at, grader_id, score, metadata, graders(slug, source)")
+          .gte("created_at", from)
+          .not("score", "is", null);
+        if (to) q = q.lt("created_at", to);
+        if (cursor) q = q.or(keysetFilter(cursor));
+        return q.order("created_at", { ascending: true }).order("id", { ascending: true }).limit(limit);
+      },
+      { maxRows: OUTCOMES_REGRESSION_MAX_ROWS, label },
+    );
+    if (truncated) console.warn(`${label}: más de ${OUTCOMES_REGRESSION_MAX_ROWS} outcomes en la ventana; no se evalúa la regresión`);
+    return truncated ? null : rows;
+  };
+  let recent: Awaited<ReturnType<typeof fetchWindow>>;
+  let baseline: Awaited<ReturnType<typeof fetchWindow>>;
+  try {
+    recent = await fetchWindow(since24, null, "outcomes_regression 24h");
+    baseline = await fetchWindow(since7d, since24, "outcomes_regression 7d");
+  } catch (e) {
+    // Lectura incompleta: no se decide con ella, pero el resto del barrido sigue.
+    console.warn("detectOutcomesRegression:", e instanceof Error ? e.message : String(e));
+    return [];
+  }
+  if (!recent || !baseline) return [];
 
   // deno-lint-ignore no-explicit-any
   const toSample = (r: any): OutcomeSample => ({

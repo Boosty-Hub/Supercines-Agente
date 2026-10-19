@@ -11,6 +11,7 @@
 
 import { truncateGraphemes } from "@/lib/text-safe";
 import { renameAgentVersioned, type AgentRenameResult } from "@/lib/agent-rename";
+import { collectMemoryPages, parseMemoryPage } from "@/lib/memory-pages";
 
 const BASE = "https://api.anthropic.com";
 const BETA = "managed-agents-2026-04-01";
@@ -164,30 +165,22 @@ export async function listMemories(
   apiKey: string,
   storeId: string,
   pathPrefix?: string,
-  max = 1000
+  max = 5000
 ): Promise<MemoryItem[]> {
-  const out: MemoryItem[] = [];
-  let afterId = "";
-  for (let page = 0; page < 20 && out.length < max; page++) {
-    let path = `/v1/memory_stores/${storeId}/memories?limit=100`;
-    if (pathPrefix) path += `&path_prefix=${encodeURIComponent(pathPrefix)}`;
-    if (afterId) path += `&after_id=${encodeURIComponent(afterId)}`;
-    const data = await call(apiKey, "GET", path);
-    const items = Array.isArray((data as { data?: unknown }).data)
-      ? ((data as { data: MemoryItem[] }).data)
-      : [];
-    for (const it of items) {
-      if (it.type && it.type !== "memory") continue;
-      out.push(it);
-    }
-    const hasMore = Boolean((data as { has_more?: unknown }).has_more);
-    const lastId = typeof (data as { last_id?: unknown }).last_id === "string"
-      ? (data as { last_id: string }).last_id
-      : "";
-    if (!hasMore || !lastId || lastId === afterId) break;
-    afterId = lastId;
+  // Cursor `page`/`next_page` (lib/memory-pages.ts). Lo que pase de `max` se avisa en el log.
+  const { items, truncated } = await collectMemoryPages<MemoryItem>(
+    async (cursor) => {
+      let path = `/v1/memory_stores/${storeId}/memories?limit=100`;
+      if (pathPrefix) path += `&path_prefix=${encodeURIComponent(pathPrefix)}`;
+      if (cursor) path += `&page=${encodeURIComponent(cursor)}`;
+      return parseMemoryPage<MemoryItem>(await call(apiKey, "GET", path));
+    },
+    { max, maxPages: 100, keep: (it) => !it.type || it.type === "memory" }
+  );
+  if (truncated) {
+    console.warn(`listMemories: ${storeId}${pathPrefix ?? ""} tiene más de ${items.length} memorias; se listaron las primeras ${items.length}`);
   }
-  return out;
+  return items;
 }
 
 export async function retrieveMemory(

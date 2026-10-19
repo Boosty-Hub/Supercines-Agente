@@ -43,7 +43,9 @@ export async function GET() {
   if (!data) return NextResponse.json({ backfill: null }, { headers: { "Cache-Control": "no-store" } });
 
   const now = Date.now();
-  const running = data.lease_until != null && Date.parse(data.lease_until as string) > now;
+  // Un lease sobre un recorrido 'done' es la verificación de borrados en Kommo (0084), no un
+  // recorrido: no deshabilita «Sincronizar» (el refresco de pipelines corre igual).
+  const running = data.status !== "done" && data.lease_until != null && Date.parse(data.lease_until as string) > now;
   const inProgress = running || data.status === "pending" || data.status === "running";
   const retryAfter =
     data.status === "done"

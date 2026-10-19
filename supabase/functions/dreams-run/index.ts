@@ -30,6 +30,7 @@ import { effortFor, modelFor } from "../_shared/models.ts";
 import { getBudgetGate } from "../_shared/budget.ts";
 import { keepAlive } from "../_shared/keep-alive.ts";
 
+import { collectKeyset, keysetFilter } from "../_shared/keyset-pages.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -45,6 +46,33 @@ type Period = "daily" | "weekly";
 // a la conversación real (el transcript que ve el modelo sigue anonimizado).
 type Gathered = { transcript: string; leadMap: Map<string, string> };
 
+// Corpus = mensajes de la ventana con el draft que respondió su lote. PostgREST corta cada
+// respuesta en max_rows (1000) SIN avisar: sin paginar, Dreams analizaba solo los primeros
+// 1000 mensajes (una semana de KIA tiene ~6000). Se lee por keyset (_shared/keyset-pages.ts)
+// del más NUEVO al más viejo, con tope: si la ventana no entra, queda afuera lo más viejo y
+// se avisa en el log. Se devuelve en orden cronológico (los turnos de cada lead en orden).
+const MAX_CORPUS_MESSAGES = 5000;
+
+async function fetchCorpus(since: string, label: string) {
+  const { rows, truncated } = await collectKeyset(
+    (cursor, limit) => {
+      let q = supabase
+        .from("messages")
+        .select(
+          "id, lead_id, direction, content, source, classification, created_at, verticals(slug), draft:drafts!messages_answered_by_draft_id_fkey(body, edited_body, status)"
+        )
+        .gte("created_at", since);
+      if (cursor) q = q.or(keysetFilter(cursor, "desc"));
+      return q.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit);
+    },
+    { maxRows: MAX_CORPUS_MESSAGES, label },
+  );
+  if (truncated) {
+    console.warn(`dreams ${label}: la ventana tiene más de ${MAX_CORPUS_MESSAGES} mensajes; se analizan los ${MAX_CORPUS_MESSAGES} más recientes`);
+  }
+  return rows.reverse();
+}
+
 async function gatherDaily(sinceIso?: string): Promise<Gathered> {
   // Ventana dinámica: por defecto 24h, pero con frecuencias > diaria se pasa el
   // hueco real desde la última corrida para no perder días (ver handler).
@@ -53,14 +81,7 @@ async function gatherDaily(sinceIso?: string): Promise<Gathered> {
   // messages.answered_by_draft_id) — el embed sin desambiguar da PGRST201.
   // Usamos answered_by_draft_id: empareja cada inbound con el draft que
   // respondió su batch completo.
-  const { data: messages, error } = await supabase
-    .from("messages")
-    .select(
-      "lead_id, direction, content, source, classification, created_at, verticals(slug), draft:drafts!messages_answered_by_draft_id_fkey(body, edited_body, status)"
-    )
-    .gte("created_at", since)
-    .order("created_at", { ascending: true });
-  if (error) throw new Error(`gatherDaily: ${error.message}`);
+  const messages = await fetchCorpus(since, "gatherDaily");
 
   // Agrupar por lead, anonimizado
   const byLead = new Map<string, string[]>();
@@ -111,14 +132,7 @@ async function gatherWeekly(): Promise<Gathered> {
   // DB), no de los learnings.md del store de leads: dejar de leer/escribir
   // conversation.md y de volcar todo a learnings.md NO le quita materia prima.
   const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const { data: messages, error } = await supabase
-    .from("messages")
-    .select(
-      "lead_id, direction, content, source, classification, created_at, verticals(slug), draft:drafts!messages_answered_by_draft_id_fkey(body, edited_body, status)"
-    )
-    .gte("created_at", since)
-    .order("lead_id", { ascending: true });
-  if (error) throw new Error(`gatherWeekly: ${error.message}`);
+  const messages = await fetchCorpus(since, "gatherWeekly");
 
   const byLead = new Map<string, { vertical: string | null; turns: string[] }>();
   const lastDraftLine = new Map<string, string>();

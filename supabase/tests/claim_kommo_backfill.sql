@@ -4,6 +4,8 @@
 --   · apply_lead_position (orden de eventos, evento solo si se aplicó),
 --   · apply_kommo_lead_positions (lectura de página vs. webhook más nuevo),
 --   · kommo_missing_candidates / mark_kommo_leads_missing / kommo_gap_lead_ids,
+--   · 0090: claim/release_kommo_missing_verify (lease sobre un 'done'), renew sobre 'done',
+--     kommo_missing_control_ids,
 --   · claim_kommo_pipelines_refresh y permisos / search_path.
 --
 --   sed 's#${SUPABASE_URL}#http://x.test#g' supabase/migrations/*.sql | psql ...   (una vez)
@@ -237,6 +239,59 @@ select pg_temp.expect('…done con finished_at y sin lease ni token',
 select pg_temp.expect('tras soltarlo, B ya no renueva (el token se borró)',
   not renew_kommo_backfill_lease('lead_positions', (select token from t_lease where who = 'B'), 150));
 
+-- 10c) 0090: verificación de candidatos con el recorrido YA 'done' (sin reiniciarlo).
+update kommo_backfill set status='running', lease_until=null, lease_token=null, updated_at=now() where job='lead_positions';
+select pg_temp.expect('con el recorrido running no se toma el lease de verificación',
+  claim_kommo_missing_verify('lead_positions', 150) is null);
+update kommo_backfill set status='done', next_page=6, scanned=1000, updated=2, lease_until=null, lease_token=null,
+       finished_at=now() - interval '1 hour', updated_at=now() - interval '1 hour' where job='lead_positions';
+create temp table t_verify (who text primary key, token uuid);
+insert into t_verify values ('V', claim_kommo_missing_verify('lead_positions', 150));
+select pg_temp.expect('done libre: el lease de verificación devuelve token',
+  (select token is not null from t_verify where who = 'V'));
+select pg_temp.expect('…sin cambiar status, cursor, contadores ni updated_at (el enfriamiento no se mueve)',
+  (select status = 'done' and next_page = 6 and scanned = 1000 and updated = 2
+          and updated_at < now() - interval '59 minutes' and finished_at is not null
+          and lease_token = (select token from t_verify where who = 'V') and lease_until > now()
+     from kommo_backfill where job = 'lead_positions'));
+select pg_temp.expect('segundo lease de verificación con el primero vigente: null',
+  claim_kommo_missing_verify('lead_positions', 150) is null);
+select pg_temp.expect('con la verificación en curso, un reinicio responde busy (no vacía lo visto)',
+  (select outcome = 'busy' from claim_kommo_backfill('lead_positions', 150, true)));
+select pg_temp.expect('el dueño de la verificación renueva su lease sobre el done',
+  renew_kommo_backfill_lease('lead_positions', (select token from t_verify where who = 'V'), 150));
+select pg_temp.expect('un token ajeno no renueva ni suelta',
+  not renew_kommo_backfill_lease('lead_positions', gen_random_uuid(), 150)
+  and not release_kommo_missing_verify('lead_positions', gen_random_uuid())
+  and not release_kommo_missing_verify('lead_positions', null));
+select pg_temp.expect('el dueño suelta su lease',
+  release_kommo_missing_verify('lead_positions', (select token from t_verify where who = 'V')));
+select pg_temp.expect('…done intacto, sin lease ni token',
+  (select status = 'done' and next_page = 6 and lease_until is null and lease_token is null
+     from kommo_backfill where job = 'lead_positions'));
+select pg_temp.expect('suelto, ya no renueva', not renew_kommo_backfill_lease('lead_positions', (select token from t_verify where who = 'V'), 150));
+-- Lease de verificación vencido (worker muerto): otro lo puede tomar.
+insert into t_verify values ('W', claim_kommo_missing_verify('lead_positions', 150));
+update kommo_backfill set lease_until = now() - interval '1 second' where job='lead_positions';
+insert into t_verify values ('X', claim_kommo_missing_verify('lead_positions', 150));
+select pg_temp.expect('lease vencido: otro worker lo toma con otro token y el viejo ya no lo suelta',
+  (select token is not null from t_verify where who = 'X')
+  and (select token from t_verify where who = 'X') <> (select token from t_verify where who = 'W')
+  and not release_kommo_missing_verify('lead_positions', (select token from t_verify where who = 'W')));
+select release_kommo_missing_verify('lead_positions', (select token from t_verify where who = 'X'));
+
+-- 10d) 0090: controles positivos = leads con pipeline, sin marca y con señal de vida, el más reciente primero.
+delete from leads where true;
+insert into leads (kommo_lead_id, kommo_pipeline_id, kommo_stage_id, kommo_position_at, kommo_missing_at) values
+  (11, 1, 10, now() - interval '1 day', null),
+  (12, 1, 10, now() - interval '1 minute', null),
+  (13, 1, 10, now(), now()),              -- marcado: no sirve de control
+  (14, null, null, now(), null),          -- sin pipeline: no sirve
+  (15, 1, 10, null, null);                -- sin señal de vida: no sirve
+select pg_temp.expect('controles = 12, 11 (más reciente primero; ni marcados, ni sin pipeline, ni sin señal)',
+  (select array_agg(c) from kommo_missing_control_ids(10) c) = array[12, 11]::bigint[]);
+select pg_temp.expect('controles: el límite se respeta', (select count(*) = 1 from kommo_missing_control_ids(1)));
+
 -- 11) Freno de pipelines en la base.
 delete from kommo_sync_state where true;
 select pg_temp.expect('primer refresco: gana', claim_kommo_pipelines_refresh(30));
@@ -258,6 +313,9 @@ select pg_temp.expect('anon/authenticated no ejecutan ninguna función de escrit
         'kommo_missing_candidates(text,int)',
         'kommo_gap_lead_ids(int)',
         'mark_kommo_leads_missing(bigint[])',
+        'claim_kommo_missing_verify(text,int)',
+        'release_kommo_missing_verify(text,uuid)',
+        'kommo_missing_control_ids(int)',
         'claim_kommo_pipelines_refresh(int)',
         'sync_kommo_pipelines(jsonb)',
         'trigger_sync_pipelines()'
@@ -278,6 +336,7 @@ select pg_temp.expect('todas las funciones de 0061/0060 fijan search_path = publ
                          'claim_kommo_pipelines_refresh','claim_kommo_backfill','apply_kommo_lead_positions',
                          'renew_kommo_backfill_lease','save_kommo_backfill_progress',
                          'kommo_missing_candidates','kommo_gap_lead_ids','mark_kommo_leads_missing',
+                         'claim_kommo_missing_verify','release_kommo_missing_verify','kommo_missing_control_ids',
                          'trigger_sync_pipelines','gasto_mes_actual')
        and coalesce(p.proconfig, '{}'::text[]) <> array['search_path=public, pg_temp']));
 

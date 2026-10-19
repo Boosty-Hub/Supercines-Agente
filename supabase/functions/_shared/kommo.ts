@@ -351,12 +351,31 @@ export class KommoHttpError extends Error {
   }
 }
 
+/**
+ * Kommo respondió 200 con un cuerpo que no es la lista de leads esperada (no es JSON, o
+ * falta `_embedded.leads`). NO es «vacío»: el vacío legítimo es 204 o `_embedded.leads: []`.
+ * Tratarlo como vacío terminaba un recorrido antes de tiempo o hacía pasar leads vivos por
+ * inexistentes.
+ */
+export class KommoMalformedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KommoMalformedError";
+  }
+}
+
 /** Tope de reintentos ante 429 y espera por defecto si Kommo no manda Retry-After. */
 const KOMMO_MAX_429_RETRIES = 4;
 const KOMMO_DEFAULT_RETRY_MS = 1000;
 
 export type KommoLeadsRead = {
   leads: KommoLeadPosition[];
+  /**
+   * Ids de TODOS los leads que Kommo devolvió, aunque les falte etapa o pipeline (esos no
+   * entran en `leads`). Es la prueba de existencia que usa la reconciliación por id: un
+   * lead devuelto sin `status_id` existe igual y no puede marcarse «no existe en Kommo».
+   */
+  ids?: number[];
   hasMore: boolean;
   /**
    * Instante (ms) en que se PIDIÓ la lectura, antes de enviarla: lo que Kommo
@@ -383,7 +402,7 @@ async function fetchLeadsList(
   const readAtMs = Date.now();
   for (let intento = 0; ; intento++) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (res.status === 204) return { leads: [], hasMore: false, readAtMs };
+    if (res.status === 204) return { leads: [], ids: [], hasMore: false, readAtMs };
     if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
       const retryAfter = Number(res.headers.get("retry-after"));
       await res.body?.cancel();
@@ -393,17 +412,29 @@ async function fetchLeadsList(
     if (!res.ok) {
       throw new KommoHttpError(res.status, `fetch leads ${label}: ${res.status} ${(await res.text()).slice(0, 200)}`);
     }
-    const json = (await res.json()) as {
+    let json: {
       _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
       _links?: { next?: unknown };
     };
+    try {
+      json = await res.json();
+    } catch {
+      throw new KommoMalformedError(`fetch leads ${label}: 200 con un cuerpo que no es JSON`);
+    }
+    const raw = json?._embedded?.leads;
+    if (!Array.isArray(raw)) {
+      throw new KommoMalformedError(`fetch leads ${label}: 200 sin _embedded.leads`);
+    }
     const leads: KommoLeadPosition[] = [];
-    for (const l of json._embedded?.leads ?? []) {
-      if (typeof l.id === "number" && typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
+    const ids: number[] = [];
+    for (const l of raw) {
+      if (!l || typeof l.id !== "number") continue;
+      ids.push(l.id);
+      if (typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
         leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
       }
     }
-    return { leads, hasMore: Boolean(json._links?.next), readAtMs };
+    return { leads, ids, hasMore: Boolean(json._links?.next), readAtMs };
   }
 }
 

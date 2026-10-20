@@ -275,3 +275,35 @@ Deno.test("«Para el operador: …» de un dream va a las notas (sin alerta de d
   assert(!failed.superseded);
   assertEquals(failed.operatorNotes.split("\n").filter((l) => l.includes("Cashea")).length, 1, failed.operatorNotes);
 });
+
+Deno.test("las notas del render viajan al modelo como «ya registradas» y su versión reformulada no se duplica", async () => {
+  const dreams = [dream(0, "Usa solo lo aprobado. Para el operador: falta cargar la información oficial de Cashea en la KB.")];
+  let known: string[] = [];
+  const r = await rebuildDigestCore(
+    input(dreams),
+    deps({
+      operatorNotes: async (o) => {
+        known = o.known;
+        return "- Falta cargar la información oficial de Cashea en la KB.\n- Falta el menú en la KB.";
+      },
+    }),
+  );
+  assert(!r.superseded);
+  assertEquals(known.length, 1);
+  assertStringIncludes(known[0], "Cashea");
+  assertEquals(r.operatorNotes.split("\n").filter((l) => l.includes("Cashea")).length, 1, r.operatorNotes);
+  assertStringIncludes(r.operatorNotes, "- Falta el menú en la KB.");
+});
+
+Deno.test("si el modelo falla, las notas anteriores se fusionan con las del render sin duplicar", async () => {
+  const dreams = [dream(0, "Usa solo lo aprobado. Para el operador: falta cargar la información oficial de Cashea en la KB.")];
+  const previousNotes = "- Falta cargar la información oficial de Cashea en la KB.\n- Falta el horario del domingo en la KB.";
+  const r = await rebuildDigestCore(
+    input(dreams, { previousNotes }),
+    deps({ operatorNotes: () => Promise.reject(new Error("refusal")) }),
+  );
+  assert(!r.superseded);
+  assertEquals(r.notesFailed, true);
+  assertEquals(r.operatorNotes.split("\n").length, 2, r.operatorNotes);
+  assertStringIncludes(r.operatorNotes, "horario del domingo");
+});

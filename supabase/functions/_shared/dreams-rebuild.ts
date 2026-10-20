@@ -28,6 +28,7 @@ import {
   type ConsolidationAttempt,
   consolidationLossAlert,
   dataShapeNote,
+  mergeOperatorNotes,
   type DreamLike,
   inputRuleCount,
   type LossInfo,
@@ -83,7 +84,7 @@ export type RebuildDeps<D extends DreamLike> = {
     retry?: LossInfo,
   ) => Promise<ConsolidationAttempt<ArchivedText>>;
   /** Notas del operador (llamada aparte al modelo). Si lanza, quedan las anteriores. */
-  operatorNotes: (opts: { archived: string; dreams: D[] }) => Promise<string>;
+  operatorNotes: (opts: { archived: string; dreams: D[]; known: string[] }) => Promise<string>;
   /** «Gana la última en empezar»: false = otra reconstrucción más nueva ya corre. */
   stillLatest: () => Promise<boolean>;
   saveArchiveSummary: (summary: string) => Promise<void>;
@@ -191,11 +192,12 @@ export async function rebuildDigestCore<D extends DreamLike>(
 
   // 3) Notas del operador: las de datos (determinísticas) + las del modelo. Si el modelo
   //    falla, se conservan las notas anteriores del modelo.
+  const deterministicNotes = [...rendered.notes, ...archiveRemoved.map(dataShapeNote), ...rendered.operatorNotes];
   let llmNotes = "";
   let notesFailed = false;
   if (active.length > 0 || archivedSummary.trim()) {
     try {
-      llmNotes = (await deps.operatorNotes({ archived: archivedSummary, dreams: active })).trim();
+      llmNotes = (await deps.operatorNotes({ archived: archivedSummary, dreams: active, known: deterministicNotes })).trim();
     } catch (err) {
       notesFailed = true;
       console.warn("dreams: notas del operador:", err instanceof Error ? err.message : String(err));
@@ -221,9 +223,9 @@ export async function rebuildDigestCore<D extends DreamLike>(
       archiveWords: renderDigest([], archivedSummary).words,
     }));
   }
-  const operatorNotes = [...rendered.notes, ...archiveRemoved.map(dataShapeNote), ...rendered.operatorNotes, llmNotes]
-    .filter(Boolean)
-    .join("\n");
+  // Sin repetidos: lo determinista va primero y lo del modelo (o las notas anteriores si falló)
+  // solo suma lo que no diga ya algo igual o casi igual.
+  const operatorNotes = mergeOperatorNotes(deterministicNotes, llmNotes);
   return {
     superseded: false,
     archivedCount,

@@ -524,12 +524,12 @@ function consolidateArchiveOnce(
 function operatorNotesOnce(
   anthropic: Anthropic,
   cfg: ConfigReader,
-  opts: { archived: string; dreams: ActiveDream[]; maxWords: number },
+  opts: { archived: string; dreams: ActiveDream[]; maxWords: number; known: string[] },
 ): Promise<string> {
   const operator = cfg.getOr("OPERATOR_NAME", "el operador");
   return dreamsCall(anthropic, cfg, {
     kind: "notes",
-    prompt: buildOperatorNotesPrompt({ operator, archived: opts.archived, dreams: opts.dreams, maxWords: opts.maxWords }),
+    prompt: buildOperatorNotesPrompt({ operator, archived: opts.archived, dreams: opts.dreams, maxWords: opts.maxWords, known: opts.known }),
     maxWords: opts.maxWords,
     dreams: opts.dreams.length,
     parse: (response) => finalizeOperatorNotes(jsonOf<{ operator_notes?: unknown }>(response, "dreams_operator_notes"), opts.maxWords),

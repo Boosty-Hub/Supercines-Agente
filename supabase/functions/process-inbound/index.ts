@@ -1541,6 +1541,7 @@ async function processPayload(
             confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
+            zonasRaw: runtimeCfg.get("ZONAS_DERIVACION"),
           });
           // Captura fail-open de consumo classify (vertical ignorada)
           await recordUsage(supabase, {
@@ -1581,6 +1582,7 @@ async function processPayload(
             confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
+            zonasRaw: runtimeCfg.get("ZONAS_DERIVACION"),
           });
         }
         // Captura fail-open de consumo classify
@@ -1835,6 +1837,7 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
             confidence: typeof cls.confidence === "number" ? cls.confidence : null,
             kommoDomain,
             kommoToken,
+            zonasRaw: runtimeCfg.get("ZONAS_DERIVACION"),
           });
         }
         await recordUsage(supabase, {

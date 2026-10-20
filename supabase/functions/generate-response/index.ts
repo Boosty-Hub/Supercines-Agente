@@ -15,6 +15,8 @@ import { recordUsage, captureSessionUsage, recordFailedLlmUsage } from "../_shar
 import {
   moveLeadStage,
   addLeadNote,
+  assignLeadResponsible,
+  fetchLeadStage,
   addLeadTags,
   fetchPipelineStages,
   fetchEntityFieldDefs,
@@ -27,6 +29,8 @@ import { getBcvRate } from "../_shared/exchange.ts";
 import { resolverEtapa, type ResultadoEtapa } from "../_shared/crm-etapa.ts";
 import { construirNotaTransferencia } from "../_shared/crm-nota.ts";
 import { parseEtiquetas } from "../_shared/crm-tags.ts";
+import { DERIVAR_A_ZONA, derivarAZona, type DerivarDeps } from "../_shared/derivar-zona.ts";
+import { parseZonasConfig } from "../_shared/zonas.ts";
 import {
   isBusinessHours,
   businessHoursLabel,
@@ -303,6 +307,7 @@ const CRM_TOOL_NAMES = new Set([
   "agregar_nota",
   "etiquetar_lead",
   "transferir_asesor",
+  DERIVAR_A_ZONA,
 ]);
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
@@ -427,6 +432,87 @@ async function moverEtapaDeLead(ctx: CrmContext, stageName: string, pipelineName
   return { ok: true, etapa: target };
 }
 
+// Dependencias reales de derivar_a_zona (en los tests van fakes).
+function derivarDeps(ctx: CrmContext, kommoLeadId: number): DerivarDeps {
+  return {
+    zonas: async () => parseZonasConfig(ctx.cfg?.get("ZONAS_DERIVACION")),
+    espejo: async () => {
+      const { data, error } = await supabase
+        .from("kommo_stages")
+        .select("id, name, type, sort, pipeline_id, kommo_pipelines!inner(name)");
+      if (error) throw new Error(`espejo de etapas: ${error.message}`);
+      // deno-lint-ignore no-explicit-any
+      return ((data ?? []) as any[]).map((r) => ({
+        id: Number(r.id),
+        name: String(r.name),
+        type: Number(r.type ?? 0),
+        sort: Number(r.sort ?? 0),
+        pipeline_id: Number(r.pipeline_id),
+        pipeline_name: String(r.kommo_pipelines?.name ?? ""),
+      }));
+    },
+    asignables: async () => {
+      const { data, error } = await supabase
+        .from("routing_assignees")
+        .select("kommo_user_id, display_name")
+        .eq("enabled", true);
+      if (error) throw new Error(`asignables: ${error.message}`);
+      // deno-lint-ignore no-explicit-any
+      return ((data ?? []) as any[]).map((r) => ({ kommo_user_id: Number(r.kommo_user_id), display_name: r.display_name ?? null }));
+    },
+    cuentasGenericas: async () => {
+      const { data } = await supabase
+        .from("kommo_publish_config")
+        .select("routing_takeover_user_ids")
+        .eq("is_active", true)
+        .maybeSingle();
+      const ids = ((data?.routing_takeover_user_ids ?? []) as unknown[]).map(Number).filter((n) => Number.isFinite(n));
+      return new Set(ids);
+    },
+    leerLead: () => fetchLeadStage(kommoLeadId, ctx.domain, ctx.token),
+    moverEnKommo: (stageId, pipelineId) => moveLeadStage(kommoLeadId, stageId, pipelineId, ctx.domain, ctx.token),
+    asignarEnKommo: (userId) => assignLeadResponsible(kommoLeadId, userId, ctx.domain, ctx.token),
+    notaEnKommo: (texto) => addLeadNote(kommoLeadId, texto, ctx.domain, ctx.token),
+    registrarPosicion: async (p) => {
+      if (!ctx.internalLeadId) return;
+      const { error } = await supabase.rpc("apply_lead_position", {
+        p_lead_id: ctx.internalLeadId,
+        p_stage_id: p.stageId,
+        p_pipeline_id: p.pipelineId,
+        p_at: new Date().toISOString(),
+        p_moved_by: "agente",
+        p_draft_id: ctx.draftId ?? null,
+        p_from_stage_name: p.fromStageName,
+        p_to_stage_name: p.stageName,
+        p_pipeline_name: p.pipelineName,
+      });
+      if (error) throw new Error(error.message);
+    },
+    registrarRuteo: async (p) => {
+      if (!ctx.internalLeadId) return;
+      if (p.userId != null) {
+        // Decidido con dato (la sede): el ruteo automático no lo vuelve a tocar.
+        await supabase
+          .from("leads")
+          .update({ routed_at: new Date().toISOString(), routed_user_id: p.userId, routed_strategy: "term_match" })
+          .eq("id", ctx.internalLeadId);
+      }
+      await supabase.from("lead_routing_events").insert({
+        lead_id: ctx.internalLeadId,
+        kommo_lead_id: kommoLeadId,
+        message_id: null,
+        vertical_slug: DERIVAR_A_ZONA,
+        strategy: p.ok ? "term_match" : "failed",
+        matched_term: p.termino,
+        assignee_user_id: p.userId,
+        previous_user_id: p.previousUserId,
+        ok: p.ok,
+        detail: p.detalle,
+      });
+    },
+  };
+}
+
 // Ejecuta una tool CRM por nombre. Devuelve un string para el agente (el caller
 // envuelve en try/catch y manda el resultado como custom_tool_result).
 async function runCrmTool(
@@ -447,6 +533,16 @@ async function runCrmTool(
     const r = await moverEtapaDeLead(ctx, stageName, pipelineName);
     if (!r.ok) return r.texto;
     return `Listo: el lead quedó en la etapa "${r.etapa.name}" (pipeline "${r.etapa.pipelineName}").`;
+  }
+
+  // ── Derivar a la zona de venta de la sede ─────────────────────────────────
+  // La zona (embudo + asesora) la decide el código a partir de la sede
+  // (_shared/derivar-zona.ts + runtime_config.ZONAS_DERIVACION); el modelo solo
+  // dice qué sede o ciudad nombró el cliente. Mismo gate que mover de etapa.
+  if (name === DERIVAR_A_ZONA) {
+    if (!ctx.gate.moveStage) return "La derivación a la zona está desactivada por el operador. No la realices; comparte el contacto de la asesora de la sede (búscalo con search_kb).";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo derivarlo. Comparte el contacto de la asesora de la sede (búscalo con search_kb).";
+    return await derivarAZona(input, derivarDeps(ctx, ctx.kommoLeadId));
   }
 
   if (name === "agregar_nota") {

@@ -28,6 +28,7 @@ import {
   type KommoFieldDef,
 } from "./kommo.ts";
 import { containsTerm, normalizeLoose } from "./text.ts";
+import { parseZonasConfig, sinResponsable } from "./zonas.ts";
 
 export type RoutingVertical = {
   slug: string;
@@ -148,6 +149,65 @@ export function matchByTerm(
   return best;
 }
 
+/**
+ * ¿Se puede actuar con esta confianza? Un término EXACTO de sede/ciudad en el texto es un
+ * dato determinístico (no una inferencia del clasificador): con él se rutea aunque la
+ * confianza de la clasificación esté por debajo del umbral. Sin término, rige el umbral.
+ */
+export function pasaUmbral(minConfidence: number, confidence: number | null, hayTermino: boolean): boolean {
+  if (hayTermino) return true;
+  if (minConfidence <= 0) return true;
+  return confidence != null && confidence >= minConfidence;
+}
+
+export type ZonaDePipeline = { userId: number; zona: string; pipelineName: string };
+
+/**
+ * A quién se le asigna un lead libre: (1) el término de sede/ciudad del texto; (2) si no hay
+ * término pero el lead YA está en el embudo de ventas de una zona, la asesora de esa zona
+ * (el embudo es un dato: alguien lo puso ahí); (3) si no, el round robin.
+ */
+export function decidirResponsable(
+  termHit: { assignee: Assignee; term: string } | null,
+  livePipelineId: number | null,
+  zonaPorPipeline: Map<number, ZonaDePipeline>,
+): { strategy: "term_match"; userId: number; matchedTerm: string } | { strategy: "round_robin" } {
+  if (termHit) return { strategy: "term_match", userId: termHit.assignee.kommo_user_id, matchedTerm: termHit.term };
+  const z = livePipelineId != null ? zonaPorPipeline.get(livePipelineId) : undefined;
+  if (z) return { strategy: "term_match", userId: z.userId, matchedTerm: `embudo ${z.pipelineName}` };
+  return { strategy: "round_robin" };
+}
+
+// Embudo de zona → asesora (runtime_config.ZONAS_DERIVACION + espejo de pipelines +
+// routing_assignees). Cache 60s; ante cualquier error, mapa vacío (cae al round robin).
+let zonaPipelineCache: { raw: string; map: Map<number, ZonaDePipeline>; loadedAt: number } | null = null;
+
+async function getZonaPorPipeline(supabase: any, raw: string | null | undefined, assignees: Assignee[]): Promise<Map<number, ZonaDePipeline>> {
+  const key = (raw ?? "").trim();
+  if (!key) return new Map();
+  if (zonaPipelineCache && zonaPipelineCache.raw === key && Date.now() - zonaPipelineCache.loadedAt < CFG_TTL_MS) {
+    return zonaPipelineCache.map;
+  }
+  const map = new Map<number, ZonaDePipeline>();
+  const parsed = parseZonasConfig(key);
+  if (!parsed.ok) {
+    console.warn("routing: ZONAS_DERIVACION —", parsed.error);
+  } else {
+    const { data, error } = await supabase.from("kommo_pipelines").select("id, name");
+    if (error) {
+      console.warn("routing: kommo_pipelines —", error.message);
+    } else {
+      for (const z of parsed.zonas) {
+        const p = ((data ?? []) as any[]).find((r) => normalizeLoose(String(r.name)) === normalizeLoose(z.pipeline));
+        const a = assignees.find((x) => normalizeLoose(x.display_name ?? "") === normalizeLoose(z.asesor));
+        if (p && a) map.set(Number(p.id), { userId: a.kommo_user_id, zona: z.zona, pipelineName: String(p.name) });
+      }
+    }
+  }
+  zonaPipelineCache = { raw: key, map, loadedAt: Date.now() };
+  return map;
+}
+
 type AuditRow = {
   lead_id: string | null;
   kommo_lead_id: number | null;
@@ -180,6 +240,8 @@ export type RouteLeadArgs = {
   // la credencial no está configurada.
   kommoDomain: string | null | undefined;
   kommoToken: string | null | undefined;
+  /** runtime_config.ZONAS_DERIVACION (embudo de zona → asesora). Opcional. */
+  zonasRaw?: string | null;
 };
 
 /**
@@ -238,7 +300,7 @@ async function applyRouting(opts: {
   if (isCorrection) {
     try {
       const live = await fetchLeadStage(kommoLeadId, kommoDomain, kommoToken);
-      previousUserId = live.responsibleUserId;
+      previousUserId = sinResponsable(live.responsibleUserId) ? null : live.responsibleUserId;
       if (previousUserId !== requirePreviousUserId) {
         await supabase
           .from("leads")
@@ -322,7 +384,7 @@ async function applyRouting(opts: {
  * Devuelve el kommo_user_id asignado, o null si no se asignó nada.
  */
 export async function routeLead(args: RouteLeadArgs): Promise<number | null> {
-  const { supabase, leadId, kommoLeadId, messageId, text, vertical, confidence, kommoDomain, kommoToken } =
+  const { supabase, leadId, kommoLeadId, messageId, text, vertical, confidence, kommoDomain, kommoToken, zonasRaw } =
     args;
   try {
     if (!vertical.auto_assign) return null;
@@ -331,12 +393,17 @@ export async function routeLead(args: RouteLeadArgs): Promise<number | null> {
     const cfg = await getRoutingConfig(supabase);
     if (!cfg.enabled) return null;
 
+    const assignees = await getAssignees(supabase);
+    const termHit = matchByTerm(text, assignees);
+
     // ---- Umbral de confianza (0056) ---------------------------------------
     // Clasificar con dudas es barato; escribir en el CRM de una persona real no.
     // NO se marca el lead como ruteado: si después llega un mensaje claro, se
     // rutea ahí. Se audita para que el operador vea qué se está dejando pasar y
-    // pueda calibrar el umbral.
-    if (cfg.minConfidence > 0 && (confidence == null || confidence < cfg.minConfidence)) {
+    // pueda calibrar el umbral. EXCEPCIÓN: un término exacto de sede/ciudad es un
+    // dato, no una inferencia (pasaUmbral) — antes se perdían leads que decían
+    // «La Cascada» con confianza 0.7.
+    if (!pasaUmbral(cfg.minConfidence, confidence, termHit != null)) {
       await audit(supabase, {
         lead_id: leadId,
         kommo_lead_id: kommoLeadId,
@@ -361,9 +428,6 @@ export async function routeLead(args: RouteLeadArgs): Promise<number | null> {
       console.warn("routing: lead read —", leadErr.message);
       return null;
     }
-
-    const assignees = await getAssignees(supabase);
-    const termHit = matchByTerm(text, assignees);
 
     // ---- ¿Es una CORRECCIÓN de un ruteo a ciegas? --------------------------
     // El round robin se usa cuando el mensaje no nombra ninguna sede: es una
@@ -400,9 +464,12 @@ export async function routeLead(args: RouteLeadArgs): Promise<number | null> {
     // El estado en vivo de Kommo manda: el responsable puede haber cambiado a
     // mano hace 10 segundos y nuestra copia local no lo sabe.
     let previousUserId: number | null = null;
+    let livePipelineId: number | null = null;
     try {
       const live = await fetchLeadStage(kommoLeadId, kommoDomain, kommoToken);
-      previousUserId = live.responsibleUserId;
+      // Kommo devuelve 0 cuando el lead no tiene responsable: 0 = sin dueño (sinResponsable).
+      previousUserId = sinResponsable(live.responsibleUserId) ? null : live.responsibleUserId;
+      livePipelineId = Number.isFinite(live.pipelineId) ? live.pipelineId : null;
     } catch (e) {
       // Sin poder verificar quién es el dueño, NO asignamos: el riesgo de
       // pisarle el lead a una asesora supera el beneficio de rutear.
@@ -438,10 +505,13 @@ export async function routeLead(args: RouteLeadArgs): Promise<number | null> {
     let userId: number | null;
     let matchedTerm: string | null = null;
 
-    if (termHit) {
+    const decision = decidirResponsable(
+      termHit, livePipelineId, await getZonaPorPipeline(supabase, zonasRaw, assignees),
+    );
+    if (decision.strategy === "term_match") {
       strategy = "term_match";
-      userId = termHit.assignee.kommo_user_id;
-      matchedTerm = termHit.term;
+      userId = decision.userId;
+      matchedTerm = decision.matchedTerm;
     } else {
       strategy = "round_robin";
       const { data: rr, error: rrErr } = await supabase.rpc("next_round_robin_assignee", {
@@ -485,4 +555,5 @@ export function resetRoutingCaches(): void {
   cfgCache = null;
   assigneesCache = null;
   fieldDefsCache = null;
+  zonaPipelineCache = null;
 }

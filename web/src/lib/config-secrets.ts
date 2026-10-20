@@ -45,6 +45,7 @@ export const PUBLIC_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "KOMMO_API_DOMAIN",
   "HANDOFF_STAGE_NAME",
   "HANDOFF_PIPELINE_NAME",
+  "ZONAS_DERIVACION",
   // Shopify (tienda y versión, no las credenciales)
   "SHOPIFY_STORE_DOMAIN",
   "SHOPIFY_API_VERSION",

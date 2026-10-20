@@ -16,6 +16,8 @@ const FILES = [
   "web/src/lib/crm-context.ts",
   "web/src/lib/dashboard-ai.ts",
   "supabase/functions/_shared/crm-etapa.ts",
+  "supabase/functions/_shared/derivar-zona.ts",
+  "supabase/migrations/0097_derivar_a_zona.sql",
   "supabase/functions/_shared/memory-instructions.ts",
   "supabase/functions/_shared/untrusted.ts",
   "supabase/functions/_shared/grader-prompt.ts",

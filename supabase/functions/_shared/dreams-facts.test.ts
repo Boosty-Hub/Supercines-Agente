@@ -5,7 +5,15 @@
 // solo respaldaba lo que había dicho el agente. Un aprendizaje describe CONDUCTA; los datos
 // salen de las fuentes oficiales. El corte determinista los neutraliza o descarta.
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@^1.0.0";
-import { FACT_PLACEHOLDER, neutralizeBusinessFacts, neutralizeLearning } from "./dreams-facts.ts";
+import {
+  AGENT_FACT_PHRASE,
+  AGENT_FACT_STANDALONE,
+  agentFacingFacts,
+  FACT_PLACEHOLDER,
+  neutralizeBusinessFacts,
+  neutralizeLearning,
+} from "./dreams-facts.ts";
+import { detectInternalLeak } from "./response-guard.ts";
 
 const L = (title: string, content: string, evidence = "Lead#1 preguntó.") => ({
   title, category: "anti_pattern", severity: "error", vertical: "cross", content, evidence, updates: "",
@@ -192,4 +200,75 @@ Deno.test("entradas patológicas de 60k caracteres se procesan en < 200 ms", () 
     const ms = performance.now() - t0;
     assert(ms < 200, `${s.slice(0, 10)}…: ${ms.toFixed(0)} ms`);
   }
+});
+
+// ─── Versión para el AGENTE: sin el marcador literal (SuperCines, oct-2026) ──
+// El marcador sirve en los archivos de dreams (los lee el operador), pero en el digest el
+// agente lo copiaba tal cual al cliente: «remite a [dato: tomarlo de la fuente oficial]».
+
+Deno.test("agentFacingFacts: la regla de SuperCines queda con una frase natural, sin marcador", () => {
+  const regla =
+    "- Si no tienes confirmado un dato de la KB, dilo sin inventar y remite a [dato: tomarlo de la fuente oficial] o al correo de gerencia.";
+  const out = agentFacingFacts(regla);
+  assertEquals(
+    out,
+    `- Si no tienes confirmado un dato de la KB, dilo sin inventar y remite a ${AGENT_FACT_PHRASE} o al correo de gerencia.`,
+  );
+  assert(!out.includes("[dato"), out);
+  assertEquals(detectInternalLeak(out), null);
+});
+
+Deno.test("agentFacingFacts: preposiciones contraídas y marcadores seguidos", () => {
+  assertEquals(agentFacingFacts(`Deriva al ${FACT_PLACEHOLDER}.`), `Deriva a ${AGENT_FACT_PHRASE}.`);
+  assertEquals(agentFacingFacts(`Informa el horario del ${FACT_PLACEHOLDER}.`), `Informa el horario de ${AGENT_FACT_PHRASE}.`);
+  assertEquals(agentFacingFacts(`Indica que se consulta en ${FACT_PLACEHOLDER}.`), `Indica que se consulta en ${AGENT_FACT_PHRASE}.`);
+  assertEquals(
+    agentFacingFacts(`Abre ${FACT_PLACEHOLDER} a ${FACT_PLACEHOLDER}; confírmalo.`),
+    `Abre ${AGENT_FACT_STANDALONE}; confírmalo.`,
+  );
+  assertEquals(agentFacingFacts(`Cashea desde ${FACT_PLACEHOLDER}.`), `Cashea desde ${AGENT_FACT_STANDALONE}.`);
+});
+
+Deno.test("agentFacingFacts: también reescribe variantes que el modelo copió del marcador", () => {
+  const out = agentFacingFacts("- Remite a [Dato: correo oficial] para reclamos.");
+  assertEquals(out, `- Remite a ${AGENT_FACT_PHRASE} para reclamos.`);
+});
+
+Deno.test("agentFacingFacts: sin marcador no cambia nada y es idempotente", () => {
+  const t = "## Errores a no repetir\n- No prometas descuentos.\n- Pide la cédula antes de reservar.";
+  assertEquals(agentFacingFacts(t), t);
+  const once = agentFacingFacts(`Remite a ${FACT_PLACEHOLDER}.`);
+  assertEquals(agentFacingFacts(once), once);
+});
+
+Deno.test("agentFacingFacts: lo que produce el corte nunca dispara el verificador de salida", () => {
+  const raw = neutralizeBusinessFacts(
+    "- Para reclamos da atencion@supercines.com o llama al 0212-555-1234.\n- El horario es de 9 a 6 pm.\n- Cashea desde $25.",
+  ).text;
+  assert(raw.includes(FACT_PLACEHOLDER), raw);
+  const out = agentFacingFacts(raw);
+  assertEquals(detectInternalLeak(out), null, out);
+  assert(!/\[\s*dato/i.test(out), out);
+});
+
+Deno.test("agentFacingFacts: un marcador de más de 80 caracteres también se reescribe", () => {
+  for (const n of [120, 900]) {
+    const largo = `[dato: tomarlo de la fuente oficial ${"del banco, sección de tasas ".repeat(40).slice(0, n)}]`;
+    assert(largo.length > 80);
+    const out = agentFacingFacts(`- Remite a ${largo} para reclamos.`);
+    assertEquals(out, `- Remite a ${AGENT_FACT_PHRASE} para reclamos.`, `${n}`);
+    assertEquals(detectInternalLeak(out), null, out);
+  }
+});
+
+Deno.test("agentFacingFacts: no toca links markdown ni etiquetas «[Datos]:» de un texto con marcador", () => {
+  const out = agentFacingFacts(`- Pide [Datos]: nombre y cédula; ver [datos](https://x.com); remite a ${FACT_PLACEHOLDER}.`);
+  assertEquals(out, `- Pide [Datos]: nombre y cédula; ver [datos](https://x.com); remite a ${AGENT_FACT_PHRASE}.`);
+});
+
+Deno.test("agentFacingFacts: un marcador sin cerrar y enorme no vuelve lento el corte", () => {
+  const s = "- " + "[dato: x".repeat(3000);
+  const t0 = performance.now();
+  agentFacingFacts(s);
+  assert(performance.now() - t0 < 500);
 });

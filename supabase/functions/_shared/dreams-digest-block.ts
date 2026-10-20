@@ -14,6 +14,8 @@
 //   2) al inyectar el digest, el agente sabe que los aprendizajes son reglas de
 //      conducta, no una fuente de datos (DREAMS_DIGEST_DATA_RULE).
 
+import { agentFacingFacts } from "./dreams-facts.ts";
+
 /**
  * Regla para el modelo de Dreams (generación de learnings y consolidación del digest).
  * Oct-2026 (SuperCines): ya no basta con cifras — también se fijaban estados y causas
@@ -37,9 +39,13 @@ export const DREAMS_DIGEST_DATA_RULE =
   "servicios salen SOLO de tus fuentes oficiales (tu system prompt, search_kb, tus herramientas —p. ej. la cartelera— y " +
   "los bloques de datos de este contexto). Si un aprendizaje trae una cifra o un dato que no figura en ellas, ignora esa cifra o ese dato";
 
-/** Bloque del [CONTEXTO] con el digest; "" si no hay digest. Termina en salto de línea. */
+/**
+ * Bloque del [CONTEXTO] con el digest; "" si no hay digest. Termina en salto de línea.
+ * Reescribe el marcador de dato neutralizado («[dato: …]») con una frase natural
+ * (agentFacingFacts): un digest guardado antes de ese corte no espera al próximo rebuild.
+ */
 export function dreamsDigestBlock(digest: string | null | undefined): string {
-  const d = (digest ?? "").trim();
+  const d = agentFacingFacts((digest ?? "").trim());
   if (!d) return "";
   return `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE. ${DREAMS_DIGEST_DATA_RULE}):\n${d}\n`;
 }

@@ -17,9 +17,16 @@ import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig, type ConfigReader } from "../_shared/config.ts";
 import { recordFailedLlmUsage, recordUsage } from "../_shared/usage.ts";
 import { createAnthropicClient } from "../_shared/anthropic-client.ts";
-import { enforceDigestWordCap } from "../_shared/dreams-digest-cap.ts";
-import { buildConsolidationPrompt, finalizeDigest, type DigestOutput } from "../_shared/dreams-consolidation.ts";
-import { neutralizeBusinessFacts, neutralizeLearning } from "../_shared/dreams-facts.ts";
+import {
+  buildConsolidationPrompt,
+  type ConsolidationAttempt,
+  finalizeArchive,
+  finalizeDigest,
+  type DigestOutput,
+  type LossInfo,
+} from "../_shared/dreams-consolidation.ts";
+import { type ConsolidatedText, rebuildDigestCore } from "../_shared/dreams-rebuild.ts";
+import { neutralizeLearning } from "../_shared/dreams-facts.ts";
 import {
   buildDreamPrompt,
   dreamSlug,
@@ -326,19 +333,24 @@ async function writeLearning(opts: {
 // /dreams-archive/ (fuera del dashboard y de futuras consolidaciones) DESPUÉS de que
 // su esencia entró a DREAMS_ARCHIVE_DIGEST.
 //
-// Tope del digest en palabras: runtime_config.DREAMS_DIGEST_MAX_WORDS (default 600,
-// acotado a 300-3000; era 900 hasta oct-2026 y la consolidación tendía a llenarlo: el
-// prompt ahora pide la versión más corta, el tope es un máximo). Cada palabra se inyecta
-// —y se escribe a caché— en CADA sesión, así que subirlo tiene un costo recurrente por
-// respuesta. Un valor explícito en runtime_config no se toca.
-const DIGEST_MAX_WORDS_DEFAULT = 600;
+// Tope del digest en palabras: runtime_config.DREAMS_DIGEST_MAX_WORDS (default 900,
+// acotado a 300-3000; el prompt pide la versión más corta: el tope es un máximo). Cada
+// palabra se inyecta —y se escribe a caché— en CADA sesión, pero en oct-2026 se probó 600
+// y la compactación del modelo perdía reglas de conducta (LAM ~6, KIA 3, Veterinaria 2):
+// perder una regla cuesta más que las palabras de más. Un valor explícito en runtime_config
+// no se toca.
+const DIGEST_MAX_WORDS_DEFAULT = 900;
 const ARCHIVE_BATCH = 50;
 // Subir al cambiar el prompt de consolidación: invalida el fingerprint guardado y
 // fuerza un rebuild en el próximo run.
 // 5: digest en JSON (reglas del agente + notas del operador aparte), regla de datos del
 // negocio ampliada y «el tope es un máximo, no una meta».
 // 6: dreams y resumen archivado saneados renglón por renglón bajo EVALUATION_NOTICE.
-const DIGEST_PROMPT_VERSION = "6";
+// 7: «no pierdas reglas» (cuenta de la entrada, comprimir antes que descartar) + chequeo de
+// pérdida con reintento, y el digest sin el marcador literal de dato.
+// 8: el reintento dice cuántas reglas faltan y el mínimo exigible; las notas del operador ya
+// no cuentan como reglas conservadas. La pérdida nunca congela el digest (se persiste con alerta).
+const DIGEST_PROMPT_VERSION = "8";
 
 function digestMaxWords(cfg: ConfigReader): number {
   const n = parseInt(cfg.getOr("DREAMS_DIGEST_MAX_WORDS", String(DIGEST_MAX_WORDS_DEFAULT)), 10);
@@ -438,13 +450,18 @@ const CONSOLIDATOR_SYSTEM =
 //  - purpose "digest": JSON (DREAMS_DIGEST_SCHEMA) con las reglas del agente y, APARTE, las
 //    notas para el operador (gaps de KB…) que el agente no puede usar y no se le inyectan.
 // Ambas salidas pasan por el corte de datos del negocio (dreams-facts.ts) y el tope duro.
-type Consolidated = { text: string; operatorNotes: string };
+type ConsolidateOpts = { purpose: "digest" | "archive"; archived: string; dreams: ActiveDream[]; maxWords: number };
 
-async function consolidate(
+// Una llamada al modelo, ya medida para el chequeo de pérdida (_shared/dreams-consolidation.ts):
+// viñetas de la salida ANTES del corte duro y las que se llevó el corte. El reintento y la
+// decisión de persistir viven en _shared/dreams-rebuild.ts (rebuildDigestCore): una pérdida
+// NUNCA impide persistir; solo un error real (refusal, corte por max_tokens, red) lanza.
+async function consolidateOnce(
   anthropic: Anthropic,
   cfg: ConfigReader,
-  opts: { purpose: "digest" | "archive"; archived: string; dreams: ActiveDream[]; maxWords: number }
-): Promise<Consolidated> {
+  opts: ConsolidateOpts,
+  retry?: LossInfo,
+): Promise<ConsolidationAttempt<ConsolidatedText>> {
   const dreamsModel = modelFor(cfg, "DREAMS_MODEL");
   const operator = cfg.getOr("OPERATOR_NAME", "el operador");
   const isDigest = opts.purpose === "digest";
@@ -465,23 +482,26 @@ async function consolidate(
     messages: [{
       role: "user",
       content: buildConsolidationPrompt({
-        purpose: opts.purpose, operator, archived: opts.archived, dreams: opts.dreams, maxWords: opts.maxWords,
+        purpose: opts.purpose, operator, archived: opts.archived, dreams: opts.dreams, maxWords: opts.maxWords, retry,
       }),
     }],
   });
   // textOf/jsonOf tiran ante refusal / max_tokens / sin texto: nunca se persiste un digest
   // truncado ni vacío, el valor anterior sigue vigente. La llamada igual se cobró
   // (el thinking cuenta): se registra para que el techo no la subestime.
-  let result: Consolidated;
+  let result: ConsolidationAttempt<ConsolidatedText>;
   try {
     if (isDigest) {
       const f = finalizeDigest(jsonOf<DigestOutput>(response, "dreams_digest"), opts.maxWords);
-      result = { text: f.digest, operatorNotes: f.operatorNotes };
+      result = {
+        value: { text: f.digest, operatorNotes: f.operatorNotes },
+        outputRules: f.outputRules,
+        capDroppedRules: f.capDroppedRules,
+      };
     } else {
-      const raw = textOf(response, `dreams_${opts.purpose}`).trim();
-      // CORTE DURO: maxWords es solo una instrucción en el prompt y el modelo no siempre
-      // la respeta. Ver _shared/dreams-digest-cap.ts.
-      result = { text: enforceDigestWordCap(neutralizeBusinessFacts(raw).text, opts.maxWords), operatorNotes: "" };
+      // Corte de datos del negocio + CORTE DURO de palabras (finalizeArchive).
+      const f = finalizeArchive(textOf(response, `dreams_${opts.purpose}`), opts.maxWords);
+      result = { value: { text: f.text, operatorNotes: "" }, outputRules: f.outputRules, capDroppedRules: f.capDroppedRules };
     }
   } catch (err) {
     await recordFailedLlmUsage(supabase, err, {
@@ -497,7 +517,7 @@ async function consolidate(
     cacheReadTokens: response.usage.cache_read_input_tokens,
     // deno-lint-ignore no-explicit-any
     cacheCreation5m: (response.usage as any)?.cache_creation?.ephemeral_5m_input_tokens,
-    metadata: { digest: isDigest, archive_digest: !isDigest, dreams: opts.dreams.length },
+    metadata: { digest: isDigest, archive_digest: !isDigest, dreams: opts.dreams.length, ...(retry ? { loss_retry: true } : {}) },
     pricingOverrideRaw: cfg.get("AI_PRICING_OVERRIDES"),
   });
   return result;
@@ -552,54 +572,48 @@ async function rebuildDigest(
     ? dreams.slice(0, Math.min(dreams.length - maxActive, ARCHIVE_BATCH))
     : [];
 
-  // 1) La esencia de lo que se va a archivar entra al resumen archivado ANTES de
-  //    borrar nada. Si la consolidación falla, no se archiva en esta corrida.
-  let archivedCount = 0;
-  const archivedPaths = new Set<string>();
-  if (toArchive.length > 0) {
-    archivedSummary = (await consolidate(anthropic, cfg, {
-      purpose: "archive", archived: archivedSummary, dreams: toArchive, maxWords,
-    })).text;
-    if (!(await stillLatest())) return { dreams: dreams.length, archived: 0, digest_chars: 0, superseded: true };
-    await writeConfigValue("DREAMS_ARCHIVE_DIGEST", archivedSummary);
-    for (const d of toArchive) {
-      // Fail-open por archivo: un fallo no rompe el run. Si no se pudo borrar el
-      // activo, el dream sigue vigente y aparece de nuevo en el digest (su esencia
-      // ya está también en el resumen archivado; el consolidador deduplica).
-      try {
-        const destino = d.path.replace(/^\/dreams\//, "/dreams-archive/");
-        const cRes = await fetch(
-          `https://api.anthropic.com/v1/memory_stores/${memstoreMaster}/memories`,
-          { method: "POST", headers: memHeaders(apiKey), body: JSON.stringify({ path: destino, content: d.content }) }
-        );
-        // 409 = ya archivado antes (reintento): seguimos y borramos el activo.
-        if (!cRes.ok && cRes.status !== 409) throw new Error(`archive create ${cRes.status}`);
-        const dRes = await fetch(
-          `https://api.anthropic.com/v1/memory_stores/${memstoreMaster}/memories/${d.id}`,
-          { method: "DELETE", headers: memHeaders(apiKey) }
-        );
-        if (!dRes.ok) throw new Error(`archive delete ${dRes.status}`);
-        archivedCount++;
-        archivedPaths.add(d.path);
-      } catch (err) {
-        console.warn("archive dream:", d.path, err instanceof Error ? err.message : String(err));
-      }
-    }
-  }
-
-  // 2) El digest = resumen archivado + los activos que quedan. Nunca parte del
-  //    digest anterior.
-  const active = dreams.filter((d) => !archivedPaths.has(d.path));
-  let digest = "";
-  let operatorNotes = "";
-  if (active.length > 0 || archivedSummary) {
-    const c = await consolidate(anthropic, cfg, {
-      purpose: "digest", archived: archivedSummary, dreams: active, maxWords,
-    });
-    digest = c.text;
-    operatorNotes = c.operatorNotes;
-  }
-  if (!(await stillLatest())) return { dreams: dreams.length, archived: archivedCount, digest_chars: 0, superseded: true };
+  // 1) Archivado (la esencia entra al resumen ANTES de mover nada) y 2) digest = resumen
+  //    archivado + los activos que quedan, nunca a partir del digest anterior. Ver
+  //    _shared/dreams-rebuild.ts: una consolidación con pérdida se reintenta una vez y se
+  //    PERSISTE igual con alerta (NUNCA se congela: borrar un dream siempre llega al agente).
+  const core = await rebuildDigestCore(
+    { archived: archivedSummary, dreams, toArchive, maxWords },
+    {
+      consolidate: (o, retry) => consolidateOnce(anthropic, cfg, { ...o, maxWords }, retry),
+      stillLatest,
+      saveArchiveSummary: (summary) => writeConfigValue("DREAMS_ARCHIVE_DIGEST", summary),
+      // Fail-open por archivo: un fallo no rompe el run. Si no se pudo borrar el activo, el
+      // dream sigue vigente y aparece de nuevo en el digest (su esencia ya está también en el
+      // resumen archivado; el consolidador deduplica).
+      archiveDream: async (d) => {
+        try {
+          const destino = d.path.replace(/^\/dreams\//, "/dreams-archive/");
+          const cRes = await fetch(
+            `https://api.anthropic.com/v1/memory_stores/${memstoreMaster}/memories`,
+            { method: "POST", headers: memHeaders(apiKey), body: JSON.stringify({ path: destino, content: d.content }) }
+          );
+          // 409 = ya archivado antes (reintento): seguimos y borramos el activo.
+          if (!cRes.ok && cRes.status !== 409) throw new Error(`archive create ${cRes.status}`);
+          const dRes = await fetch(
+            `https://api.anthropic.com/v1/memory_stores/${memstoreMaster}/memories/${d.id}`,
+            { method: "DELETE", headers: memHeaders(apiKey) }
+          );
+          if (!dRes.ok) throw new Error(`archive delete ${dRes.status}`);
+          return true;
+        } catch (err) {
+          console.warn("archive dream:", d.path, err instanceof Error ? err.message : String(err));
+          return false;
+        }
+      },
+      alert: async (row) => {
+        const { error } = await insertAlert(supabase, row);
+        if (error) console.warn("alert dream_error (consolidación):", error);
+      },
+    },
+  );
+  if (core.superseded) return { dreams: dreams.length, archived: core.archivedCount, digest_chars: 0, superseded: true };
+  const { archivedCount, active, digest, operatorNotes } = core;
+  archivedSummary = core.archivedSummary;
   await writeConfigValue("DREAMS_DIGEST", digest);
   // Notas para el operador (gaps de KB, datos a revisar): solo las muestra /dreams; el
   // agente NO las recibe. Fail-open: si no se pueden guardar, el digest ya quedó, pero NO se

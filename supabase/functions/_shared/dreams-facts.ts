@@ -208,3 +208,56 @@ export function neutralizeLearning<L extends LearningFields>(l: L): L | null {
     evidence: evidence.text || "(evidencia omitida: afirmaba datos del negocio)",
   };
 }
+
+// ─── El marcador hacia afuera ───────────────────────────────────────────────
+// FACT_PLACEHOLDER sirve en los archivos de dreams (los lee el operador en /dreams): dice
+// qué se quitó. Pero en el DIGEST que recibe el agente (SuperCines, oct-2026: «remite a
+// [dato: tomarlo de la fuente oficial] o al correo de gerencia») el agente podía copiarlo
+// tal cual al cliente. Dos cortes:
+//  - FACT_MARKER_RE: el verificador de salida (response-guard.ts) bloquea toda respuesta
+//    que lo traiga, o una variante cercana;
+//  - agentFacingFacts: el digest del agente lleva una frase natural, segura si se repite.
+
+/**
+ * Marcador o variante cercana: «[dato: …]», «[ Datos : … ]» o «[dato]» suelto. NO dispara
+ * con lo que un negocio escribe de verdad: un link markdown «[datos](url)», una etiqueta de
+ * formulario «[Datos]: nombre, cédula» ni la frase «tomarlo de la fuente oficial» fuera de
+ * corchetes (falsos positivos: bloqueaban respuestas legítimas).
+ */
+export const FACT_MARKER_RE = /\[\s*datos?\s*(?::|\](?!\s*[(:]))/i;
+
+/** Tras una preposición («remite a …», «consulta en …»): el lugar al que se deriva. */
+export const AGENT_FACT_PHRASE = "los canales oficiales";
+/** En cualquier otra posición («abre …», «desde …»): el dato en sí. */
+export const AGENT_FACT_STANDALONE = "el dato oficial";
+
+// Marcador con contenido (el modelo copia variantes al consolidar, a veces largas: «[dato:
+// tomarlo de la fuente oficial del banco, sección de tasas …]»). Contenido acotado a
+// MARKER_MAX_CONTENT sin «]» ni salto de línea: clase negada y cuantificador acotado, sin
+// anidamiento → lineal por inicio de marcador; las líneas ya vienen acotadas (MAX_LINE_CHARS).
+// La forma sin contenido («[dato]») no cuenta si sigue «(» o «:» (link markdown, etiqueta).
+const MARKER_MAX_CONTENT = 1000;
+const MARKER = String.raw`\[\s*datos?\s*(?::[^\]\n]{0,${MARKER_MAX_CONTENT}}\]|\](?!\s*[(:]))`;
+const MARKER_RUN = new RegExp(`${MARKER}(?:\\s{0,3}(?:[–—-]|a|y|o|hasta|,)\\s{0,3}${MARKER})+`, "gi");
+const PREP_MARKER = new RegExp(`\\b(a|al|en|de|del|por|con|hacia)\\s{1,3}${MARKER}`, "gi");
+const ANY_MARKER = new RegExp(MARKER, "gi");
+const PREP_FOLD: Record<string, string> = { al: "a", del: "de" };
+
+/**
+ * Reescribe los marcadores de dato de un texto que va al AGENTE (el digest) en una frase
+ * natural: «remite a [dato…]» → «remite a los canales oficiales»; el resto → «el dato
+ * oficial». Si el agente la repite al cliente, no expone nada interno. Idempotente; sin
+ * marcadores devuelve el mismo texto.
+ */
+export function agentFacingFacts(text: string): string {
+  const s = String(text ?? "");
+  if (!FACT_MARKER_RE.test(s)) return s;
+  return s
+    .replace(MARKER_RUN, FACT_PLACEHOLDER)
+    .replace(PREP_MARKER, (_m, prep: string) => {
+      const p = PREP_FOLD[prep.toLowerCase()] ?? prep;
+      return `${prep[0] === prep[0].toUpperCase() ? p[0].toUpperCase() + p.slice(1) : p} ${AGENT_FACT_PHRASE}`;
+    })
+    .replace(ANY_MARKER, AGENT_FACT_STANDALONE)
+    .replace(/tomarlo de la fuente oficial/gi, "tomarlo de las fuentes oficiales");
+}

@@ -28,6 +28,11 @@
 // texto que SÍ se extrae hay que revisarlo por si trae residuo de ese mismo
 // razonamiento aunque el tag haya cerrado bien.
 
+import { FACT_MARKER_RE } from "./dreams-facts.ts";
+
+/** Motivo de fuga del marcador de dato neutralizado de Dreams (ver dreams-facts.ts). */
+export const FACT_MARKER_LEAK_LABEL = "marcador interno de dato sin completar ([dato: …])";
+
 /**
  * Patrones de precisión alta: ninguno de estos aparece en una respuesta real
  * de atención al cliente de un negocio cualquiera, así que el riesgo de falso
@@ -39,6 +44,10 @@
  * `<function_calls>`, `tool_use`, etc.), que no dependen del nombre.
  */
 const INTERNAL_LEAK_PATTERNS: { re: RegExp; label: string }[] = [
+  // ── Marcador de Dreams: «[dato: tomarlo de la fuente oficial]» (y variantes). Lo deja el
+  //    corte de datos del negocio en los aprendizajes; en un digest el agente lo copiaba
+  //    literal (SuperCines, oct-2026). Misma regex que define el marcador.
+  { re: FACT_MARKER_RE, label: FACT_MARKER_LEAK_LABEL },
   // ── Residuo de sintaxis: tags del protocolo o de tool-calling ──
   { re: /<\s*\/?\s*respuesta\s*>/i, label: "tag <respuesta> sin parsear" },
   { re: /<\s*parameter\b|<\s*\/\s*parameter\s*>/i, label: "tag <parameter> (tool-call)" },
@@ -145,6 +154,11 @@ export function leakCorrectionMessage(reason: string, opts: { allowNoReply?: boo
     "[VERIFICADOR INTERNO — NO es un mensaje del cliente, es una corrección del sistema]",
     `Tu salida anterior no se puede enviar: ${reason}.`,
     "El cliente NUNCA debe ver tu razonamiento, tus planes de redacción, nombres de herramientas, rutas de archivos internas ni etiquetas del protocolo.",
+    // El marcador no es razonamiento: es un hueco donde iba un dato. Se pide el dato real o
+    // quitarlo, nunca adivinarlo.
+    ...(reason === FACT_MARKER_LEAK_LABEL
+      ? ["Escribiste un marcador interno «[dato: …]» como si fuera texto para el cliente. Pon en su lugar el dato real tomado de tus fuentes (search_kb, tus herramientas o tu system prompt); si no lo tienes confirmado, quítalo y ofrece verificarlo o indica a dónde puede consultar, sin inventar ningún dato."]
+      : []),
     "Reescribe la respuesta completa. Tu salida debe terminar con el bloque EXACTO:",
     "<respuesta>",
     "SOLO el texto que se le envía al cliente, listo para mandar tal cual",

@@ -67,3 +67,12 @@ Deno.test("la aclaración al agente también cubre todo dato del negocio", () =>
     assertStringIncludes(DREAMS_DIGEST_DATA_RULE, tipo, tipo);
   }
 });
+
+Deno.test("un digest ya guardado con el marcador de dato llega al agente con la frase natural", () => {
+  // Digests persistidos antes del corte (SuperCines, oct-2026): no esperan al próximo rebuild.
+  const b = dreamsDigestBlock(
+    "- Si no tienes confirmado un dato de la KB, dilo sin inventar y remite a [dato: tomarlo de la fuente oficial] o al correo de gerencia.",
+  );
+  assert(!b.includes("[dato"), b);
+  assertStringIncludes(b, "remite a los canales oficiales o al correo de gerencia");
+});

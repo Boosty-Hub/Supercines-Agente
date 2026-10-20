@@ -7,7 +7,9 @@ import {
   extractResponseBlock,
   detectInternalLeak,
   leakCorrectionMessage,
+  FACT_MARKER_LEAK_LABEL,
 } from "./response-guard.ts";
+import { FACT_PLACEHOLDER } from "./dreams-facts.ts";
 
 // ─── extractResponseBlock ────────────────────────────────────────────────────
 
@@ -153,4 +155,53 @@ Deno.test("leakCorrectionMessage incluye el motivo y el contrato del tag <respue
   assertStringIncludes(msg, "<respuesta>");
   assertStringIncludes(msg, "</respuesta>");
   assertStringIncludes(msg, "VERIFICADOR INTERNO");
+});
+
+// ─── Marcador de dato neutralizado de Dreams (SuperCines, oct-2026) ─────────
+// dreams-facts.ts reemplaza datos del negocio por «[dato: tomarlo de la fuente oficial]»;
+// si llega al digest el agente puede copiarlo literal en una respuesta al cliente.
+
+Deno.test("marcador de dato de Dreams en la respuesta → dispara (y la regex sale de dreams-facts)", () => {
+  const reply =
+    "No tengo confirmado ese dato, te recomiendo escribir a [dato: tomarlo de la fuente oficial] o al correo de gerencia.";
+  assertEquals(detectInternalLeak(reply), FACT_MARKER_LEAK_LABEL);
+  assertEquals(detectInternalLeak(`Consulta en ${FACT_PLACEHOLDER}`), FACT_MARKER_LEAK_LABEL);
+});
+
+Deno.test("variantes cercanas del marcador → disparan", () => {
+  for (const t of [
+    "Escribe a [dato: correo oficial] para reclamos",
+    "El horario es [ Dato : pendiente ]",
+    "Te paso el enlace: [datos: link]",
+    "Puedes verlo en [dato]",
+    "[dato: tomarlo de la fuente oficial]",
+    "[ Dato : algo ]",
+  ]) {
+    assertEquals(detectInternalLeak(t), FACT_MARKER_LEAK_LABEL, t);
+  }
+});
+
+Deno.test("hablar de «dato» en una respuesta normal NO dispara", () => {
+  for (const t of [
+    "¿Me pasas ese dato para ayudarte?",
+    "Gracias por el dato, lo reviso [1]",
+    "Datos de la función: sala 3, 7:00 pm",
+    // falsos positivos reales: link markdown, etiqueta de formulario, la frase sin corchetes
+    "[datos](https://x.com)",
+    "[Datos]: nombre, cédula",
+    "Debes tomarlo de la fuente oficial del banco",
+    "Lo encuentras ahí (tomarlo de la fuente oficial)",
+  ]) {
+    assertEquals(detectInternalLeak(t), null, t);
+  }
+});
+
+Deno.test("la corrección por marcador pide el dato real o quitarlo (tuteo, sin voseo)", () => {
+  const msg = leakCorrectionMessage(FACT_MARKER_LEAK_LABEL);
+  assertStringIncludes(msg, "[dato: …]");
+  assertStringIncludes(msg, "dato real");
+  assertStringIncludes(msg, "quítalo");
+  assert(!/\b(pon[eé]|quitalo|reemplazá|sacá|ofrecé)\b/i.test(msg), msg);
+  // otras fugas no reciben esa instrucción
+  assert(!leakCorrectionMessage("salesbot").includes("[dato: …]"));
 });

@@ -127,7 +127,10 @@ export const wordCount = (t: string) => t.split(/\s+/).filter(Boolean).length;
 const ESCAPED_TAG = /&lt;\s{0,3}\/?\s{0,3}[A-Za-z_][^&\n]{0,200}?&gt;/g;
 // Encabezados de bloque del contexto del agente («[CONTEXTO]», «[HISTORIAL]», «[MENSAJES NUEVOS]»):
 // en mayúsculas, sin «:» (el marcador «[dato: …]» va en minúsculas y no coincide).
-const BLOCK_HEADER = /\[\s{0,3}[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9_ ]{2,40}\s{0,3}\]:?/g;
+// Cualquier corchete sin minúsculas y con al menos una mayúscula («[CONTEXTO]», «[SYSTEM-PROMPT]»,
+// «[ INSTRUCCIONES: ]»…): imita un encabezado del [CONTEXTO] de la sesión. El marcador de dato
+// («[dato: …]») va en minúsculas y no se toca. Acotado (lookahead y clase de ≤64 caracteres).
+const BLOCK_HEADER = /\[(?=[^\]\n]{0,64}[A-ZÁÉÍÓÚÑÜ])[^\]\[\na-záéíóúñü]{2,64}\]:?/g;
 
 /**
  * Una regla sin marcas del protocolo: NFKC + paréntesis angulares alternativos → «<»/«>» y

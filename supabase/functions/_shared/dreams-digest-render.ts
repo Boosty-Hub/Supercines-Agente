@@ -33,7 +33,7 @@
 //      correo, enlace, teléfono o monto —o una regla original más larga que MAX_LINE_CHARS— no
 //      entra al digest: va a las notas del operador (dataShapeNote).
 
-import { agentFacingFacts, MAX_LINE_CHARS, removeDataShapeLines } from "./dreams-facts.ts";
+import { agentFacingFacts, FACT_PLACEHOLDER, MAX_LINE_CHARS, removeDataShapeLines } from "./dreams-facts.ts";
 import { frontmatter } from "./dreams-generation.ts";
 import { dataShapeNote, type DreamLike, neutralizeInputText, normalizeBulletLines } from "./dreams-consolidation.ts";
 import { sanitizeUntrusted } from "./untrusted.ts";
@@ -127,10 +127,6 @@ export const wordCount = (t: string) => t.split(/\s+/).filter(Boolean).length;
 const ESCAPED_TAG = /&lt;\s{0,3}\/?\s{0,3}[A-Za-z_][^&\n]{0,200}?&gt;/g;
 // Encabezados de bloque del contexto del agente («[CONTEXTO]», «[HISTORIAL]», «[MENSAJES NUEVOS]»):
 // en mayúsculas, sin «:» (el marcador «[dato: …]» va en minúsculas y no coincide).
-// Cualquier corchete sin minúsculas y con al menos una mayúscula («[CONTEXTO]», «[SYSTEM-PROMPT]»,
-// «[ INSTRUCCIONES: ]»…): imita un encabezado del [CONTEXTO] de la sesión. El marcador de dato
-// («[dato: …]») va en minúsculas y no se toca. Acotado (lookahead y clase de ≤64 caracteres).
-const BLOCK_HEADER = /\[(?=[^\]\n]{0,64}[A-ZÁÉÍÓÚÑÜ])[^\]\[\na-záéíóúñü]{2,64}\]:?/g;
 
 /**
  * Una regla sin marcas del protocolo: NFKC + paréntesis angulares alternativos → «<»/«>» y
@@ -138,17 +134,39 @@ const BLOCK_HEADER = /\[(?=[^\]\n]{0,64}[A-ZÁÉÍÓÚÑÜ])[^\]\[\na-záéíó�
  * y lo que quede de «<»/«>» queda escapado. En un renglón.
  */
 export function protocolSafeRule(rule: string): string {
-  // Hasta que no cambie nada (tope de pasadas): una sola pasada dejaba armar un encabezado con
-  // los restos de otro («[CON[X]TEXTO]» → «[CON TEXTO]»).
-  let s = sanitizeUntrusted(rule);
-  for (let i = 0; i < 8; i++) {
-    const next = s.replace(ESCAPED_TAG, " ").replace(BLOCK_HEADER, " ");
+  // 1) Forma final de espacios ANTES de filtrar: colapsar después podía armar una marca nueva.
+  let s = oneLine(sanitizeUntrusted(rule)).replace(/\s+([.,;:!?])/g, "$1");
+  // 2) Etiquetas escapadas fuera hasta que no cambie nada. Cada pasada que cambia acorta la
+  //    cadena, así que el tope por largo nunca corta antes de tiempo.
+  for (let i = 0; i <= s.length; i++) {
+    const next = s.replace(ESCAPED_TAG, " ");
     if (next === s) break;
     s = next;
   }
-  return oneLine(s)
-    .replace(/\s+([.,;:!?])/g, "$1");
+  // 3) Corchetes: imposible de rearmar. Todo «[»/«]» pasa a paréntesis salvo el marcador de dato
+  //    («[dato: …]», que se normaliza al canónico y luego reescribe agentFacingFacts). Así
+  //    ninguna regla puede imitar un encabezado del [CONTEXTO] («[CONTEXTO]», «[SYSTEM-PROMPT]»…).
+  //    Antes, un encabezado sin minúsculas («[CONTEXTO]», «[ INSTRUCCIONES: ]») se quita entero
+  //    (una pasada basta: lo que sobre de un anidado termina como paréntesis, nunca como corchete).
+  s = s.replace(UPPER_BRACKET, " ");
+  const parts: string[] = [];
+  let last = 0;
+  for (const m of s.matchAll(MARKER_FULL)) {
+    parts.push(s.slice(last, m.index).replace(/\[/g, "(").replace(/\]/g, ")"), FACT_PLACEHOLDER);
+    last = (m.index ?? 0) + m[0].length;
+  }
+  parts.push(s.slice(last).replace(/\[/g, "(").replace(/\]/g, ")"));
+  s = parts.join("").replace(/\s{2,}/g, " ").replace(/\s+([.,;:!?])/g, "$1").trim();
+  // 4) Falla cerrado: si aún queda algo con forma de etiqueta, la regla no entra.
+  if (new RegExp(ESCAPED_TAG.source).test(s)) return "";
+  return s;
 }
+
+/** Corchete sin minúsculas (imita un encabezado del [CONTEXTO]), acotado. */
+const UPPER_BRACKET = /\[[^\[\]\na-záéíóúñü]{1,64}\]:?/g;
+
+/** Marcador de dato completo (`[dato: …]`, `[datos: …]`, cualquier caja), acotado. */
+const MARKER_FULL = /\[\s{0,3}datos?\s{0,3}:[^\[\]\n]{0,1000}\]/gi;
 
 const NOTE_RULE_MAX_CHARS = 500;
 

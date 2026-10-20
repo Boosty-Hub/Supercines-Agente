@@ -17,6 +17,8 @@
 //     muy grande), se guarda COMPLETO y se avisa (digestOverCapAlert). Un digest más largo
 //     cuesta palabras; una regla perdida en silencio cuesta respuestas equivocadas.
 //
+// Antes de todo, lo que el dream le dice al OPERADOR («Para el operador: …», hasta el final de la
+// regla) sale del digest y va a operatorNotes (DREAMS_OPERATOR_NOTES): no es para el agente.
 // Cada regla (de un dream activo o del resumen archivado) pasa, en este orden, por:
 //   1) protocolSafeRule: marcas del protocolo o etiquetas («<respuesta>», «<turno …>»,
 //      «[CONTEXTO]») fuera; cualquier «<»/«>» que quede, escapado (como untrusted.ts). Un
@@ -33,7 +35,7 @@
 //      correo, enlace, teléfono o monto —o una regla original más larga que MAX_LINE_CHARS— no
 //      entra al digest: va a las notas del operador (dataShapeNote).
 
-import { agentFacingFacts, FACT_PLACEHOLDER, MAX_LINE_CHARS, removeDataShapeLines } from "./dreams-facts.ts";
+import { agentFacingFacts, canonicalMarker, MAX_LINE_CHARS, removeDataShapeLines, splitSentences } from "./dreams-facts.ts";
 import { frontmatter } from "./dreams-generation.ts";
 import { dataShapeNote, type DreamLike, neutralizeInputText, normalizeBulletLines } from "./dreams-consolidation.ts";
 import { sanitizeUntrusted } from "./untrusted.ts";
@@ -43,7 +45,7 @@ import { truncateGraphemes } from "./text-safe.ts";
  * Versión del armado: entra al fingerprint (dreams-digest-fingerprint.ts). Subirla al cambiar
  * cómo se arma el digest fuerza UNA reconstrucción en el próximo run.
  */
-export const DIGEST_RENDER_VERSION = "render-2";
+export const DIGEST_RENDER_VERSION = "render-3";
 
 export type DreamSeverity = "err" | "adv" | "sug";
 
@@ -152,7 +154,8 @@ export function protocolSafeRule(rule: string): string {
   const parts: string[] = [];
   let last = 0;
   for (const m of s.matchAll(MARKER_FULL)) {
-    parts.push(s.slice(last, m.index).replace(/\[/g, "(").replace(/\]/g, ")"), FACT_PLACEHOLDER);
+    // Canónico DE SU TIPO: un horario sigue siendo horario («en el horario oficial»), no un canal.
+    parts.push(s.slice(last, m.index).replace(/\[/g, "(").replace(/\]/g, ")"), canonicalMarker(m[0]));
     last = (m.index ?? 0) + m[0].length;
   }
   parts.push(s.slice(last).replace(/\[/g, "(").replace(/\]/g, ")"));
@@ -169,6 +172,28 @@ const UPPER_BRACKET = /\[[^\[\]\na-záéíóúñü]{1,64}\]:?/g;
 const MARKER_FULL = /\[\s{0,3}datos?\s{0,3}:[^\[\]\n]{0,1000}\]/gi;
 
 const NOTE_RULE_MAX_CHARS = 500;
+
+// «Para el operador: cargar en la KB…», «Gap para el operador: …» (LAM, SuperCines, Veterinaria,
+// oct-2026): el dream le habla al OPERADOR, no al agente. Desde esa oración hasta el final de la
+// regla (siempre va al final, antes de la evidencia) sale del digest y va a las notas del
+// operador; el resto de la regla queda.
+const OPERATOR_ADDRESS = /^[\s"'«“(*_]{0,4}(?:(?:nota|gap|pendiente|sugerencia|aviso)\s{1,3})?para\s{1,3}el\s{1,3}operador\b/i;
+
+/** Prefijo de la nota con lo que el dream le decía al operador. */
+export const OPERATOR_NOTE_PREFIX = "Para el operador";
+
+/** Separa la parte de la regla dirigida al operador (null si no hay). */
+export function splitOperatorAddress(rule: string): { rule: string; operator: string | null } {
+  const sentences = splitSentences(rule);
+  const at = sentences.findIndex((x) => OPERATOR_ADDRESS.test(x));
+  if (at < 0) return { rule, operator: null };
+  return { rule: sentences.slice(0, at).join(" ").trim(), operator: sentences.slice(at).join(" ").trim() };
+}
+
+function operatorNote(source: string, text: string): string {
+  const body = text.replace(OPERATOR_ADDRESS, "").replace(/^[\s:*_]+/, "");
+  return `- ${OPERATOR_NOTE_PREFIX} («${source}»): ${truncateGraphemes(protocolSafeRule(body), NOTE_RULE_MAX_CHARS, { ellipsis: "…" })}`;
+}
 
 /** Nota al operador: la regla se quedó sin nada tras quitar sus datos (no entra al digest). */
 function emptyRuleNote(source: string, rule: string): string {
@@ -217,6 +242,11 @@ export type RenderedDigest = {
   words: number;
   /** Viñetas que NO entraron (dato de alto riesgo, o vacías tras quitar datos): notas para el operador. */
   notes: string[];
+  /**
+   * Lo que los dreams le decían al OPERADOR («Para el operador: …»): fuera del digest, a sus
+   * notas. No es un dato quitado (no cuenta para la alerta de datos).
+   */
+  operatorNotes: string[];
   /** Viñetas en el digest. */
   bullets: number;
 };
@@ -228,8 +258,16 @@ export type RenderedDigest = {
 export function renderDigest(dreams: ReadonlyArray<DreamLike>, archived: string): RenderedDigest {
   const sections: Record<DreamSeverity | "archive", string[]> = { err: [], adv: [], sug: [], archive: [] };
   const notes: string[] = [];
+  const operatorNotes: string[] = [];
   const seen = new Set<string>();
-  const add = (section: DreamSeverity | "archive", rule: string, source: string) => {
+  const add = (section: DreamSeverity | "archive", fullRule: string, source: string) => {
+    if (!fullRule) return;
+    const split = fullRule.length + 2 > MAX_LINE_CHARS ? { rule: fullRule, operator: null } : splitOperatorAddress(fullRule);
+    if (split.operator) {
+      const note = operatorNote(source, split.operator);
+      if (!operatorNotes.includes(note)) operatorNotes.push(note);
+    }
+    const rule = split.rule;
     if (!rule) return;
     // Más largo que lo que escanean las redes: no se puede garantizar libre de datos.
     if (rule.length + 2 > MAX_LINE_CHARS) {
@@ -266,6 +304,7 @@ export function renderDigest(dreams: ReadonlyArray<DreamLike>, archived: string)
     text,
     words: wordCount(text),
     notes,
+    operatorNotes,
     bullets: SECTION_ORDER.reduce((n, s) => n + sections[s].length, 0),
   };
 }

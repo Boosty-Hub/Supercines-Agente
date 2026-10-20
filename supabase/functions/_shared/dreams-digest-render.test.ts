@@ -9,7 +9,7 @@ import {
   renderDigest,
   SECTION_HEADINGS,
 } from "./dreams-digest-render.ts";
-import { AGENT_FACT_PHRASE, DATA_SHAPE_NOTE_PREFIX, FACT_PLACEHOLDER, MAX_LINE_CHARS } from "./dreams-facts.ts";
+import { AGENT_AVAILABILITY_PHRASE, AGENT_FACT_PHRASE, DATA_SHAPE_NOTE_PREFIX, FACT_PLACEHOLDER, MAX_LINE_CHARS } from "./dreams-facts.ts";
 import { detectInternalLeak } from "./response-guard.ts";
 import { dreamsDigestBlock } from "./dreams-digest-block.ts";
 
@@ -112,11 +112,12 @@ Deno.test("una regla con correo/enlace/teléfono/monto (o más larga que MAX_LIN
     dream({ date: "2026-10-01", idx: 3, sev: "error", rule: "x".repeat(MAX_LINE_CHARS + 5) }),
     dream({ date: "2026-10-01", idx: 4, sev: "error", rule: "Atiende emergencias 24/7; ofrece la cita más próxima." }),
   ], "- Paga en https://pago.x.com/ya.");
-  // El horario («24/7») también es un dato del negocio: su cláusula sale limpia y queda la conducta.
-  // y «paga en <enlace>» remite a los canales oficiales (preposición + marcador).
+  // «24/7» es disponibilidad (dato de horario): se reemplaza SOLO el token por una frase natural y
+  // la regla queda entera (antes caía en el patrón de fechas y se perdía la cláusula). «paga en
+  // <enlace>» remite a los canales oficiales (preposición + marcador).
   assertEquals(
     r.text,
-    `${SECTION_HEADINGS.err}\n- Ofrece la cita más próxima.\n\n${SECTION_HEADINGS.archive}\n- Paga en los canales oficiales.`,
+    `${SECTION_HEADINGS.err}\n- Atiende emergencias ${AGENT_AVAILABILITY_PHRASE}; ofrece la cita más próxima.\n\n${SECTION_HEADINGS.archive}\n- Paga en los canales oficiales.`,
   );
   assertEquals(r.notes.length, 3);
   // correo / monto: el corte de la entrada los vacía → nota «quedó vacío» con el texto original
@@ -126,7 +127,7 @@ Deno.test("una regla con correo/enlace/teléfono/monto (o más larga que MAX_LIN
   // una regla más larga que lo que se escanea sale entera (se decide sobre el texto ORIGINAL)
   assertStringIncludes(r.notes.join("\n"), `- ${DATA_SHAPE_NOTE_PREFIX} xxxx`);
   // y lo que queda pasa la defensa al inyectar sin perder nada
-  assertStringIncludes(dreamsDigestBlock(r.text), "Ofrece la cita más próxima");
+  assertStringIncludes(dreamsDigestBlock(r.text), "ofrece la cita más próxima");
 });
 
 Deno.test("el marcador de dato se reescribe con frase natural y la cláusula sin preposición se quita limpia", () => {
@@ -206,7 +207,7 @@ Deno.test("borrar un dream saca su viñeta en el siguiente armado y nada más ca
 });
 
 Deno.test("sin dreams ni resumen archivado el digest es vacío", () => {
-  assertEquals(renderDigest([], ""), { text: "", words: 0, notes: [], bullets: 0 });
+  assertEquals(renderDigest([], ""), { text: "", words: 0, notes: [], operatorNotes: [], bullets: 0 });
 });
 
 // ─── Tope de palabras → archivar los más viejos (planArchive) ───────────────
@@ -275,4 +276,55 @@ Deno.test("protocolo: ningún corchete sobrevive salvo el marcador de dato, y no
   assert(out.includes("[dato: tomarlo de la fuente oficial]"), out);
   assertEquals(protocolSafeRule("&lt;&lt;respuesta&gt;respuesta&gt;"), protocolSafeRule("&lt;&lt;respuesta&gt;respuesta&gt;").trim());
   assert(!/<\/?\s*respuesta/i.test(protocolSafeRule("<<respuesta>respuesta> hola")));
+});
+
+// LAM / SuperCines / Veterinaria (oct-2026): textos REALES de dreams que le hablan al operador.
+Deno.test("«Para el operador: …» sale del digest y va a operatorNotes; el resto de la regla queda", () => {
+  const r = renderDigest([
+    dream({
+      date: "2026-10-20",
+      idx: 1,
+      sev: "advertencia",
+      title: "cashea_sin_fuente_oficial",
+      rule: "No afirmes condiciones de Cashea que no figuren en tus fuentes; usa la misma formulación y remite a la app de Cashea; si antes afirmaste algo, corrígelo. Para el operador: falta cargar la información oficial de Cashea en la KB.",
+    }),
+    dream({
+      date: "2026-10-20",
+      idx: 2,
+      sev: "advertencia",
+      title: "horarios_distintos",
+      rule: "Para el operador: el agente dio horarios distintos entre conversaciones; unificar el horario oficial en la KB.",
+    }),
+    dream({
+      date: "2026-10-20",
+      idx: 3,
+      sev: "advertencia",
+      title: "ayuno",
+      rule: "Indica que las indicaciones previas a la cirugía las da la sede. Gap para el operador: cargar en la KB las indicaciones de ayuno reales.",
+    }),
+  ], "");
+  assert(!/para el operador/i.test(r.text), r.text);
+  assertStringIncludes(r.text, "si antes afirmaste algo, corrígelo.");
+  assertStringIncludes(r.text, "- Indica que las indicaciones previas a la cirugía las da la sede.");
+  assertEquals(r.bullets, 2, "la regla hecha solo de nota al operador no deja viñeta");
+  assertEquals(r.notes, [], "no es un dato quitado");
+  assertEquals(r.operatorNotes.length, 3);
+  assertStringIncludes(r.operatorNotes.join("\n"), "el agente dio horarios distintos entre conversaciones; unificar el horario oficial en la KB.");
+  assertStringIncludes(r.operatorNotes.join("\n"), "«2026-10-20_03_adv_ayuno.md»): cargar en la KB las indicaciones de ayuno reales.");
+});
+
+// Pocholin (oct-2026): su etiqueta de severidad «[error]» llegaba como «(error)» porque
+// protocolSafeRule pasa todo corchete a paréntesis. En el template la severidad NUNCA va como
+// etiqueta entre corchetes: es el encabezado de la sección.
+Deno.test("la severidad va en el encabezado de la sección, nunca como etiqueta «[error]»/«(error)»", () => {
+  const r = renderDigest([
+    dream({ date: "2026-10-01", idx: 1, sev: "error", rule: "No prometas descuentos." }),
+    dream({ date: "2026-10-01", idx: 2, sev: "advertencia", rule: "Pide la sede." }),
+    dream({ date: "2026-10-01", idx: 3, sev: "sugerencia", rule: "Saluda por el nombre." }),
+  ], "");
+  assertEquals(
+    r.text,
+    `${SECTION_HEADINGS.err}\n- No prometas descuentos.\n\n${SECTION_HEADINGS.adv}\n- Pide la sede.\n\n${SECTION_HEADINGS.sug}\n- Saluda por el nombre.`,
+  );
+  assert(!/[\[(](?:error|err|adv|advertencia|sug|sugerencia)[\])]/i.test(r.text), r.text);
 });

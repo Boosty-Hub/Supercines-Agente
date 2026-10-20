@@ -258,3 +258,20 @@ Deno.test("fingerprint: sin cambios se omite; borrar un dream o subir la versió
   assertEquals(canSkipDigestRebuild({ stored, current: await digestFingerprint(dreams.slice(1), r.digest, ctx), pendingArchive: 0 }), false);
   assertEquals(canSkipDigestRebuild({ stored, current: await digestFingerprint(dreams, r.digest, { ...ctx, renderVersion: "render-2" }), pendingArchive: 0 }), false);
 });
+
+Deno.test("«Para el operador: …» de un dream va a las notas (sin alerta de datos) y no se duplica si el modelo falla", async () => {
+  const dreams = [dream(0, "Usa solo lo aprobado del system prompt. Para el operador: falta cargar la información oficial de Cashea en la KB.")];
+  const alerts: Alert[] = [];
+  const r = await rebuildDigestCore(input(dreams), deps({}, alerts));
+  assert(!r.superseded);
+  assert(!/para el operador/i.test(r.digest), r.digest);
+  assertStringIncludes(r.digest, "- Usa solo lo aprobado del system prompt.");
+  assertStringIncludes(r.operatorNotes, "falta cargar la información oficial de Cashea en la KB.");
+  assertEquals(alerts.filter((a) => a.metadata.reason === "consolidation_data_shape").length, 0);
+  const failed = await rebuildDigestCore(
+    input(dreams, { previousNotes: r.operatorNotes }),
+    deps({ operatorNotes: () => Promise.reject(new Error("refusal")) }),
+  );
+  assert(!failed.superseded);
+  assertEquals(failed.operatorNotes.split("\n").filter((l) => l.includes("Cashea")).length, 1, failed.operatorNotes);
+});

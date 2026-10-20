@@ -16,6 +16,7 @@ import {
   DATA_SHAPE_NOTE_PREFIX,
   FACT_PLACEHOLDER,
   neutralizeBusinessFacts,
+  SCHEDULE_PLACEHOLDER,
   removeDataShapeLines,
   restoreLegacyFactPhrase,
 } from "./dreams-facts.ts";
@@ -136,7 +137,7 @@ Reglas:
 - ${capRule(opts.maxWords)}
 - NO PIERDAS REGLAS: la entrada trae ${nRules} reglas (${opts.dreams.length} aprendizajes + las viñetas del resumen archivado). CADA regla de conducta distinta tiene que sobrevivir en la salida. Fusiona duplicados y variantes del mismo aprendizaje en una sola viñeta y acorta la redacción, pero NUNCA descartes una regla para entrar en el tope: si no entra, comprime más (viñetas más cortas, fusiona las parecidas).
 - FORMATO: Markdown con UNA viñeta por renglón: un salto de línea después de cada encabezado y entre viñetas (nunca todo en un solo párrafo).
-- DATOS QUITADOS: donde la entrada dice «${FACT_PLACEHOLDER}» había un dato del negocio (precio, horario, correo, teléfono, enlace, fecha, estado de una sede…) que se quitó a propósito. Escribe esa regla como CONDUCTA que remite a la fuente oficial que el propio aprendizaje nombre; si no nombra ninguna, di solo «tómalo de las fuentes oficiales» (nunca nombres una fuente que el aprendizaje no mencione: puede no existir). NUNCA copies el marcador y NUNCA inventes el valor ni lo recuperes de otro aprendizaje.
+- DATOS QUITADOS: donde la entrada dice «${FACT_PLACEHOLDER}» (o un marcador de su tipo, como «${SCHEDULE_PLACEHOLDER}») había un dato del negocio (precio, horario, correo, teléfono, enlace, fecha, estado de una sede…) que se quitó a propósito. Escribe esa regla como CONDUCTA que remite a la fuente oficial que el propio aprendizaje nombre; si no nombra ninguna, di solo «tómalo de las fuentes oficiales» (nunca nombres una fuente que el aprendizaje no mencione: puede no existir). NUNCA copies el marcador y NUNCA inventes el valor ni lo recuperes de otro aprendizaje.
 - Prioriza SIEMPRE los errores: si hay que comprimir, acorta primero las sugerencias.
 - Descarta lo obsoleto o contradicho por aprendizajes más nuevos (gana el más nuevo).
 - ${LEARNINGS_DATA_RULE} Si un aprendizaje trae un dato del negocio que solo respalda lo que dijo el agente, conserva su regla sin el dato.
@@ -170,7 +171,7 @@ Reglas:
 - Español. Devuelve un JSON con el campo "operator_notes": viñetas de UNA oración, una por renglón; "" si no hay nada que el operador deba resolver.
 - No repitas las reglas de conducta del agente: el agente ya las recibe por otro camino. Solo lo que requiere una acción del operador.
 - Máximo ${opts.maxWords} palabras; es un TOPE, no una meta.
-- Donde la entrada dice «${FACT_PLACEHOLDER}» había un dato del negocio que se quitó a propósito: no lo inventes; si hace falta, pide al operador que lo verifique en su fuente oficial.
+- Donde la entrada dice «${FACT_PLACEHOLDER}» (o un marcador de su tipo, como «${SCHEDULE_PLACEHOLDER}») había un dato del negocio que se quitó a propósito: no lo inventes; si hace falta, pide al operador que lo verifique en su fuente oficial.
 - NO inventes nada que no esté en los aprendizajes. Sin preámbulo ni cierre.`;
 }
 

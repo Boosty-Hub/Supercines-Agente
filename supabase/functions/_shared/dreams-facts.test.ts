@@ -6,11 +6,17 @@
 // salen de las fuentes oficiales. El corte determinista los neutraliza o descarta.
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@^1.0.0";
 import {
+  AGENT_AVAILABILITY_PHRASE,
   AGENT_FACT_PHRASE,
   AGENT_FACT_STANDALONE,
+  AGENT_SCHEDULE_PHRASE,
   agentFacingFacts,
+  AVAILABILITY_PLACEHOLDER,
   FACT_PLACEHOLDER,
   highRiskDataShapes,
+  isAnaphoric,
+  SCHEDULE_PLACEHOLDER,
+  splitSentences,
   neutralizeBusinessFacts,
   neutralizeLearning,
   removeDataShapeLines,
@@ -397,4 +403,115 @@ Deno.test("redacción: invisibles en medio de un teléfono o correo no esquivan 
   const ev = neutralizeBusinessFacts("El 2026-10-19 el lead pidió escribir a ven⁠tas@x.com", { keepDates: true });
   assert(ev.text.includes("2026-10-19"), ev.text);
   assert(!ev.text.includes("tas@x.com"), ev.text);
+});
+
+// ─── Veterinaria (oct-2026): el corte NO mutila reglas de conducta ───────────
+// Textos REALES de dreams activos de Veterinaria (ver también supabase/tests/
+// dreams-veterinaria-render.test.ts, que arma el digest con los 51).
+const render = (t: string) => agentFacingFacts(neutralizeBusinessFacts(t, { markDropped: true }).text);
+
+Deno.test("Veterinaria: «24/7» es disponibilidad, no una fecha: se reemplaza SOLO el token", () => {
+  const t =
+    "Cuando un usuario reporta un animal en situación de emergencia, la respuesta debe enfatizar que la sede atiende 24/7 sin espera de horario, con instrucción clara: \"acude ahora mismo\". Esto acelera la acción sin rodeos.";
+  const r = neutralizeBusinessFacts(t);
+  assertEquals(r.dropped, 0);
+  assertStringIncludes(r.text, `la sede atiende ${AVAILABILITY_PLACEHOLDER} sin espera de horario`);
+  assertEquals(
+    render(t),
+    `Cuando un usuario reporta un animal en situación de emergencia, la respuesta debe enfatizar que la sede atiende ${AGENT_AVAILABILITY_PHRASE} sin espera de horario, con instrucción clara: "acude ahora mismo". Esto acelera la acción sin rodeos.`,
+  );
+  assertEquals(
+    render("El agente comunica consistentemente que emergencias se atienden 24/7 al final de bloques de información. Esta estructura funciona bien: horario de consulta → emergencias 24/7 → teléfono. Mantener este orden en futuras respuestas."),
+    `El agente comunica consistentemente que emergencias se atienden ${AGENT_AVAILABILITY_PHRASE} al final de bloques de información. Esta estructura funciona bien: horario de consulta → emergencias ${AGENT_AVAILABILITY_PHRASE} → teléfono. Mantener este orden en futuras respuestas.`,
+  );
+  for (const s of ["Atiende las 24 horas.", "Abierto 24h al día.", "Emergencias 24 horas los 7 días.", "Guardia 24/7/365."]) {
+    const out = render(s);
+    assertStringIncludes(out, AGENT_AVAILABILITY_PHRASE, s);
+    assert(!/\d/.test(out), `${s} → ${out}`);
+  }
+  // «24 horas» / «24h» sueltos son una duración: no se tocan.
+  for (const s of ["Responde en las próximas 24h si el caso no es urgente.", "Indica que el ayuno lo define la sede, nunca digas 24 horas de ayuno.", "Si pasaron más de 24 hrs, deriva."]) {
+    assertEquals(neutralizeBusinessFacts(s).text, s, s);
+  }
+  // y no es un dato de alto riesgo (sigue entrando al digest)
+  assertEquals(highRiskDataShapes("- La sede atiende 24/7."), []);
+});
+
+Deno.test("Veterinaria: un horario se reescribe como horario («en el horario oficial»), nunca como canal", () => {
+  const t =
+    "El agente menciona 'oftalmología se atiende lunes a viernes de 8:00 am a 12:00 pm' (Lead#10, Lead#74) pero esta información no aparece en todas las respuestas de oftalmología.";
+  assertStringIncludes(neutralizeBusinessFacts(t).text, SCHEDULE_PLACEHOLDER);
+  const out = render(t);
+  assertEquals(
+    out,
+    `El agente menciona 'oftalmología se atiende lunes a viernes ${AGENT_SCHEDULE_PHRASE}' (Lead#10, Lead#74) pero esta información no aparece en todas las respuestas de oftalmología.`,
+  );
+  assert(!out.includes(AGENT_FACT_PHRASE), out);
+  assertStringIncludes(render("El agente confirma disponibilidad de oftalmología (lunes-viernes 8am-12pm) pero recibe consultas."), `(lunes-viernes ${AGENT_SCHEDULE_PHRASE})`);
+  assertEquals(render("Atienden desde las 9am, pide la sede."), `Atienden ${AGENT_SCHEDULE_PHRASE}, pide la sede.`);
+  // Una oración que SOLO afirma el horario no deja una tautología: se quita.
+  assertEquals(render("Saluda por el nombre. El horario es de 9 a 6 pm."), "Saluda por el nombre.");
+  // Los canales siguen con su frase: correo/teléfono/URL.
+  assertEquals(render("Para reclamos remite al correo atencion@x.com."), `Para reclamos remite a ${AGENT_FACT_PHRASE}.`);
+});
+
+Deno.test("Veterinaria: una oración que remite a una descartada no queda huérfana", () => {
+  for (const s of ["Esto acelera la acción sin rodeos.", "Mantener este orden en futuras respuestas.", "Así evitas incertidumbre.", "De esa forma se evita confusión.", "Esta frontera está bien definida."]) {
+    assert(isAnaphoric(s), s);
+  }
+  for (const s of ["Estaciona en la sede.", "Esther llamó.", "Mantén el tono cálido.", "Asimismo, pide la cédula."]) assert(!isAnaphoric(s), s);
+  const r = neutralizeBusinessFacts("Saluda por el nombre. La sede está cerrada por remodelación. Esto evita confusiones. Pide la cédula.");
+  assertEquals(r.text, "Saluda por el nombre. Pide la cédula.");
+  assertEquals(agentFacingFacts(`- Atiende emergencias ${FACT_PLACEHOLDER}. Esto acelera la acción sin rodeos. Pide la sede.`), "- Pide la sede.");
+  // Sin descarte previo, la anáfora se queda.
+  const ok = "Responde breve. Esto acelera la acción.";
+  assertEquals(render(ok), ok);
+});
+
+Deno.test("Veterinaria: el corte en oraciones no parte citas, puntos suspensivos ni abreviaturas", () => {
+  const t =
+    "Responde con firmeza: 'Sin poder verlo, no puedo recomendar... necesita evaluación presencial inmediata' y proporciona teléfono 24/7. Ver Lead#273 (cachorro sin comer ni pararse).";
+  assertEquals(splitSentences(t), [
+    "Responde con firmeza: 'Sin poder verlo, no puedo recomendar... necesita evaluación presencial inmediata' y proporciona teléfono 24/7.",
+    "Ver Lead#273 (cachorro sin comer ni pararse).",
+  ]);
+  assertEquals(
+    render(t),
+    `Responde con firmeza: 'Sin poder verlo, no puedo recomendar... necesita evaluación presencial inmediata' y proporciona teléfono ${AGENT_AVAILABILITY_PHRASE}. Ver Lead#273 (cachorro sin comer ni pararse).`,
+  );
+  assertEquals(splitSentences("Di «Hola. Te ayudo» y sigue. Luego pide el nombre."), ["Di «Hola. Te ayudo» y sigue.", "Luego pide el nombre."]);
+  assertEquals(splitSentences("Espera… y responde. Listo."), ["Espera… y responde.", "Listo."]);
+  assertEquals(splitSentences("Confirma (p. ej. Cashea) con la sede. Que el Dr. revise. Fin."), ["Confirma (p. ej. Cashea) con la sede.", "Que el Dr. revise.", "Fin."]);
+  // Una comilla suelta no vuelve el renglón entero una sola oración.
+  assertEquals(splitSentences("Di 'hola. Pide el nombre. Fin."), ["Di 'hola.", "Pide el nombre.", "Fin."]);
+  // apóstrofo dentro de una palabra no es comilla
+  assertEquals(splitSentences("Usa O'Higgins. Fin."), ["Usa O'Higgins.", "Fin."]);
+});
+
+// Port de Veterinaria 22f216b: una cita que cierra la oración («…de rescates." Derivar…») no la une
+// con la siguiente: el corte del marcador se lleva solo la cláusula que lo trae.
+Deno.test("agentFacingFacts: una oración que termina en comillas se separa de la siguiente", () => {
+  const out = agentFacingFacts(
+    `- Sé claro: "Somos una clínica, no una plataforma de rescates." Ofrece atención ${FACT_PLACEHOLDER} si el animal llega.`,
+  );
+  assertEquals(out, `- Sé claro: "Somos una clínica, no una plataforma de rescates."`);
+  assertEquals(agentFacingFacts(`- Responde breve (sin listas). Abre ${FACT_PLACEHOLDER}.`), "- Responde breve (sin listas).");
+  // y el texto real: «24/7» ya no se lleva nada
+  assertEquals(
+    render(`El agente debe ser claro: "Centro Veterinario es una clínica veterinaria, no una plataforma de coordinación de rescates." Derivar a grupos de rescate en general pero ofrecer atención veterinaria 24/7 si el animal llega.`),
+    `El agente debe ser claro: "Centro Veterinario es una clínica veterinaria, no una plataforma de coordinación de rescates." Derivar a grupos de rescate en general pero ofrecer atención veterinaria ${AGENT_AVAILABILITY_PHRASE} si el animal llega.`,
+  );
+});
+
+Deno.test("neutralizeBusinessFacts: el estado tras una cita se descarta sin llevarse la cita", () => {
+  const r = neutralizeBusinessFacts(`- Di: "Somos una clínica." La sede está cerrada por remodelación.`);
+  assert(r.text.includes(`"Somos una clínica."`), r.text);
+  assert(!/remodelaci/i.test(r.text), r.text);
+});
+
+Deno.test("Veterinaria: una causa sin estado solo se descarta si habla del negocio", () => {
+  const caso =
+    "Múltiples leads (#194-195, #248) compartieron casos de animales (perro pitbull, roedor) en La Guaira que sufrieron terremoto y necesitaban atención urgente.";
+  assertEquals(neutralizeBusinessFacts(caso).text, caso);
+  assertEquals(neutralizeBusinessFacts("La sede Playa Mar sufrió afectación sísmica.").text, "");
 });

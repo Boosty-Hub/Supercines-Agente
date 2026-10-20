@@ -34,7 +34,7 @@ import {
   type PersistedLoss,
 } from "./dreams-consolidation.ts";
 import { DATA_SHAPE_NOTE_PREFIX } from "./dreams-facts.ts";
-import { digestOverCapAlert, planArchive, renderDigest } from "./dreams-digest-render.ts";
+import { digestOverCapAlert, OPERATOR_NOTE_PREFIX, planArchive, renderDigest } from "./dreams-digest-render.ts";
 
 export type ArchivedText = {
   text: string;
@@ -112,7 +112,10 @@ export type RebuildCoreResult<D extends DreamLike> =
     archiveFailed: boolean;
   };
 
-const isDataShapeNote = (line: string) => line.startsWith(`- ${DATA_SHAPE_NOTE_PREFIX}`);
+// Notas deterministas (se recalculan en cada rebuild): las de datos y lo que los dreams le decían
+// al operador. Ante una falla del modelo no se arrastran de las notas anteriores (se duplicarían).
+const isDataShapeNote = (line: string) =>
+  line.startsWith(`- ${DATA_SHAPE_NOTE_PREFIX}`) || line.startsWith(`- ${OPERATOR_NOTE_PREFIX} («`);
 
 export async function rebuildDigestCore<D extends DreamLike>(
   input: {
@@ -218,7 +221,9 @@ export async function rebuildDigestCore<D extends DreamLike>(
       archiveWords: renderDigest([], archivedSummary).words,
     }));
   }
-  const operatorNotes = [...rendered.notes, ...archiveRemoved.map(dataShapeNote), llmNotes].filter(Boolean).join("\n");
+  const operatorNotes = [...rendered.notes, ...archiveRemoved.map(dataShapeNote), ...rendered.operatorNotes, llmNotes]
+    .filter(Boolean)
+    .join("\n");
   return {
     superseded: false,
     archivedCount,

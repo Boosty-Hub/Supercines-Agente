@@ -18,7 +18,7 @@ import {
   requiredRules,
   RULE_WORDS_ASSUMED,
 } from "./dreams-consolidation.ts";
-import { AGENT_FACT_PHRASE, FACT_PLACEHOLDER } from "./dreams-facts.ts";
+import { AGENT_FACT_PHRASE, AVAILABILITY_PLACEHOLDER, FACT_PLACEHOLDER } from "./dreams-facts.ts";
 import { digestFingerprint } from "./dreams-digest-fingerprint.ts";
 import { EVALUATION_NOTICE } from "./untrusted.ts";
 import { LEARNINGS_DATA_RULE } from "./dreams-digest-block.ts";
@@ -74,7 +74,8 @@ Deno.test("consolidationInput: los datos del negocio de cada dream y del resumen
   const archived = "## Errores a no repetir\n- Atiende emergencias el dato oficial; llama ahora.\n- Responde en 2-3 oraciones.";
   const inp = consolidationInput({ archived, dreams });
   assertEquals(inp.dreams[0].content, `No digas que abre el domingo; ${FACT_PLACEHOLDER}.`);
-  assertEquals(inp.dreams[1].content, `Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead.`);
+  // «24/7» es disponibilidad, no una fecha: se quita SOLO el token (marcador de su tipo).
+  assertEquals(inp.dreams[1].content, `Atiende emergencias ${AVAILABILITY_PLACEHOLDER}; llama ahora al lead.`);
   for (const bad of ["Playa Mar está cerrada", "sísmica", "@", "$25", "9 a 6"]) assert(!inp.dreams[2].content.includes(bad), bad);
   assertStringIncludes(inp.dreams[2].content, FACT_PLACEHOLDER);
   // el «el dato oficial» que dejó la versión anterior en el resumen vuelve a ser el marcador
@@ -83,7 +84,7 @@ Deno.test("consolidationInput: los datos del negocio de cada dream y del resumen
   assertEquals(inputRuleCount({ archived, dreams }), 5);
 
   const p = buildConsolidationPrompt({ ...base, archived, dreams });
-  assertStringIncludes(p, `| Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead.`);
+  assertStringIncludes(p, `| Atiende emergencias ${AVAILABILITY_PLACEHOLDER}; llama ahora al lead.`);
   assert(!p.includes("atencion@supercines.com"), "el modelo ya no ve el dato");
   assert(!p.includes("24/7"), "el modelo ya no ve el dato");
 });

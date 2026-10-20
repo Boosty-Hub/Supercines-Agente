@@ -12,8 +12,10 @@
 //
 // Qué hace:
 //  - Datos con forma reconocible (correos, URLs/dominios, teléfonos, fechas, montos,
-//    horarios) → se reemplazan por FACT_PLACEHOLDER: la regla de conducta sobrevive sin el
-//    dato.
+//    horarios) → se reemplazan por un marcador (FACT_PLACEHOLDER; horas: SCHEDULE_PLACEHOLDER;
+//    «24/7»: AVAILABILITY_PLACEHOLDER): la regla de conducta sobrevive sin el dato. Se prefiere
+//    SIEMPRE reemplazar el token a descartar la oración (Veterinaria, oct-2026: «24/7» se llevaba
+//    oraciones enteras y dejaba huérfanas las siguientes).
 //  - Afirmaciones de ESTADO o CAUSA (cerrada/suspendida/agotada…, «por afectación sísmica»,
 //    «por remodelación»…) → se descarta la ORACIÓN, salvo que sea una instrucción de
 //    verificar (verifica/confirma/consulta/revisa/antes de/search_kb).
@@ -23,6 +25,19 @@
 import { truncateGraphemes } from "./text-safe.ts";
 
 export const FACT_PLACEHOLDER = "[dato: tomarlo de la fuente oficial]";
+/**
+ * Marcador de un HORARIO quitado («de 8:00 am a 12:00 pm», «9–6», «10am»). Distinto del genérico
+ * porque su frase natural hacia el agente es otra (agentFacingFacts → AGENT_SCHEDULE_PHRASE):
+ * «oftalmología se atiende lunes a viernes de [dato…]» quedaba «… de los canales oficiales»
+ * (Veterinaria, oct-2026), que es un canal, no un horario.
+ */
+export const SCHEDULE_PLACEHOLDER = "[dato: horario de la fuente oficial]";
+/**
+ * Marcador de una DISPONIBILIDAD quitada («24/7», «las 24 horas», «24h al día»). Es un dato de
+ * horario del negocio (no una fecha: antes «24/7» caía en el patrón de fechas y la oración entera
+ * desaparecía): se reemplaza SOLO el token por AGENT_AVAILABILITY_PHRASE y la oración queda.
+ */
+export const AVAILABILITY_PLACEHOLDER = "[dato: disponibilidad de la fuente oficial]";
 
 // Tope por línea ANTES de cualquier regex: el texto viene del modelo y una línea enorme
 // (o patológica) no puede volver cuadrático el corte. Un aprendizaje o una viñeta del digest
@@ -42,7 +57,27 @@ const HOUR_UNIT = "(?:a\\.\\s?m\\.|p\\.\\s?m\\.|am\\b|pm\\b|hrs?\\b|hs\\b|horas\
 /** Formas de dato de ALTO RIESGO en la salida de la consolidación (highRiskDataShapes). */
 export type DataShapeKind = "email" | "url" | "phone" | "money";
 
-type TokenPattern = { re: RegExp; valid?: (m: string) => boolean; kind?: DataShapeKind; date?: true };
+type TokenPattern = {
+  re: RegExp;
+  valid?: (m: string) => boolean;
+  kind?: DataShapeKind;
+  date?: true;
+  /** Marcador que deja (por defecto FACT_PLACEHOLDER). */
+  placeholder?: string;
+};
+
+// Disponibilidad («24/7», «las 24 horas», «24h al día», «24 horas los 7 días»): ANTES que las
+// fechas («24/7» no es el 24 de julio) y que las horas. «24 horas» / «24h» SOLO con «las» delante
+// o un complemento de disponibilidad detrás: suelto es una duración («responde en 24 horas», «un
+// ayuno de 24 h») y no se toca.
+const AVAIL_SUFFIX =
+  "(?:\\s{1,3}(?:al|del)\\s{1,3}d[ií]a|\\s{1,3}(?:los|todos\\s{1,3}los)\\s{1,3}(?:7|siete)?\\s{0,3}d[ií]as(?:\\s{1,3}de\\s{1,3}la\\s{1,3}semana)?|\\s{0,2}\\/\\s{0,2}7(?![\\d/]))";
+const AVAILABILITY = new RegExp(
+  `(?<![\\d/])24\\s{0,2}\\/\\s{0,2}7(?:\\s{0,2}\\/\\s{0,2}365)?(?![\\d/])` +
+    `|\\blas\\s{1,3}24\\s{0,2}(?:horas|hrs?|hs|h)\\b${AVAIL_SUFFIX}?` +
+    `|(?<![\\d.,:])\\b24\\s{0,2}(?:horas|hrs?|hs|h)\\b${AVAIL_SUFFIX}`,
+  "gi",
+);
 
 // Orden importa: lo más específico primero (un correo contiene un dominio; una fecha ISO
 // parece un teléfono; un rango de horas contiene dos horas). Todos los cuantificadores están
@@ -57,6 +92,7 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [
     ),
     kind: "url",
   },
+  { re: AVAILABILITY, placeholder: AVAILABILITY_PLACEHOLDER },
   { re: /\b\d{4}-\d{2}-\d{2}\b/g, date: true },
   { re: /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, date: true },
   { re: new RegExp(`\\b\\d{1,2}\\s{1,3}de\\s{1,3}(?:${MESES})(?:\\s{1,3}(?:de|del)\\s{1,3}\\d{4})?\\b`, "gi"), date: true },
@@ -65,10 +101,14 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [
   { re: /(?<![\d.,])\d(?:[\d.,]{0,15}\d)?\s?(?:\$|USD\b|d[oó]lares\b|bol[ií]vares\b|Bs\b\.?|euros\b|€)/gi, kind: "money" },
   // Horas: rango con dos puntos; rango CLARO con unidad («de 9 a 6 pm», «10 a 22 horas»);
   // hora con am/pm/h; hora con dos puntos.
-  { re: /\b\d{1,2}:\d{2}\s{0,3}(?:[–—-]|a|hasta)\s{0,3}\d{1,2}:\d{2}\b/gi },
-  { re: new RegExp(`\\b(?:de\\s{1,3})?\\d{1,2}(?::\\d{2})?\\s{0,3}(?:[–—-]|a|hasta)\\s{0,3}\\d{1,2}(?::\\d{2})?\\s{0,2}${HOUR_UNIT}`, "gi") },
-  { re: /\b\d{1,2}(?::\d{2})?\s?(?:a\.\s?m\.|p\.\s?m\.|am\b|pm\b|hrs?\b|hs\b)/gi },
-  { re: /\b\d{1,2}:\d{2}\b/g },
+  // «24 hrs» suelto es una duración (la disponibilidad ya se tomó arriba): no es una hora.
+  { re: /\b\d{1,2}:\d{2}\s{0,3}(?:[–—-]|a|hasta)\s{0,3}\d{1,2}:\d{2}\b/gi, placeholder: SCHEDULE_PLACEHOLDER },
+  {
+    re: new RegExp(`\\b\\d{1,2}(?::\\d{2})?\\s{0,3}(?:[–—-]|a|hasta)\\s{0,3}\\d{1,2}(?::\\d{2})?\\s{0,2}${HOUR_UNIT}`, "gi"),
+    placeholder: SCHEDULE_PLACEHOLDER,
+  },
+  { re: /\b(?!24\s?(?:hrs?|hs)\b)\d{1,2}(?::\d{2})?\s?(?:a\.\s?m\.|p\.\s?m\.|am\b|pm\b|hrs?\b|hs\b)/gi, placeholder: SCHEDULE_PLACEHOLDER },
+  { re: /\b\d{1,2}:\d{2}\b/g, placeholder: SCHEDULE_PLACEHOLDER },
   // Teléfonos: 7+ dígitos REALES (con separadores). «1. 2. 3.» o «2 - 3» no lo son.
   { re: /(?<![\d+])\+?\d[\d\s().-]{5,18}\d/g, valid: (m) => (m.match(/\d/g)?.length ?? 0) >= 7, kind: "phone" },
 ];
@@ -114,8 +154,14 @@ function withoutConditionals(sentence: string): string {
   return sentence.replace(CONDITIONAL, " ");
 }
 
+// Lugar o servicio del NEGOCIO: una causa sin palabra de estado («sufrió afectación sísmica»)
+// solo es un dato del negocio si habla de uno. «Animales en La Guaira que sufrieron el terremoto»
+// (Veterinaria, oct-2026) es contexto del caso, no el estado de una sede: no se descarta.
+const BUSINESS_PLACE =
+  /\b(?:sedes?|sucursal(?:es)?|locales?|tiendas?|cl[ií]nicas?|cines?|oficinas?|agencias?|centros?|instalaciones|taquillas?|servicios?|salas?|plantas?|negocios?|establecimientos?|edificios?|concesionarios?)\b/i;
+
 function assertsCause(s: string): boolean {
-  return STATE_WITH_CAUSE.test(s) || (CAUSE.test(s) && CAUSE_VERB.test(s));
+  return STATE_WITH_CAUSE.test(s) || (CAUSE.test(s) && CAUSE_VERB.test(s) && BUSINESS_PLACE.test(s));
 }
 
 function assertsStateOrCause(sentence: string): boolean {
@@ -136,27 +182,96 @@ function redactTokens(line: string, opts: { keepDates?: boolean } = {}): { text:
   // esquivar el patrón de teléfono, y el centinela de las fechas conservadas (U+2060, abajo)
   // nunca puede venir de la entrada: si no, el borrado final reconstruiría un dato del atacante.
   let text = capLine(line).replace(INVISIBLE_FORMAT, "");
-  const sub = (re: RegExp, valid?: (m: string) => boolean) => {
+  const sub = (re: RegExp, valid?: (m: string) => boolean, placeholder = FACT_PLACEHOLDER) => {
     text = text.replace(re, (m: string) => {
       if (valid && !valid(m)) return m;
       redacted++;
-      return FACT_PLACEHOLDER;
+      return placeholder;
     });
   };
-  const schedule = SCHEDULE_CONTEXT.test(text);
+  // Sin los marcadores: «[dato: horario …]» no es contexto de horario (idempotencia).
+  const schedule = SCHEDULE_CONTEXT.test(text.replace(MARKER_ANY, " "));
   for (const p of TOKEN_PATTERNS) {
     // Una fecha conservada se consume como neutra: «2026-10-19» no puede leerse después
     // como teléfono ni «19/10» como otra forma.
     if (p.date && opts.keepDates) text = text.replace(p.re, (m: string) => m.replace(/\d/g, "\u2060$&"));
-    else sub(p.re, p.valid);
+    else sub(p.re, p.valid, p.placeholder);
   }
   // Después de las horas con dos puntos («9:00 a 18:00» ya es un solo marcador).
-  if (schedule) sub(HOUR_RANGE);
+  if (schedule) sub(HOUR_RANGE, undefined, SCHEDULE_PLACEHOLDER);
   if (opts.keepDates) text = text.replace(/\u2060/g, "");
   return { text, redacted };
 }
 
 const BULLET = /^(\s*(?:[-*•]|\d+[.)])\s+)/;
+
+// ─── Corte en oraciones ─────────────────────────────────────────────────────
+// Un solo cortador para el descarte de estados y para la red del marcador (agentFacingLine) y
+// el render. Corta tras «.», «!», «?» o «;» seguido de espacio, aunque entre ellos haya comillas
+// o un paréntesis de cierre («…de rescates." Derivar…»: Veterinaria 22f216b). NUNCA corta:
+//  - dentro de comillas o paréntesis («'Sin poder verlo, no puedo recomendar... necesita…'»): la
+//    cita es UNA unidad; cortarla dejaba citas abiertas y frases a medias;
+//  - tras puntos suspensivos («...», «…»);
+//  - tras una abreviatura («p. ej.», «Dr.», «Sra.»).
+// Si las comillas o los paréntesis no cierran en el renglón, se corta sin tenerlos en cuenta
+// (una comilla suelta no puede volver el renglón entero una sola oración).
+const CLOSERS = new Set(['"', "'", "»", "”", "’", ")", "]"]);
+const ABBREVIATION = /(?:^|[\s(])(?:p|ej|dr|dra|sr|sra|srta|ud|uds|aprox|tel|av|n[uú]m|p[aá]g|vs|lic|ing)\.$/i;
+
+function splitOnce(text: string, track: boolean): { parts: string[]; balanced: boolean } {
+  const parts: string[] = [];
+  let start = 0;
+  let guillemets = 0; // « » y “ ”
+  let parens = 0;
+  let dq = false; // "
+  let sq = false; // ' como comilla (no el apóstrofo dentro de una palabra)
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (track) {
+      if (c === "«" || c === "“") guillemets++;
+      else if ((c === "»" || c === "”") && guillemets > 0) guillemets--;
+      else if (c === "(") parens++;
+      else if (c === ")" && parens > 0) parens--;
+      else if (c === '"') dq = !dq;
+      else if (c === "'" || c === "‘" || c === "’") {
+        const prev = i > 0 ? text[i - 1] : " ";
+        const next = i + 1 < text.length ? text[i + 1] : " ";
+        if (!sq && /[\s(«“"—–-]/.test(prev) && /\S/.test(next)) sq = true;
+        else if (sq && /\S/.test(prev) && /[\s.,;:!?)»”"]/.test(next)) sq = false;
+      }
+    }
+    if (!/\s/.test(c) || i === start) continue;
+    let j = i - 1;
+    while (j > start && CLOSERS.has(text[j]) && i - 1 - j < 3) j--;
+    const p = text[j];
+    if (!/[.!?;]/.test(p)) continue;
+    if (p === "." && (text[j - 1] === "." || ABBREVIATION.test(text.slice(Math.max(start, j - 8), j + 1)))) continue;
+    if (track && (guillemets > 0 || parens > 0 || dq || sq)) continue;
+    parts.push(text.slice(start, i));
+    while (i + 1 < text.length && /\s/.test(text[i + 1])) i++;
+    start = i + 1;
+  }
+  if (start < text.length) parts.push(text.slice(start));
+  return { parts, balanced: guillemets === 0 && parens === 0 && !dq && !sq };
+}
+
+/** Oraciones o cláusulas de un renglón (sin el espacio que las separa). */
+export function splitSentences(text: string): string[] {
+  const s = String(text ?? "");
+  const tracked = splitOnce(s, true);
+  return tracked.balanced ? tracked.parts : splitOnce(s, false).parts;
+}
+
+// Oración que REMITE a la anterior («Esto acelera la acción sin rodeos.», «Mantener este orden en
+// futuras respuestas.», «Así evitas…»): si la anterior se descartó, sola queda huérfana y sin
+// sentido (Veterinaria, oct-2026) → se descarta con ella.
+const ANAPHORIC =
+  /^[\s"'«“(¡¿*]{0,4}(?:esto|eso|ello|aquello|así|este|esta|estos|estas|ese|esa|esos|esas|de\s+(?:esa|esta|ese|este)\s+(?:forma|manera|modo)|de\s+ese\s+modo|por\s+(?:eso|ello|esto)|(?:mantener|mantén|mantenga|conservar|conserva|seguir|sigue|repetir|repite|replicar|replica)\s+(?:este|esta|estos|estas|ese|esa|esos|esas|dicho|dicha))(?![A-Za-zÁÉÍÓÚÜáéíóúüÑñ])/i;
+
+/** La oración remite a la anterior (no se sostiene sola si la anterior se quitó). */
+export function isAnaphoric(sentence: string): boolean {
+  return ANAPHORIC.test(sentence);
+}
 const HEADING = /^\s*#{1,6}\s/;
 
 export type NeutralizeResult = { text: string; redacted: number; dropped: number };
@@ -208,11 +323,15 @@ export function neutralizeBusinessFacts(input: string, opts: NeutralizeOptions =
     }
     const prefix = r.text.match(BULLET)?.[1] ?? "";
     const body = r.text.slice(prefix.length);
-    const sentences = body.split(/(?<=[.!?;])\s+/);
+    const sentences = splitSentences(body);
     const kept: string[] = [];
     let lineDropped = false;
+    let prevDropped = false;
     for (const s of sentences) {
-      if (!assertsStateOrCause(s)) {
+      // Lo que remite a una oración descartada se va con ella (no queda huérfano).
+      const orphan: boolean = prevDropped && isAnaphoric(s);
+      prevDropped = orphan || assertsStateOrCause(s);
+      if (!prevDropped) {
         kept.push(s);
         continue;
       }
@@ -251,7 +370,7 @@ export function neutralizeLearning<L extends LearningFields>(l: L): L | null {
   if (title.redacted + content.redacted + content.dropped + evidence.redacted + evidence.dropped === 0) return l;
   return {
     ...l,
-    title: title.redacted ? title.text.replace(/\[dato: tomarlo de la fuente oficial\]/g, "dato oficial") : l.title,
+    title: title.redacted ? title.text.replace(MARKER_ANY, "dato oficial") : l.title,
     content: content.text,
     evidence: evidence.text || "(evidencia omitida: afirmaba datos del negocio)",
   };
@@ -291,6 +410,50 @@ export const AGENT_FACT_STANDALONE = "el dato oficial";
 const MARKER_MAX_CONTENT = 1000;
 const MARKER = String.raw`\[\s*datos?\s*(?::[^\]\n]{0,${MARKER_MAX_CONTENT}}\]|\](?!\s*[(:]))`;
 const MARKER_RUN = new RegExp(`${MARKER}(?:\\s{0,3}(?:[–—-]|a|y|o|hasta|,)\\s{0,3}${MARKER})+`, "gi");
+const MARKER_ANY = new RegExp(MARKER, "gi");
+
+/** Tipo de un marcador por su contenido (el canónico o una variante que copió el modelo). */
+export function markerKind(marker: string): "schedule" | "availability" | "fact" {
+  if (/disponibilidad/i.test(marker)) return "availability";
+  if (/horario/i.test(marker)) return "schedule";
+  return "fact";
+}
+
+/** Marcador canónico de su tipo (protocolSafeRule normaliza variantes sin perder el tipo). */
+export function canonicalMarker(marker: string): string {
+  const k = markerKind(marker);
+  return k === "schedule" ? SCHEDULE_PLACEHOLDER : k === "availability" ? AVAILABILITY_PLACEHOLDER : FACT_PLACEHOLDER;
+}
+
+/** Frase natural de un horario quitado: «lunes a viernes en el horario oficial». */
+export const AGENT_SCHEDULE_PHRASE = "en el horario oficial";
+/** Frase natural de una disponibilidad quitada: «atiende emergencias según el horario oficial». */
+export const AGENT_AVAILABILITY_PHRASE = "según el horario oficial";
+
+// Horario o disponibilidad con lo que lo introduce: «de [h]», «desde [h]», «es [h]», «horario
+// de [h]» o suelto. Un horario NUNCA se reescribe como canal («de los canales oficiales»).
+const TIME_SLOT = new RegExp(
+  String.raw`(?:\b(de|desde|entre|hasta|a\s{1,3}partir\s{1,3}de|a|en|durante)(?:\s{1,3}las?)?\s{1,3}|\b(es|son|ser[aá]n?)\s{1,3}(?:de\s{1,3})?|\b(horarios?)\s{1,3}(?:de\s{1,3}|es\s{1,3}|:\s{0,3})?)?(` +
+    MARKER +
+    ")",
+  "gi",
+);
+
+function keepCase(original: string, phrase: string): string {
+  return original && original[0] !== original[0].toLowerCase() ? phrase[0].toUpperCase() + phrase.slice(1) : phrase;
+}
+
+function timeSlotPhrase(m: string, prep: string | undefined, cop: string | undefined, noun: string | undefined, marker: string): string {
+  const kind = markerKind(marker);
+  if (kind === "fact") return m;
+  if (noun) return `${noun} oficial`;
+  const phrase = kind === "availability" ? AGENT_AVAILABILITY_PHRASE : AGENT_SCHEDULE_PHRASE;
+  // «El horario es [h]», «la atención es [24/7]»: la oración solo AFIRMA el dato (no hay conducta
+  // que salvar; «el horario es el horario oficial» sería basura): queda el marcador genérico y la
+  // cláusula se quita entera.
+  if (cop) return `${cop} ${FACT_PLACEHOLDER}`;
+  return keepCase(prep ?? "", phrase);
+}
 // «remite al correo [dato…]», «escribe al número de WhatsApp [dato…]»: el sustantivo del canal
 // (con artículo opcional) entre la preposición y el marcador también se reemplaza por la frase
 // natural («remite a los canales oficiales»); sin él la cláusula entera se quitaba.
@@ -316,19 +479,28 @@ function capitalizeFirst(s: string): string {
  */
 function agentFacingLine(line: string): string | null {
   const s = line
-    .replace(MARKER_RUN, FACT_PLACEHOLDER)
+    // Una serie («[h] a [h]») vale como un solo dato; si es de horario, sigue siendo horario.
+    .replace(MARKER_RUN, (run: string) => {
+      const kinds = [...run.matchAll(MARKER_ANY)].map((m) => markerKind(m[0]));
+      if (kinds.every((k) => k === "availability")) return AVAILABILITY_PLACEHOLDER;
+      return kinds.some((k) => k !== "fact") ? SCHEDULE_PLACEHOLDER : FACT_PLACEHOLDER;
+    })
+    .replace(TIME_SLOT, timeSlotPhrase)
     .replace(PREP_MARKER, (_m, prep: string) => {
       const p = PREP_FOLD[prep.toLowerCase()] ?? prep;
       return `${prep[0] === prep[0].toUpperCase() ? p[0].toUpperCase() + p.slice(1) : p} ${AGENT_FACT_PHRASE}`;
     });
   if (!HAS_MARKER.test(s)) return s;
   const prefix = s.match(HEADING_PREFIX)?.[0] ?? s.match(BULLET)?.[1] ?? "";
-  const clauses = s.slice(prefix.length).split(/(?<=[.!?;])\s+/);
+  const clauses = splitSentences(s.slice(prefix.length));
   const kept: string[] = [];
   let firstDropped = false;
-  clauses.forEach((c, i) => {
-    if (HAS_MARKER.test(c)) {
-      if (i === 0) firstDropped = true;
+  let prevDropped = false;
+  clauses.forEach((c) => {
+    // La que remite a una cláusula quitada («Esto acelera…») se va con ella.
+    prevDropped = HAS_MARKER.test(c) || (prevDropped && isAnaphoric(c));
+    if (prevDropped) {
+      if (kept.length === 0) firstDropped = true;
     } else if (c.trim()) kept.push(c);
   });
   if (kept.length === 0) return null;

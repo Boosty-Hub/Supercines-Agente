@@ -1,20 +1,14 @@
 // _shared/dreams-digest-cap.ts
 //
-// CORTE DURO para el digest rodante de Dreams (runtime_config.DREAMS_DIGEST).
+// CORTE DURO de palabras para el texto que Dreams pide al MODELO: el resumen archivado
+// (DREAMS_ARCHIVE_DIGEST, finalizeArchive) y las notas del operador (finalizeOperatorNotes).
+// El tope va como instrucción en el prompt y el modelo no siempre la respeta (KIA, ago-2026:
+// 1.290 palabras contra 900 pedidas), así que se recorta de verdad antes de persistir. En el
+// resumen archivado lo que se lleva el corte cuenta como pérdida (reintento + alerta:
+// consolidateWithLossCheck).
 //
-// `dreams-run/index.ts` le pide al modelo un digest de máximo N palabras
-// (DIGEST_MAX_WORDS) como INSTRUCCIÓN dentro del prompt de rebuildDigest, y el
-// modelo no siempre la respeta: medido en producción (KIA-Agente, 19-ago) el
-// digest vivo pesaba 7.726 chars (~1.290 palabras, ~1.932 tokens) contra un
-// tope pedido de 900. Ese bloque se inyecta —y se ESCRIBE A CACHÉ— en CADA
-// sesión de CADA lead, así que cada palabra de más se paga muchas veces por
-// día (el cache_write es una porción grande del costo por sesión). Una
-// instrucción blanda en el prompt no alcanza: hay que recortar de verdad,
-// después de que el modelo generó el texto y antes de persistirlo.
-//
-// Es lógica puramente mecánica (contar palabras, truncar por línea completa)
-// y no depende de negocio de ningún cliente — vive en _shared para poder
-// testearla sin levantar Supabase ni el cliente de Anthropic.
+// NO se aplica al digest del agente (DREAMS_DIGEST): ese se arma sin modelo y nunca se
+// recortan reglas (dreams-digest-render.ts).
 //
 // Corta por viñetas/líneas completas, nunca a mitad de una frase, y conserva
 // los encabezados de sección para que el bloque siga siendo legible. Si el

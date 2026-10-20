@@ -52,7 +52,7 @@ export function dreamSlug(s: string): string {
     .slice(0, 60);
 }
 
-function frontmatter(content: string): { meta: Record<string, string>; body: string } {
+export function frontmatter(content: string): { meta: Record<string, string>; body: string } {
   const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: content };
   const meta: Record<string, string> = {};

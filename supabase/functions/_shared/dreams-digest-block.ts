@@ -14,7 +14,7 @@
 //   2) al inyectar el digest, el agente sabe que los aprendizajes son reglas de
 //      conducta, no una fuente de datos (DREAMS_DIGEST_DATA_RULE).
 
-import { agentFacingFacts } from "./dreams-facts.ts";
+import { agentFacingFacts, removeDataShapeLines } from "./dreams-facts.ts";
 
 /**
  * Regla para el modelo de Dreams (generación de learnings y consolidación del digest).
@@ -43,9 +43,17 @@ export const DREAMS_DIGEST_DATA_RULE =
  * Bloque del [CONTEXTO] con el digest; "" si no hay digest. Termina en salto de línea.
  * Reescribe el marcador de dato neutralizado («[dato: …]») con una frase natural
  * (agentFacingFacts): un digest guardado antes de ese corte no espera al próximo rebuild.
+ * Defensa en profundidad: una viñeta con un correo, enlace, teléfono o monto no llega al
+ * agente (removeDataShapeLines; la consolidación ya las saca, pero un digest guardado antes o
+ * escrito por otro camino no espera al próximo rebuild). Se quita en silencio, solo se loguea
+ * la cuenta (nunca el contenido).
  */
 export function dreamsDigestBlock(digest: string | null | undefined): string {
-  const d = agentFacingFacts((digest ?? "").trim());
+  const shaped = removeDataShapeLines(agentFacingFacts((digest ?? "").trim()));
+  if (shaped.removed.length > 0) {
+    console.warn(`dreams digest: ${shaped.removed.length} viñetas con dato de alto riesgo omitidas al inyectar`);
+  }
+  const d = shaped.text.trim();
   if (!d) return "";
   return `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplícalas SIEMPRE. ${DREAMS_DIGEST_DATA_RULE}):\n${d}\n`;
 }

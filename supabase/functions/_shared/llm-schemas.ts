@@ -88,18 +88,17 @@ export const DREAMS_LEARNINGS_SCHEMA = {
 } as const satisfies JsonSchema;
 
 /**
- * Digest de Dreams (dreams-run, consolidación purpose=digest): las reglas que ve el agente
- * y, APARTE, las notas para el operador (gaps de KB, datos a revisar) que el agente no
- * puede usar y por eso no se le inyectan (runtime_config.DREAMS_OPERATOR_NOTES).
+ * Notas para el operador de Dreams (dreams-run): gaps de KB, datos a revisar. Las muestra solo
+ * el panel /dreams (runtime_config.DREAMS_OPERATOR_NOTES); el agente nunca las recibe. El
+ * digest del agente ya no lo escribe el modelo (dreams-digest-render.ts).
  */
-export const DREAMS_DIGEST_SCHEMA = {
+export const DREAMS_OPERATOR_NOTES_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    agent_rules: { type: "string" },
     operator_notes: { type: "string" },
   },
-  required: ["agent_rules", "operator_notes"],
+  required: ["operator_notes"],
 } as const satisfies JsonSchema;
 
 /** Clasificador de process-inbound (el enum de verticales depende de la base). */

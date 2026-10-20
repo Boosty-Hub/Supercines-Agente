@@ -91,7 +91,7 @@ export const LLM_PROFILES = {
   commentReply: { effort: "low", maxTokens: 2048 },
   // Extracción de aprendizajes desde transcripts largos: JSON grande.
   dreamsLearnings: { effort: "medium", maxTokens: 16000 },
-  // Consolidación del digest (tope duro de ~900 palabras después).
+  // Archivado de dreams (resumen archivado) y notas del operador; el digest se arma sin modelo.
   dreamsDigest: { effort: "low", maxTokens: 8000 },
 } as const satisfies Record<string, { effort: Effort; maxTokens: number }>;
 

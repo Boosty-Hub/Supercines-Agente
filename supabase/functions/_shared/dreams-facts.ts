@@ -39,26 +39,30 @@ const COUNT_NOUNS =
   "oraciones|frases|l[ií]neas|p[aá]rrafos|opciones|mensajes|funciones|minutos|segundos|veces|d[ií]as|preguntas|palabras|pasos|respuestas|emojis";
 const HOUR_UNIT = "(?:a\\.\\s?m\\.|p\\.\\s?m\\.|am\\b|pm\\b|hrs?\\b|hs\\b|horas\\b|h\\b)";
 
-type TokenPattern = { re: RegExp; valid?: (m: string) => boolean };
+/** Formas de dato de ALTO RIESGO en la salida de la consolidación (highRiskDataShapes). */
+export type DataShapeKind = "email" | "url" | "phone" | "money";
+
+type TokenPattern = { re: RegExp; valid?: (m: string) => boolean; kind?: DataShapeKind; date?: true };
 
 // Orden importa: lo más específico primero (un correo contiene un dominio; una fecha ISO
 // parece un teléfono; un rango de horas contiene dos horas). Todos los cuantificadores están
 // ACOTADOS y los que pueden empezar en cualquier posición llevan lookbehind: nada cuadrático.
 const TOKEN_PATTERNS: readonly TokenPattern[] = [
-  { re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,5}\.[A-Za-z]{2,24}\b/g },
-  { re: new RegExp(`\\bhttps?:\\/\\/[^\\s)»"']{0,300}${URL_END}|\\bwww\\.[^\\s)»"']{0,300}${URL_END}`, "gi") },
+  { re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,5}\.[A-Za-z]{2,24}\b/g, kind: "email" },
+  { re: new RegExp(`\\bhttps?:\\/\\/[^\\s)»"']{0,300}${URL_END}|\\bwww\\.[^\\s)»"']{0,300}${URL_END}`, "gi"), kind: "url" },
   {
     re: new RegExp(
       `(?<![A-Za-z0-9.-])[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){0,5}\\.(?:${TLDS})\\b(?:\\/[^\\s)»"']{0,300}${URL_END})?`,
       "g",
     ),
+    kind: "url",
   },
-  { re: /\b\d{4}-\d{2}-\d{2}\b/g },
-  { re: /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g },
-  { re: new RegExp(`\\b\\d{1,2}\\s{1,3}de\\s{1,3}(?:${MESES})(?:\\s{1,3}(?:de|del)\\s{1,3}\\d{4})?\\b`, "gi") },
+  { re: /\b\d{4}-\d{2}-\d{2}\b/g, date: true },
+  { re: /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, date: true },
+  { re: new RegExp(`\\b\\d{1,2}\\s{1,3}de\\s{1,3}(?:${MESES})(?:\\s{1,3}(?:de|del)\\s{1,3}\\d{4})?\\b`, "gi"), date: true },
   // Montos: símbolo o moneda antes o después de la cifra.
-  { re: /(?:\bUS\$|\$|\bUSD\b|\bBs\.?\s?S?\.?|€|\bS\/\.?)\s?\d(?:[\d.,]{0,15}\d)?/gi },
-  { re: /(?<![\d.,])\d(?:[\d.,]{0,15}\d)?\s?(?:\$|USD\b|d[oó]lares\b|bol[ií]vares\b|Bs\b\.?|euros\b|€)/gi },
+  { re: /(?:\bUS\$|\$|\bUSD\b|\bBs\.?\s?S?\.?|€|\bS\/\.?)\s?\d(?:[\d.,]{0,15}\d)?/gi, kind: "money" },
+  { re: /(?<![\d.,])\d(?:[\d.,]{0,15}\d)?\s?(?:\$|USD\b|d[oó]lares\b|bol[ií]vares\b|Bs\b\.?|euros\b|€)/gi, kind: "money" },
   // Horas: rango con dos puntos; rango CLARO con unidad («de 9 a 6 pm», «10 a 22 horas»);
   // hora con am/pm/h; hora con dos puntos.
   { re: /\b\d{1,2}:\d{2}\s{0,3}(?:[–—-]|a|hasta)\s{0,3}\d{1,2}:\d{2}\b/gi },
@@ -66,7 +70,7 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [
   { re: /\b\d{1,2}(?::\d{2})?\s?(?:a\.\s?m\.|p\.\s?m\.|am\b|pm\b|hrs?\b|hs\b)/gi },
   { re: /\b\d{1,2}:\d{2}\b/g },
   // Teléfonos: 7+ dígitos REALES (con separadores). «1. 2. 3.» o «2 - 3» no lo son.
-  { re: /(?<![\d+])\+?\d[\d\s().-]{5,18}\d/g, valid: (m) => (m.match(/\d/g)?.length ?? 0) >= 7 },
+  { re: /(?<![\d+])\+?\d[\d\s().-]{5,18}\d/g, valid: (m) => (m.match(/\d/g)?.length ?? 0) >= 7, kind: "phone" },
 ];
 
 // Rango de horas sin unidad ni dos puntos («horario 9–6»): solo con contexto de horario, con
@@ -124,7 +128,7 @@ function capLine(line: string): string {
   return line.length > MAX_LINE_CHARS ? truncateGraphemes(line, MAX_LINE_CHARS) : line;
 }
 
-function redactTokens(line: string): { text: string; redacted: number } {
+function redactTokens(line: string, opts: { keepDates?: boolean } = {}): { text: string; redacted: number } {
   let redacted = 0;
   let text = capLine(line);
   const sub = (re: RegExp, valid?: (m: string) => boolean) => {
@@ -135,9 +139,15 @@ function redactTokens(line: string): { text: string; redacted: number } {
     });
   };
   const schedule = SCHEDULE_CONTEXT.test(text);
-  for (const p of TOKEN_PATTERNS) sub(p.re, p.valid);
+  for (const p of TOKEN_PATTERNS) {
+    // Una fecha conservada se consume como neutra: «2026-10-19» no puede leerse después
+    // como teléfono ni «19/10» como otra forma.
+    if (p.date && opts.keepDates) text = text.replace(p.re, (m: string) => m.replace(/\d/g, "\u2060$&"));
+    else sub(p.re, p.valid);
+  }
   // Después de las horas con dos puntos («9:00 a 18:00» ya es un solo marcador).
   if (schedule) sub(HOUR_RANGE);
+  if (opts.keepDates) text = text.replace(/\u2060/g, "");
   return { text, redacted };
 }
 
@@ -154,6 +164,13 @@ export type NeutralizeOptions = {
    * oficial. La generación (neutralizeLearning) no lo usa: descarta como siempre.
    */
   markDropped?: boolean;
+  /**
+   * Conserva las fechas (ISO, «19/10», «19 de octubre»). Solo para la EVIDENCIA de un learning
+   * (neutralizeLearning): ahí una fecha es un metadato (cuándo pasó), no una afirmación del
+   * negocio, y no llega al agente (el digest no lleva la evidencia: dreams-digest-render.ts).
+   * LAM, oct-2026: «el 19-oct el agente…» quedaba «[dato: …] el agente…».
+   */
+  keepDates?: boolean;
 };
 
 // Una oración que queda AL FINAL tras descartar las siguientes no puede quedar colgando en
@@ -178,7 +195,7 @@ export function neutralizeBusinessFacts(input: string, opts: NeutralizeOptions =
       out.push(raw);
       continue;
     }
-    const r = redactTokens(raw);  // redactTokens ya acota la línea a MAX_LINE_CHARS
+    const r = redactTokens(raw, { keepDates: opts.keepDates });  // redactTokens ya acota la línea a MAX_LINE_CHARS
     redacted += r.redacted;
     if (HEADING.test(r.text)) {
       out.push(r.text);
@@ -225,7 +242,7 @@ export function neutralizeLearning<L extends LearningFields>(l: L): L | null {
   const title = redactTokens(titleText);
   const content = neutralizeBusinessFacts(l.content);
   if (!content.text) return null;
-  const evidence = neutralizeBusinessFacts(l.evidence);
+  const evidence = neutralizeBusinessFacts(l.evidence, { keepDates: true });
   if (title.redacted + content.redacted + content.dropped + evidence.redacted + evidence.dropped === 0) return l;
   return {
     ...l,
@@ -269,7 +286,12 @@ export const AGENT_FACT_STANDALONE = "el dato oficial";
 const MARKER_MAX_CONTENT = 1000;
 const MARKER = String.raw`\[\s*datos?\s*(?::[^\]\n]{0,${MARKER_MAX_CONTENT}}\]|\](?!\s*[(:]))`;
 const MARKER_RUN = new RegExp(`${MARKER}(?:\\s{0,3}(?:[–—-]|a|y|o|hasta|,)\\s{0,3}${MARKER})+`, "gi");
-const PREP_MARKER = new RegExp(`\\b(a|al|en|de|del|por|con|hacia)\\s{1,3}${MARKER}`, "gi");
+// «remite al correo [dato…]», «escribe al número de WhatsApp [dato…]»: el sustantivo del canal
+// (con artículo opcional) entre la preposición y el marcador también se reemplaza por la frase
+// natural («remite a los canales oficiales»); sin él la cláusula entera se quitaba.
+const CHANNEL_NOUN =
+  "(?:(?:el|la|los|las|su|sus|nuestro|nuestra)\\s{1,3})?(?:correo(?:\\s{1,3}electr[oó]nico)?|e-?mail|tel[eé]fono|n[uú]mero(?:\\s{1,3}de\\s{1,3}(?:tel[eé]fono|contacto|whatsapp))?|whatsapp|enlace|link|p[aá]gina(?:\\s{1,3}web)?|sitio(?:\\s{1,3}web)?|web|direcci[oó]n)\\s{1,3}";
+const PREP_MARKER = new RegExp(`\\b(a|al|en|de|del|por|con|hacia)\\s{1,3}(?:${CHANNEL_NOUN})?${MARKER}`, "gi");
 const HAS_MARKER = new RegExp(MARKER, "i");
 const HEADING_PREFIX = /^\s*#{1,6}\s+/;
 const PREP_FOLD: Record<string, string> = { al: "a", del: "de" };
@@ -337,4 +359,70 @@ export function agentFacingFacts(text: string): string {
  */
 export function restoreLegacyFactPhrase(text: string): string {
   return String(text ?? "").replace(/\bel dato oficial\b/gi, FACT_PLACEHOLDER);
+}
+
+
+// ─── Salida de la consolidación: formas de dato de ALTO RIESGO (oct-2026) ────
+// La salida del consolidador ya no pasa por neutralizeBusinessFacts (mutilaba reglas de
+// conducta válidas: KIA, Veterinaria), así que una salida manipulada (prompt injection en el
+// texto de un dream) podía reintroducir en el contexto PRIVILEGIADO del agente un correo, un
+// enlace, un teléfono o un monto. Acá solo se DETECTAN esas cuatro formas, con los mismos
+// patrones acotados de arriba (TOKEN_PATTERNS, línea acotada a MAX_LINE_CHARS: nada
+// cuadrático). Las fechas, horas, «24/7» y rangos se consumen ANTES como neutros (mismo orden
+// que el corte), así una fecha ISO no cuenta como teléfono. Nunca se reescribe la línea: quien
+// llama saca la viñeta ENTERA (removeDataShapeLines), sin cirugía de cláusulas.
+
+/** Prefijo de la nota al operador con la viñeta que salió del digest por traer un dato. */
+export const DATA_SHAPE_NOTE_PREFIX = "Revisar (dato sin fuente en un aprendizaje):";
+
+// Separador neutro: no es dígito, espacio ni símbolo de moneda; no une números vecinos.
+const NEUTRAL = "¤";
+
+/** Formas de alto riesgo (correo, URL/dominio, teléfono ≥7 dígitos, monto) de una línea. */
+export function highRiskDataShapes(line: string): DataShapeKind[] {
+  let text = capLine(String(line ?? ""));
+  const found = new Set<DataShapeKind>();
+  for (const p of TOKEN_PATTERNS) {
+    text = text.replace(p.re, (m: string) => {
+      if (p.valid && !p.valid(m)) return m;
+      if (p.kind) found.add(p.kind);
+      return NEUTRAL;
+    });
+  }
+  return [...found];
+}
+
+/**
+ * Saca de un texto (digest o resumen archivado) cada renglón que trae una forma de alto
+ * riesgo, ENTERO. `removed` lleva el cuerpo de cada uno (sin la viñeta) para la nota al
+ * operador; un encabezado que queda sin contenido debajo también se quita. Sin coincidencias
+ * devuelve el mismo texto.
+ */
+export function removeDataShapeLines(input: string): { text: string; removed: string[] } {
+  const src = String(input ?? "");
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const line of src.split("\n")) {
+    // Una línea más larga que lo que se escanea (MAX_LINE_CHARS) no se puede garantizar libre de
+    // datos: lo que quedara después del corte pasaría sin revisar. Una regla de conducta nunca es
+    // tan larga, así que se trata como riesgosa y sale entera (decidir sobre lo mismo que se guarda).
+    if (line.trim() && (line.length > MAX_LINE_CHARS || highRiskDataShapes(line).length > 0)) {
+      const prefix = line.match(BULLET)?.[1] ?? line.match(HEADING_PREFIX)?.[0] ?? "";
+      removed.push(capLine(line.slice(prefix.length).trim()));
+      continue;
+    }
+    kept.push(line);
+  }
+  if (removed.length === 0) return { text: src, removed };
+  // Encabezados sin contenido debajo (hasta el próximo encabezado o el final).
+  const out: string[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    if (HEADING.test(kept[i])) {
+      let j = i + 1;
+      while (j < kept.length && !kept[j].trim()) j++;
+      if (j >= kept.length || HEADING.test(kept[j])) continue;
+    }
+    out.push(kept[i]);
+  }
+  return { text: out.join("\n").trim(), removed };
 }

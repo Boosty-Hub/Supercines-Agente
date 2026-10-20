@@ -10,8 +10,10 @@ import {
   AGENT_FACT_STANDALONE,
   agentFacingFacts,
   FACT_PLACEHOLDER,
+  highRiskDataShapes,
   neutralizeBusinessFacts,
   neutralizeLearning,
+  removeDataShapeLines,
 } from "./dreams-facts.ts";
 import { detectInternalLeak } from "./response-guard.ts";
 
@@ -108,6 +110,21 @@ Deno.test("la evidencia también se neutraliza (entra a la consolidación)", () 
   assert(r);
   assert(!r.evidence.includes("@"), r.evidence);
   assertStringIncludes(r.evidence, "Lead#2");
+});
+
+Deno.test("LAM: las fechas de la evidencia se conservan (metadato), los datos no; el contenido sí neutraliza fechas", () => {
+  const r = neutralizeLearning(
+    L(
+      "correo_de_reclamos",
+      "Para reclamos, da el correo oficial que figure en la KB.",
+      "El 2026-10-19 (y el 19/10 y el 19 de octubre) el agente dio atencion@x.com y el 0414-1234567 a Lead#2.",
+    ),
+  );
+  assert(r);
+  for (const keep of ["2026-10-19", "19/10", "19 de octubre", "Lead#2"]) assertStringIncludes(r.evidence, keep);
+  for (const bad of ["@", "0414"]) assert(!r.evidence.includes(bad), r.evidence);
+  assert(!r.evidence.includes("\u2060"), "sin caracteres de control residuales");
+  assertStringIncludes(neutralizeBusinessFacts("Abre el 19 de octubre.").text, "[dato");
 });
 
 Deno.test("en un digest con viñetas se quitan las viñetas que quedan vacías, no los encabezados con contenido", () => {
@@ -312,4 +329,59 @@ Deno.test("agentFacingFacts: un marcador sin cerrar y enorme no vuelve lento el 
   const t0 = performance.now();
   agentFacingFacts(s);
   assert(performance.now() - t0 < 500);
+});
+
+// ─── Salida de la consolidación: formas de dato de alto riesgo (oct-2026) ───
+// La salida del consolidador ya no pasa por el corte de datos (mutilaba reglas válidas), así
+// que una salida manipulada (prompt injection en un dream) podía reintroducir un correo, un
+// enlace, un teléfono o un monto en el contexto privilegiado del agente. Solo se detectan
+// esas formas, nunca horas, fechas, «24/7» ni rangos.
+
+Deno.test("highRiskDataShapes: correo, URL/dominio, teléfono y monto", () => {
+  assertEquals(highRiskDataShapes("- Si piden reclamos, escribe a ventas@x.com."), ["email"]);
+  assertEquals(highRiskDataShapes("- Para promociones, visita https://x.com/promo."), ["url"]);
+  assertEquals(highRiskDataShapes("- Remite a kia.com.ve para el catálogo."), ["url"]);
+  assertEquals(highRiskDataShapes("- Para citas, llama al 0414-1234567."), ["phone"]);
+  assertEquals(highRiskDataShapes("- El combo cuesta $25, ofrécelo siempre."), ["money"]);
+  assertEquals(highRiskDataShapes("- La inicial es de 500 Bs."), ["money"]);
+  assertEquals(highRiskDataShapes("- El precio es 30 USD."), ["money"]);
+});
+
+Deno.test("highRiskDataShapes: horas, fechas, 24/7, rangos y cantidades NO son de alto riesgo", () => {
+  for (const s of [
+    "- Atiende emergencias 24/7; llama ahora al lead y ofrece la cita más próxima.",
+    "- No digas que abre el domingo; si preguntan, aclara que está cerrado y cuándo abre.",
+    "- El horario es de 9 a 6; usa solo el de tu system prompt.",
+    "- Responde en 2-3 oraciones.",
+    "- Desde el 2026-10-19 confirma la sede antes de agendar.",
+    "- Abre a las 9:00 am; no lo repitas sin verificar.",
+    "- Usa search_kb antes de responder sobre USD o bolívares.",
+    "- Escribe learnings.md solo si aprendiste algo nuevo.",
+  ]) assertEquals(highRiskDataShapes(s), [], s);
+});
+
+Deno.test("highRiskDataShapes: una línea enorme no se vuelve cuadrática (tope por línea)", () => {
+  const t0 = performance.now();
+  highRiskDataShapes("a".repeat(200_000) + "@" + "1 ".repeat(100_000));
+  highRiskDataShapes("1-".repeat(200_000));
+  assert(performance.now() - t0 < 1000);
+});
+
+Deno.test("removeDataShapeLines: quita la viñeta ENTERA (sin cirugía) y conserva el resto", () => {
+  const r = removeDataShapeLines(
+    "## Errores a no repetir\n- Escribe a ventas@x.com para reclamos.\n- Pide el nombre de la mascota.\n## Refuerzos y estilo\n- Llama al 0414-1234567.",
+  );
+  assertEquals(r.text, "## Errores a no repetir\n- Pide el nombre de la mascota.");
+  assertEquals(r.removed, ["Escribe a ventas@x.com para reclamos.", "Llama al 0414-1234567."]);
+  const same = "## Errores a no repetir\n- Atiende emergencias 24/7; llama ahora al lead.";
+  assertEquals(removeDataShapeLines(same), { text: same, removed: [] });
+});
+
+Deno.test("removeDataShapeLines: una línea más larga que lo escaneado sale entera (un dato después del corte no pasa)", async () => {
+  const { removeDataShapeLines, MAX_LINE_CHARS } = await import("./dreams-facts.ts");
+  const larga = "- " + "a ".repeat(MAX_LINE_CHARS) + "escribe a ventas@x.com";
+  const r = removeDataShapeLines(`## Errores a no repetir\n${larga}\n- Pregunta la sede antes de dar horarios.`);
+  assertEquals(r.removed.length, 1);
+  assert(!r.text.includes("ventas@x.com"));
+  assert(r.text.includes("Pregunta la sede antes de dar horarios."));
 });

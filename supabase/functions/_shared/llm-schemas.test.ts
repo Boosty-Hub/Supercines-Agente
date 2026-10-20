@@ -10,7 +10,7 @@ const ALL: Record<string, JsonSchema> = {
   GRADER_PASS_FAIL_SCHEMA: schemas.GRADER_PASS_FAIL_SCHEMA,
   GRADER_SCORE_SCHEMA: schemas.GRADER_SCORE_SCHEMA,
   DREAMS_LEARNINGS_SCHEMA: schemas.DREAMS_LEARNINGS_SCHEMA,
-  DREAMS_DIGEST_SCHEMA: schemas.DREAMS_DIGEST_SCHEMA,
+  DREAMS_OPERATOR_NOTES_SCHEMA: schemas.DREAMS_OPERATOR_NOTES_SCHEMA,
   classifySchema: schemas.classifySchema(["ventas", "soporte"]),
 };
 

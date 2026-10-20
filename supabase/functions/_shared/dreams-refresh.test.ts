@@ -48,13 +48,13 @@ Deno.test("un segundo refresco pendiente del mismo activo reemplaza al pendiente
   assertEquals(p.replace?.mode, "delete");
 });
 
-Deno.test("refresco de un ACTIVO con política que lo activa → activo, el original se ARCHIVA (nunca se borra) y se avisa", () => {
+Deno.test("refresco de un ACTIVO, aun con la política `all`: queda PENDIENTE y el activo sigue vigente", () => {
   const p = planLearningWrite({ target: target(active), current: active, policyActive: true, refreshesSoFar: 0 });
   assert(p.action === "write");
-  assertEquals(p.active, true);
-  assertEquals(p.replace?.mode, "archive");
-  assertEquals(p.replace?.id, "a1");
-  assertEquals(p.activeChanged, true);
+  assertEquals(p.active, false);
+  assertEquals(p.refreshes, "a1");
+  assertEquals(p.replace, null);
+  assertEquals(p.activeChanged, false);
 });
 
 Deno.test("refresco de un PENDIENTE: estado según la política; el pendiente viejo se reemplaza", () => {

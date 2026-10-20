@@ -87,9 +87,10 @@ export function planLearningWrite(opts: {
     };
   }
   if (isActivePath(cur.path)) {
-    if (opts.policyActive) {
-      return { action: "write", active: true, refreshes: null, replace: { ...cur, mode: "archive" }, activeChanged: true, occurrences, refreshedFrom: cur.path };
-    }
+    // Un dream ACTIVO nunca se reemplaza solo, ni con la política `all`: el destino lo elige el
+    // MODELO a partir de conversaciones de leads (texto no confiable), así que una conversación
+    // manipulada podía sustituir una regla que el operador ya tenía funcionando. El refresco
+    // queda pendiente con `refreshes: <id>` y el activo sigue vigente hasta que alguien lo apruebe.
     const prev = opts.pendingRefreshOf;
     return {
       action: "write",

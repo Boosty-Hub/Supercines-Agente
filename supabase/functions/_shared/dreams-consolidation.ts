@@ -70,6 +70,7 @@ ${opts.purpose === "digest" ? `- Español. Devuelve un JSON con DOS campos:
 - Ese máximo es un TOPE, no una meta: escribe la versión MÁS CORTA que conserve todas las reglas distintas. Cada palabra de "agent_rules" se paga en cada respuesta del agente; si alcanza con 150 palabras, usa 150.` : `- Español, máximo ${opts.maxWords} palabras. Tres secciones: "## Errores a no repetir", "## Advertencias y gaps", "## Refuerzos y estilo" (omite la sección si queda vacía), con viñetas de UNA oración accionable cada una.
 - Ese máximo es un TOPE, no una meta: escribe la versión MÁS CORTA que conserve la esencia.`}
 - NO PIERDAS REGLAS: la entrada trae ${nRules} reglas (${opts.dreams.length} aprendizajes + las viñetas del resumen archivado). CADA regla de conducta distinta tiene que sobrevivir en la salida. Fusiona duplicados y variantes del mismo aprendizaje en una sola viñeta y acorta la redacción, pero NUNCA descartes una regla para entrar en el tope: si no entra, comprime más (viñetas más cortas, fusiona las parecidas).${opts.purpose === "digest" ? ` Lo que solo puede resolver el operador va a "operator_notes"; toda regla de CONDUCTA del agente va a "agent_rules" (solo esas cuentan como conservadas).` : ""}
+- FORMATO: Markdown con UNA viñeta por renglón: un salto de línea después de cada encabezado y entre viñetas (nunca todo en un solo párrafo).
 - Prioriza SIEMPRE los errores: si hay que comprimir, acorta primero las sugerencias.
 - Descarta lo obsoleto o contradicho por aprendizajes más nuevos (gana el más nuevo).
 - ${LEARNINGS_DATA_RULE} Si un aprendizaje trae un dato del negocio que solo respalda lo que dijo el agente, conserva su regla sin el dato.
@@ -96,6 +97,32 @@ REINTENTO: tu salida anterior conservó solo ${opts.retry.outputRules} viñetas 
 // operador borraba no salía nunca del digest del agente (y el archivado abortaba el rebuild
 // antes del paso 2, fallando para siempre con la misma tanda). Un digest con alguna regla
 // menos es recuperable (alerta → subir DREAMS_DIGEST_MAX_WORDS); uno congelado no.
+
+// ─── Viñetas en un solo renglón (SuperCines, 20-oct-2026) ───────────────────
+// El modelo devolvió agent_rules entero en UN renglón («## Errores a no repetir - No
+// confirmes… - No des…»): countRules veía 0 viñetas y el corte por renglón de
+// neutralizeBusinessFacts (MAX_LINE_CHARS) truncaba el digest a la mitad. Se separan los
+// encabezados y las viñetas pegadas ANTES de neutralizar y contar. Solo corta una viñeta
+// «-», «*» o «•» precedida de un cierre de oración (o de un encabezado), así un guion dentro
+// de una oración no parte nada.
+export function normalizeBulletLines(text: string): string {
+  return String(text ?? "")
+    .replace(/[ \t]+(?=#{2,}[ \t])/g, "\n\n")
+    .replace(/^(#{2,}[ \t][^\n]*?)[ \t]+(?=[-*•][ \t])/gm, "$1\n")
+    .replace(/([.!?…)»"'])[ \t]+(?=[-*•][ \t])/g, "$1\n");
+}
+
+/**
+ * La salida no trae NINGUNA viñeta aunque la entrada tenía reglas: no es una consolidación
+ * con pérdida sino una salida mal formada (texto suelto, truncada). No se persiste: el
+ * valor vivo queda y rebuildDigestCore avisa con una alerta.
+ */
+export class ConsolidationMalformedError extends Error {
+  constructor(readonly inputRules: number, readonly attempts: number) {
+    super(`consolidación mal formada: 0 viñetas para ${inputRules} reglas de entrada (${attempts} intentos)`);
+    this.name = "ConsolidationMalformedError";
+  }
+}
 
 // Viñeta: -, *, •, –, — o numerada («1.», «2)»).
 const RULE_LINE = /^\s*(?:[-*•–—]|\d+[.)])\s+(\S.*)$/;
@@ -192,6 +219,7 @@ export async function consolidateWithLossCheck<T>(
     if (kept(second) >= kept(best)) best = second;
   }
   const keptRules = kept(best);
+  if (inputRules >= LOSS_CHECK_MIN_RULES && best.outputRules === 0) throw new ConsolidationMalformedError(inputRules, attempts);
   if (!isLossyConsolidation(inputRules, keptRules, maxWords)) return { value: best.value, loss: null };
   console.error(`dreams: consolidación con pérdida (${keptRules}/${inputRules} reglas guardadas) — se persiste igual y se avisa`);
   return {
@@ -239,6 +267,20 @@ export function consolidationLossAlert(purpose: ConsolidationPurpose, info: Pers
   };
 }
 
+/** Alerta (`dream_error`) de una consolidación sin ninguna viñeta: el valor vivo NO se tocó. */
+export function consolidationMalformedAlert(purpose: ConsolidationPurpose, err: ConsolidationMalformedError) {
+  const que = purpose === "digest" ? "El digest del agente" : "El resumen archivado";
+  return {
+    kind: "dream_error" as const,
+    severity: "warning" as const,
+    title: "Dreams: la consolidación devolvió un texto sin viñetas",
+    description:
+      `${que} NO se actualizó: el modelo devolvió un texto sin ninguna viñeta para ${err.inputRules} reglas de entrada ` +
+      `(${err.attempts} intentos). Sigue vigente el valor anterior; la próxima reconstrucción lo vuelve a intentar.`,
+    metadata: { reason: "consolidation_malformed", purpose, input_rules: err.inputRules, attempts: err.attempts },
+  };
+}
+
 export type DigestOutput = { agent_rules?: unknown; operator_notes?: unknown };
 
 /**
@@ -256,12 +298,12 @@ export function finalizeDigest(
 ): { digest: string; operatorNotes: string; outputRules: number; capDroppedRules: number } {
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
   // El agente no recibe el marcador literal de dato (lo copiaba al cliente): frase natural.
-  const rules = agentFacingFacts(neutralizeBusinessFacts(str(out?.agent_rules)).text);
+  const rules = agentFacingFacts(neutralizeBusinessFacts(normalizeBulletLines(str(out?.agent_rules))).text);
   const digest = rules ? enforceDigestWordCap(rules, maxWords) : "";
   const outputRules = countRules(rules);
   return {
     digest,
-    operatorNotes: str(out?.operator_notes) ? enforceDigestWordCap(str(out?.operator_notes), maxWords) : "",
+    operatorNotes: str(out?.operator_notes) ? enforceDigestWordCap(normalizeBulletLines(str(out?.operator_notes)), maxWords) : "",
     outputRules,
     capDroppedRules: Math.max(0, outputRules - countRules(digest)),
   };
@@ -272,7 +314,7 @@ export function finalizeDigest(
  * medición que el digest: reglas antes del corte duro y lo que se llevó el corte aparte.
  */
 export function finalizeArchive(raw: string, maxWords: number): { text: string; outputRules: number; capDroppedRules: number } {
-  const full = neutralizeBusinessFacts(String(raw ?? "").trim()).text;
+  const full = neutralizeBusinessFacts(normalizeBulletLines(String(raw ?? "").trim())).text;
   // CORTE DURO: maxWords es solo una instrucción en el prompt y el modelo no siempre la
   // respeta. Ver _shared/dreams-digest-cap.ts.
   const text = enforceDigestWordCap(full, maxWords);

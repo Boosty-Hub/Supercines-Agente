@@ -4,12 +4,15 @@ import { assert, assertEquals, assertRejects, assertStringIncludes } from "jsr:@
 import {
   buildConsolidationPrompt,
   consolidateWithLossCheck,
+  ConsolidationMalformedError,
   consolidationLossAlert,
+  consolidationMalformedAlert,
   countRules,
   finalizeArchive,
   finalizeDigest,
   inputRuleCount,
   isLossyConsolidation,
+  normalizeBulletLines,
   requiredRules,
   RULE_WORDS_ASSUMED,
 } from "./dreams-consolidation.ts";
@@ -396,4 +399,60 @@ Deno.test("el default del tope del digest es 900 (con 600 la compactación perd�
   assertStringIncludes(src, "insertAlert(supabase, row)");
   assert(!src.includes("ConsolidationLossError"), "la pérdida ya no aborta la reconstrucción");
   assertEquals((src.match(/consolidateOnce\(/g) ?? []).length, 2, "solo la definición y el núcleo");
+});
+
+// ─── Viñetas en un solo renglón (SuperCines, 20-oct-2026) ───────────────────
+
+const ONE_LINE = "## Errores a no repetir - No confirmes funciones que no devuelva consultar_cartelera. - No des horarios del equipo. - Si una película figura en consultar_cartelera muestra sus horarios; con la web caída da esos datos sin mencionar la web. ## Refuerzos y estilo - Ante precios sin sede, pide la sede.";
+
+Deno.test("normalizeBulletLines: separa encabezados y viñetas pegadas en un renglón", () => {
+  assertEquals(
+    normalizeBulletLines(ONE_LINE).split("\n"),
+    [
+      "## Errores a no repetir",
+      "- No confirmes funciones que no devuelva consultar_cartelera.",
+      "- No des horarios del equipo.",
+      "- Si una película figura en consultar_cartelera muestra sus horarios; con la web caída da esos datos sin mencionar la web.",
+      "",
+      "## Refuerzos y estilo",
+      "- Ante precios sin sede, pide la sede.",
+    ],
+  );
+});
+
+Deno.test("normalizeBulletLines: no parte un guion dentro de una oración ni toca un texto bien formado", () => {
+  const ok = "## Errores a no repetir\n- Ofrece dos opciones - la más rápida primero.\n- Otra regla.";
+  assertEquals(normalizeBulletLines(ok), ok);
+});
+
+Deno.test("finalizeDigest: un agent_rules en UN renglón cuenta sus viñetas y no se trunca", () => {
+  const long = ONE_LINE.replace("## Refuerzos", Array.from({ length: 40 }, (_, i) => `- Regla larga número ${i} sobre conducta del agente con varias palabras.`).join(" ") + " ## Refuerzos");
+  const f = finalizeDigest({ agent_rules: long, operator_notes: "" }, 3000);
+  assertEquals(f.outputRules, 44);
+  assertStringIncludes(f.digest, "- Ante precios sin sede, pide la sede.");
+  assertStringIncludes(f.digest, "con la web caída da esos datos sin mencionar la web.");
+});
+
+Deno.test("consolidateWithLossCheck: una salida SIN viñetas no se persiste (lanza) aunque nunca se congele por pérdida", async () => {
+  await assertRejects(
+    () => consolidateWithLossCheck(24, 900, async () => ({ value: "texto suelto", outputRules: 0 })),
+    ConsolidationMalformedError,
+  );
+});
+
+Deno.test("rebuildDigestCore: salida sin viñetas → no persiste el digest, alerta consolidation_malformed y lanza", async () => {
+  const dreams = Array.from({ length: 10 }, (_, i) => dream(i));
+  const alerts: unknown[] = [];
+  const bad = async () => ({ value: { text: "texto suelto", operatorNotes: "" } as ConsolidatedText, outputRules: 0 });
+  await assertRejects(
+    () => rebuildDigestCore({ archived: "", dreams, toArchive: [], maxWords: 900 }, deps({ consolidate: bad }, alerts)),
+    ConsolidationMalformedError,
+  );
+  assertEquals(alerts.length, 1);
+  assertEquals((alerts[0] as ReturnType<typeof consolidationMalformedAlert>).metadata.reason, "consolidation_malformed");
+});
+
+Deno.test("el prompt pide una viñeta por renglón", () => {
+  const p = buildConsolidationPrompt({ purpose: "digest", operator: "X", archived: "", dreams: [], maxWords: 900 });
+  assertStringIncludes(p, "UNA viñeta por renglón");
 });

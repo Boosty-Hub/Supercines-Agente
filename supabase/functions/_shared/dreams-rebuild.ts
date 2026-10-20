@@ -15,6 +15,8 @@
 // El llamador persiste el digest, las notas y el fingerprint con lo que devuelve.
 
 import {
+  ConsolidationMalformedError,
+  consolidationMalformedAlert,
   consolidateWithLossCheck,
   type ConsolidationAttempt,
   type ConsolidationPurpose,
@@ -39,7 +41,7 @@ export type RebuildDeps<D extends DreamLike> = {
   /** Mueve el dream a /dreams-archive/; true si quedó fuera de los activos. Fail-open. */
   archiveDream: (d: D) => Promise<boolean>;
   /** Inserta la alerta de pérdida. Fail-open: un fallo acá nunca frena la reconstrucción. */
-  alert: (row: ReturnType<typeof consolidationLossAlert>) => Promise<void>;
+  alert: (row: ReturnType<typeof consolidationLossAlert> | ReturnType<typeof consolidationMalformedAlert>) => Promise<void>;
 };
 
 export type RebuildCoreResult<D extends DreamLike> =
@@ -68,12 +70,25 @@ export async function rebuildDigestCore<D extends DreamLike>(
       console.warn("alert dream_error (consolidación):", err instanceof Error ? err.message : String(err));
     }
   };
-  const run = (purpose: ConsolidationPurpose, archived: string, dreams: D[]) =>
-    consolidateWithLossCheck(
-      inputRuleCount({ archived, dreams }),
-      maxWords,
-      (retry) => deps.consolidate({ purpose, archived, dreams }, retry),
-    );
+  const run = async (purpose: ConsolidationPurpose, archived: string, dreams: D[]) => {
+    try {
+      return await consolidateWithLossCheck(
+        inputRuleCount({ archived, dreams }),
+        maxWords,
+        (retry) => deps.consolidate({ purpose, archived, dreams }, retry),
+      );
+    } catch (err) {
+      // Salida sin ninguna viñeta: no se persiste (el valor vivo queda) y se avisa.
+      if (err instanceof ConsolidationMalformedError) {
+        try {
+          await deps.alert(consolidationMalformedAlert(purpose, err));
+        } catch (e) {
+          console.warn("alert dream_error (consolidación):", e instanceof Error ? e.message : String(e));
+        }
+      }
+      throw err;
+    }
+  };
 
   // 1) Archivado: la esencia entra al resumen ANTES de mover nada. Un error real (refusal,
   //    corte, red) lanza y no se archiva en esta corrida; una PÉRDIDA no: se guarda igual.

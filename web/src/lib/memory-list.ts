@@ -4,11 +4,14 @@
 import { configValue } from "@/lib/runtime-config";
 import { callInternalFunction } from "@/lib/internal-call";
 import {
+  AnthropicHttpError,
   listMemories,
   retrieveMemory,
+  retrieveMemoryStrict,
   createMemory,
   deleteMemory,
 } from "@/lib/anthropic-managed";
+import { planApprove, refreshesOf } from "@/lib/dreams-refresh";
 
 export type DreamMeta = {
   id: string;
@@ -57,13 +60,36 @@ export async function listPendingDreams(): Promise<DreamMeta[]> {
 
 // Aprueba un dream pendiente: lo re-crea bajo /dreams/ (mismo nombre) y borra
 // el original de /dreams-pending/. Desde ese momento el agente lo adopta.
+// Si el pendiente es el REFRESCO de un activo (frontmatter `refreshes`, ver
+// lib/dreams-refresh.ts), ese activo se mueve a /dreams-archive/ (nunca se borra sin copia).
 export async function approveDream(id: string): Promise<{ path: string } | null> {
   const { apiKey, storeId } = await masterCreds();
   const mem = await retrieveMemory(apiKey, storeId, id);
   if (!mem || !mem.path.startsWith("/dreams-pending/")) return null;
-  const activePath = mem.path.replace(/^\/dreams-pending\//, "/dreams/");
-  await createMemory(apiKey, storeId, activePath, mem.content ?? "");
-  await deleteMemory(apiKey, storeId, id);
+  const pending = { id: mem.id ?? id, path: mem.path, content: mem.content ?? "" };
+  const targetId = refreshesOf(pending.content);
+  // Lectura estricta: un error transitorio NO se toma por «ya no existe» (aprobaría sin
+  // archivar el activo y quedarían dos reglas vigentes).
+  const t = targetId ? await retrieveMemoryStrict(apiKey, storeId, targetId) : null;
+  const target = t ? { id: t.id ?? targetId!, path: t.path, content: t.content ?? "" } : null;
+  const steps = planApprove(pending, target);
+  if (!steps) return null;
+  let activePath = pending.path.replace(/^\/dreams-pending\//, "/dreams/");
+  for (const step of steps) {
+    if (step.op === "archive") {
+      try {
+        await createMemory(apiKey, storeId, step.path, step.content);
+      } catch (err) {
+        // 409 = ya estaba archivado (reintento de una aprobación a medias): seguir.
+        if (!(err instanceof AnthropicHttpError && err.status === 409)) throw err;
+      }
+    } else if (step.op === "create") {
+      await createMemory(apiKey, storeId, step.path, step.content);
+      activePath = step.path;
+    } else {
+      await deleteMemory(apiKey, storeId, step.id);
+    }
+  }
   return { path: activePath };
 }
 

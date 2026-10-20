@@ -155,3 +155,14 @@ Deno.test("PARIDAD: las frecuencias de Dreams de web == Edge (si no, la web guar
   const { DREAMS_FREQUENCIES: webFreq } = await import("../../web/src/lib/dreams-frequency.ts");
   assertEquals([...webFreq], [...edge]);
 });
+
+import { refreshesOf as edgeRefreshesOf, toArchivePath as edgeToArchivePath } from "../functions/_shared/dreams-refresh.ts";
+import { refreshesOf as webRefreshesOf, toArchivePath as webToArchivePath } from "../../web/src/lib/dreams-refresh.ts";
+
+Deno.test("PARIDAD: el frontmatter `refreshes` de Dreams se lee igual en dreams-run y en el panel", () => {
+  const fm = (extra: string) => `---\ncategory: x\n${extra}---\n\n# t\n`;
+  for (const extra of ['refreshes: "mem_01Ab-9"\n', "refreshes: mem_1\n", "", 'refreshes: "../x"\n', "refreshes: \n", 'refreshes: "a b"\n']) {
+    assertEquals(webRefreshesOf(fm(extra)), edgeRefreshesOf(fm(extra)), extra);
+  }
+  assertEquals(webToArchivePath("/dreams/daily/a.md"), edgeToArchivePath("/dreams/daily/a.md"));
+});

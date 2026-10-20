@@ -14,19 +14,28 @@
 //   2) al inyectar el digest, el agente sabe que los aprendizajes son reglas de
 //      conducta, no una fuente de datos (DREAMS_DIGEST_DATA_RULE).
 
-/** Regla para el modelo de Dreams (generación de learnings y consolidación del digest). */
+/**
+ * Regla para el modelo de Dreams (generación de learnings y consolidación del digest).
+ * Oct-2026 (SuperCines): ya no basta con cifras — también se fijaban estados y causas
+ * («Playa Mar cerrada por afectación sísmica»), correos, horarios, condiciones de promos.
+ * Un aprendizaje describe CONDUCTA; los datos del negocio salen de las fuentes oficiales.
+ * La red determinista que acompaña a esta regla está en dreams-facts.ts.
+ */
 export const LEARNINGS_DATA_RULE =
-  "Los aprendizajes NO son una fuente de datos. Nunca fijes como correcto un precio, monto, horario, función, versión, especificación o " +
-  "condición comercial a partir de lo que dijo el AGENTE en las conversaciones, aunque lo repita en muchas: puede ser el " +
-  "mismo error repetido. Una cifra solo puede figurar en un aprendizaje si la respalda una fuente oficial del operador " +
-  "(su system prompt, la KB, la cartelera o un catálogo) o si la dio el propio lead; si el agente dio cifras distintas o sin respaldo " +
-  "para lo mismo, el aprendizaje es «tomar ese dato solo de la fuente oficial», SIN escribir la cifra.";
+  "Los aprendizajes describen CONDUCTA (cómo responder, qué verificar, cuándo derivar), NUNCA datos del negocio: " +
+  "NO son una fuente de datos. No escribas como hecho ningún precio, monto, función, versión, especificación, estado o causa " +
+  "(p. ej. «la sede X está cerrada por …»), correo, teléfono, enlace, horario, fecha, requisito, disponibilidad, " +
+  "política ni condición de una promoción a partir de lo que dijo el AGENTE en las conversaciones, aunque lo repita " +
+  "en muchas: puede ser el mismo error repetido. Esos datos salen SOLO de las fuentes oficiales del operador (su " +
+  "system prompt, la KB, la cartelera, las situaciones, las promociones y las herramientas). Si el agente dio un dato distinto o sin " +
+  "respaldo, el aprendizaje es «tomar ese dato solo de la fuente oficial», SIN escribir el dato.";
 
 /** Aclaración que acompaña al digest en el contexto del agente. */
 export const DREAMS_DIGEST_DATA_RULE =
-  "Son reglas de conducta, NO una fuente de datos: precios, montos, horarios, funciones, especificaciones y condiciones salen " +
-  "SOLO de tus fuentes oficiales (tu system prompt, search_kb, tus herramientas —p. ej. la cartelera— y los bloques de datos de este contexto). Si un " +
-  "aprendizaje trae una cifra o un dato que no figura en ellas, ignora esa cifra o ese dato";
+  "Son reglas de conducta, NO una fuente de datos: precios, montos, funciones, versiones, especificaciones, condiciones y " +
+  "promociones, horarios, fechas, correos, teléfonos, enlaces, requisitos, disponibilidad y el estado de sedes o " +
+  "servicios salen SOLO de tus fuentes oficiales (tu system prompt, search_kb, tus herramientas —p. ej. la cartelera— y " +
+  "los bloques de datos de este contexto). Si un aprendizaje trae una cifra o un dato que no figura en ellas, ignora esa cifra o ese dato";
 
 /** Bloque del [CONTEXTO] con el digest; "" si no hay digest. Termina en salto de línea. */
 export function dreamsDigestBlock(digest: string | null | undefined): string {

@@ -185,6 +185,10 @@ Deno.test("el default de webhook_kinds vigente (0092) es EXACTAMENTE el del regi
   assert(!kinds.includes("dream_error"));
   assertEquals(ALERT_KINDS.dream_error.webhook, false);
   assert(ALERT_KINDS.dream_error.reason.includes("/dreams"));
+  // Cambio de un dream ACTIVO (refresco de Dreams): aviso en /alerts, no al webhook.
+  assert(!kinds.includes("dream_updated"));
+  assertEquals(ALERT_KINDS.dream_updated.webhook, false);
+  assertEquals(ALERT_KINDS.dream_updated.table, "alerts");
 });
 
 Deno.test("los tipos nuevos de esta versión están como notificables", () => {

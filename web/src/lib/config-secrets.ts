@@ -54,6 +54,8 @@ export const PUBLIC_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "DREAMS_AUTO_ACTIVATE",
   "DREAMS_FREQUENCY",
   "DREAMS_RESUMED_AT",
+  // Notas de Dreams para el operador (gaps de KB…): las escribe dreams-run, las lee /dreams.
+  "DREAMS_OPERATOR_NOTES",
   "MONTHLY_BUDGET_USD",
   "BUDGET_SAFETY_MARGIN_PCT",
   "BUDGET_EXCLUDE_BEFORE",

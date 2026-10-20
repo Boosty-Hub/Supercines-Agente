@@ -94,6 +94,12 @@ export const ALERT_KINDS = {
     severity: "info",
     reason: "es feedback de calidad del agente, no una caída: puede dispararse varias veces por corrida y se revisa en /dreams (donde se aprueba o descarta)",
   },
+  dream_updated: {
+    webhook: false,
+    table: "alerts",
+    severity: "info",
+    reason: "Dreams reemplazó una regla que el agente YA aplicaba (el original queda en /dreams-archive/): es feedback de calidad, se revisa en /dreams, no es una caída",
+  },
 } as const satisfies Record<string, AlertKindInfo>;
 
 /** Todo tipo registrado (alertas e incidentes de salud). */

@@ -24,6 +24,7 @@ const FILES = [
   "supabase/functions/_shared/agent-output.ts",
   "supabase/functions/_shared/dreams-digest-block.ts",
   "supabase/functions/_shared/dreams-consolidation.ts",
+  "supabase/functions/_shared/dreams-generation.ts",
   "supabase/functions/_shared/response-guard.ts",
   "supabase/functions/_shared/outbound.ts",
   "supabase/functions/_shared/history.ts",

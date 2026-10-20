@@ -198,6 +198,20 @@ export async function retrieveMemory(
   }
 }
 
+/** Retrieve estricto: null SOLO ante 404; cualquier otro error propaga (no es «no existe»). */
+export async function retrieveMemoryStrict(
+  apiKey: string,
+  storeId: string,
+  id: string
+): Promise<MemoryItem | null> {
+  try {
+    return (await call(apiKey, "GET", `/v1/memory_stores/${storeId}/memories/${id}`)) as unknown as MemoryItem;
+  } catch (err) {
+    if (err instanceof AnthropicHttpError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 export async function createMemory(
   apiKey: string,
   storeId: string,

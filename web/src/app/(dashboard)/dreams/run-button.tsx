@@ -24,6 +24,11 @@ export default function RunButton() {
       setError(data.error ?? "error");
       return;
     }
+    if (data.skipped && data.reason === "busy") {
+      // Otra corrida (cron o botón) tiene el lease del análisis (migración 0089).
+      setResult("Ya hay un análisis de Dreams en curso; se puede volver a correr en unos minutos.");
+      return;
+    }
     const extra =
       typeof data.pending === "number" && data.pending > 0
         ? ` (${data.active} activos, ${data.pending} pendientes de aprobación)`

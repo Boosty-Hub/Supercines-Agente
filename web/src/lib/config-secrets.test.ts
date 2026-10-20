@@ -50,6 +50,12 @@ test("lo público es la lista declarada (+ TOOL_<X>_HOSTS, que es un dato)", () 
   assert.equal(isSecretConfigKey("TOOL_ERP"), true);
 });
 
+test("las notas de Dreams para el operador son un dato público, que solo escribe dreams-run", () => {
+  assert.equal(isSecretConfigKey("DREAMS_OPERATOR_NOTES"), false);
+  // nadie la escribe desde el panel: no es una clave editable por ningún alcance salvo configuracion (todo)
+  assert.deepEqual(configKeysDenied("contenido", ["DREAMS_OPERATOR_NOTES"]), ["DREAMS_OPERATOR_NOTES"]);
+});
+
 test("ninguna clave pública tiene forma de credencial", () => {
   for (const k of PUBLIC_CONFIG_KEYS) {
     assert.doesNotMatch(k, /KEY|TOKEN|SECRET|PASSWORD|CLIENT_ID/, `${k} está en la lista pública`);

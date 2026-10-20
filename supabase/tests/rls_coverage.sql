@@ -55,7 +55,7 @@ insert into matriz values
   -- solo servidor
   ('runtime_config', ''), ('kommo_credentials', ''), ('alert_config', ''), ('_migrations', ''),
   ('_app_secrets', ''), ('inbound_queue', ''), ('kommo_backfill_seen', ''), ('kommo_sync_state', ''),
-  ('lead_move_claims', ''), ('lead_position_seen', ''), ('kommo_backfill', ''),
+  ('lead_move_claims', ''), ('lead_position_seen', ''), ('kommo_backfill', ''), ('dreams_run_lease', ''),
   -- configuracion
   ('agent_tools', 'DELETE,INSERT,SELECT,UPDATE'), ('agent_skip_rules', 'DELETE,INSERT,SELECT,UPDATE'),
   ('follow_up_fields', 'DELETE,INSERT,SELECT,UPDATE'), ('follow_up_templates', 'DELETE,INSERT,SELECT,UPDATE'),

@@ -6,7 +6,9 @@ import { assert, assertStringIncludes } from "jsr:@std/assert@^1.0.0";
 
 const read = (rel: string) => Deno.readTextFileSync(new URL(rel, import.meta.url));
 
-for (const f of ["../dreams-run/index.ts", "../process-inbound/index.ts", "./grader-prompt.ts"]) {
+// Los prompts de Dreams viven en dreams-generation.ts (buildDreamPrompt) y
+// dreams-consolidation.ts (buildConsolidationPrompt), que dreams-run usa.
+for (const f of ["./dreams-generation.ts", "./dreams-consolidation.ts", "../process-inbound/index.ts", "./grader-prompt.ts"]) {
   Deno.test(`${f} introduce el material analizado con EVALUATION_NOTICE`, () => {
     assertStringIncludes(read(f), "${EVALUATION_NOTICE}");
     assert(!read(f).includes("${UNTRUSTED_NOTICE}"), "no debe quedar el aviso que confía en el rol del agente");

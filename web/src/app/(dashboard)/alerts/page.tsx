@@ -44,6 +44,7 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   inbound_silence: { label: "No entran mensajes", icon: "🔇" },
   kommo_webhook_disabled: { label: "Kommo deshabilitó el webhook", icon: "🔌" },
   dream_error: { label: "Aprendizaje con error del agente", icon: "💭" },
+  dream_updated: { label: "Dreams cambió una regla activa", icon: "💭" },
 };
 
 function kindLabel(kind: string): { label: string; icon: string } {

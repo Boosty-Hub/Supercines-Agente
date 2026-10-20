@@ -62,6 +62,8 @@ export const DREAMS_LEARNINGS_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
+    // Sin maxItems: el structured output de la API no lo admite (solo minItems 0/1). El tope
+    // de 8 por corrida se aplica en código (dreams-refresh.ts, clampLearnings).
     learnings: {
       type: "array",
       items: {
@@ -74,12 +76,30 @@ export const DREAMS_LEARNINGS_SCHEMA = {
           vertical: { type: "string" },
           content: { type: "string" },
           evidence: { type: "string" },
+          // "" = aprendizaje nuevo; "D<n>" = refina/reemplaza el dream ya registrado con ese id
+          // (lista que recibe el prompt, _shared/dreams-generation.ts).
+          updates: { type: "string" },
         },
-        required: ["title", "category", "severity", "vertical", "content", "evidence"],
+        required: ["title", "category", "severity", "vertical", "content", "evidence", "updates"],
       },
     },
   },
   required: ["learnings"],
+} as const satisfies JsonSchema;
+
+/**
+ * Digest de Dreams (dreams-run, consolidación purpose=digest): las reglas que ve el agente
+ * y, APARTE, las notas para el operador (gaps de KB, datos a revisar) que el agente no
+ * puede usar y por eso no se le inyectan (runtime_config.DREAMS_OPERATOR_NOTES).
+ */
+export const DREAMS_DIGEST_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    agent_rules: { type: "string" },
+    operator_notes: { type: "string" },
+  },
+  required: ["agent_rules", "operator_notes"],
 } as const satisfies JsonSchema;
 
 /** Clasificador de process-inbound (el enum de verticales depende de la base). */

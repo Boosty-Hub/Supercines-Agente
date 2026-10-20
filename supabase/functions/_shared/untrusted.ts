@@ -94,6 +94,14 @@ export function turnPreservingLines(
   return `<turno rol="${rol}"${t}>\n${preservedLines(text, opts.maxChars)}\n</turno>`;
 }
 
+/**
+ * Texto no confiable de VARIAS líneas, saneado renglón por renglón con prefijo "| " (mismo
+ * criterio que turnPreservingLines), para envolverlo en un elemento propio del llamador.
+ */
+export function untrustedLines(text: string, opts: { maxChars?: number } = {}): string {
+  return preservedLines(text, opts.maxChars);
+}
+
 /** Cuerpo saneado renglón por renglón, con prefijo "| " (ver turnPreservingLines). */
 function preservedLines(text: string, maxChars?: number): string {
   let raw = stripLoneSurrogates(String(text ?? "")).normalize("NFKC").replace(SALTOS, "\n");

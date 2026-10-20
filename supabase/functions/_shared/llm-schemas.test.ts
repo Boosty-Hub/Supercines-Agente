@@ -10,6 +10,7 @@ const ALL: Record<string, JsonSchema> = {
   GRADER_PASS_FAIL_SCHEMA: schemas.GRADER_PASS_FAIL_SCHEMA,
   GRADER_SCORE_SCHEMA: schemas.GRADER_SCORE_SCHEMA,
   DREAMS_LEARNINGS_SCHEMA: schemas.DREAMS_LEARNINGS_SCHEMA,
+  DREAMS_DIGEST_SCHEMA: schemas.DREAMS_DIGEST_SCHEMA,
   classifySchema: schemas.classifySchema(["ventas", "soporte"]),
 };
 
@@ -82,4 +83,8 @@ Deno.test("ningún json_schema de output_config se escribe inline fuera de llm-s
     }
   }
   assert(checked >= 3, `se esperaban los 3 usos conocidos (grader, dreams, clasificador); hubo ${checked}`);
+});
+
+Deno.test("los learnings de Dreams declaran a qué dream existente actualizan (updates)", () => {
+  assert("updates" in schemas.DREAMS_LEARNINGS_SCHEMA.properties.learnings.items.properties);
 });

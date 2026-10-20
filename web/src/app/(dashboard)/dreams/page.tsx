@@ -109,6 +109,10 @@ export default async function DreamsPage(props: { searchParams: Promise<SearchPa
 
   const policy = (await configValue("DREAMS_AUTO_ACTIVATE")) || "all";
   const frequency = (await configValue("DREAMS_FREQUENCY")) || "daily";
+  // Lo que solo el operador puede resolver (datos que faltan en la KB, información a revisar).
+  // Lo escribe dreams-run al consolidar; el agente NO lo recibe. Vacío en despliegues cuyo
+  // digest todavía no se reconstruyó con el formato nuevo.
+  const operatorNotes = ((await configValue("DREAMS_OPERATOR_NOTES")) ?? "").trim();
 
   const parsedItems = items.map((it) => parseDreamPath(it.id, it.path));
   const parsedPending = pendingItems.map((it) => parseDreamPath(it.id, it.path));
@@ -235,6 +239,24 @@ export default async function DreamsPage(props: { searchParams: Promise<SearchPa
             </div>
           </section>
         </div>
+      )}
+
+      {/* Notas para el operador: gaps que el agente no puede resolver (no se le inyectan) */}
+      {operatorNotes && (
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold tracking-tight text-neutral-900">
+              Para revisar (datos que faltan o están desactualizados)
+            </h2>
+            <p className="mt-0.5 text-xs text-neutral-500">
+              Dreams detectó esto en las conversaciones y solo se resuelve del lado del operador, por ejemplo
+              cargándolo en la base de conocimiento. El agente no ve esta lista.
+            </p>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-card">
+            <pre className="whitespace-pre-wrap font-sans text-sm text-amber-900">{operatorNotes}</pre>
+          </div>
+        </section>
       )}
 
       {/* Sección pendientes — solo si no hay error de carga */}

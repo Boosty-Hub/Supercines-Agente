@@ -385,3 +385,16 @@ Deno.test("removeDataShapeLines: una línea más larga que lo escaneado sale ent
   assert(!r.text.includes("ventas@x.com"));
   assert(r.text.includes("Pregunta la sede antes de dar horarios."));
 });
+
+Deno.test("redacción: invisibles en medio de un teléfono o correo no esquivan el filtro (tampoco en la evidencia con fechas)", async () => {
+  const { neutralizeBusinessFacts } = await import("./dreams-facts.ts");
+  const tel = "Llama al 0414⁠123​4567 para reservar.";
+  for (const keepDates of [false, true]) {
+    const r = neutralizeBusinessFacts(tel, { keepDates });
+    assert(!/\d{4}.?\d{3}.?\d{4}/.test(r.text.replace(/[⁠​]/g, "")), r.text);
+    assert(!r.text.includes("1234567"), r.text);
+  }
+  const ev = neutralizeBusinessFacts("El 2026-10-19 el lead pidió escribir a ven⁠tas@x.com", { keepDates: true });
+  assert(ev.text.includes("2026-10-19"), ev.text);
+  assert(!ev.text.includes("tas@x.com"), ev.text);
+});

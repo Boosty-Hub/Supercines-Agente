@@ -128,9 +128,14 @@ function capLine(line: string): string {
   return line.length > MAX_LINE_CHARS ? truncateGraphemes(line, MAX_LINE_CHARS) : line;
 }
 
+const INVISIBLE_FORMAT = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+
 function redactTokens(line: string, opts: { keepDates?: boolean } = {}): { text: string; redacted: number } {
   let redacted = 0;
-  let text = capLine(line);
+  // Invisibles y de formato FUERA antes de buscar datos: «0414\u200B123\u20604567» no debe
+  // esquivar el patrón de teléfono, y el centinela de las fechas conservadas (U+2060, abajo)
+  // nunca puede venir de la entrada: si no, el borrado final reconstruiría un dato del atacante.
+  let text = capLine(line).replace(INVISIBLE_FORMAT, "");
   const sub = (re: RegExp, valid?: (m: string) => boolean) => {
     text = text.replace(re, (m: string) => {
       if (valid && !valid(m)) return m;

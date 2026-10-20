@@ -78,7 +78,8 @@ export async function rebuildDigestCore<D extends DreamLike>(
         (retry) => deps.consolidate({ purpose, archived, dreams }, retry),
       );
     } catch (err) {
-      // Salida sin ninguna viñeta: no se persiste (el valor vivo queda) y se avisa.
+      // Salida sin ninguna viñeta (mal formada, no «con pérdida»): no se persiste (el valor
+      // vivo queda) y se avisa. Lanza como cualquier error real del modelo.
       if (err instanceof ConsolidationMalformedError) {
         try {
           await deps.alert(consolidationMalformedAlert(purpose, err));

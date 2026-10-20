@@ -350,7 +350,9 @@ const ARCHIVE_BATCH = 50;
 // pérdida con reintento, y el digest sin el marcador literal de dato.
 // 8: el reintento dice cuántas reglas faltan y el mínimo exigible; las notas del operador ya
 // no cuentan como reglas conservadas. La pérdida nunca congela el digest (se persiste con alerta).
-const DIGEST_PROMPT_VERSION = "8";
+// 9: los datos del negocio se cortan en la ENTRADA (marcador + conducta hacia la fuente
+// oficial), una viñeta por renglón y una salida sin viñetas no se guarda.
+const DIGEST_PROMPT_VERSION = "9";
 
 function digestMaxWords(cfg: ConfigReader): number {
   const n = parseInt(cfg.getOr("DREAMS_DIGEST_MAX_WORDS", String(DIGEST_MAX_WORDS_DEFAULT)), 10);

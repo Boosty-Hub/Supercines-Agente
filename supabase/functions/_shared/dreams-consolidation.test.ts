@@ -7,6 +7,7 @@ import {
   ConsolidationMalformedError,
   consolidationLossAlert,
   consolidationMalformedAlert,
+  consolidationInput,
   countRules,
   finalizeArchive,
   finalizeDigest,
@@ -93,22 +94,72 @@ Deno.test("el tope es un MÁXIMO, no una meta: se pide la versión más corta", 
   assertStringIncludes(p, "es un TOPE, no una meta");
 });
 
-Deno.test("finalizeDigest: neutraliza datos en las reglas, recorta al tope y deja las notas aparte", () => {
-  const r = finalizeDigest(
-    {
-      agent_rules: "## Errores a no repetir\n- La sede Playa Mar está cerrada por afectación sísmica.\n- Para reclamos da atencion@x.com.\n- No prometas descuentos.",
-      operator_notes: "- Falta en la KB el estado actual de la sede Playa Mar.",
-    },
-    900,
-  );
-  assert(!r.digest.includes("sísmica"), r.digest);
-  assert(!r.digest.includes("@"), r.digest);
-  // el agente no recibe el marcador literal (lo copiaba al cliente): frase natural
-  assert(!r.digest.includes(FACT_PLACEHOLDER), r.digest);
-  assertStringIncludes(r.digest, `da ${AGENT_FACT_STANDALONE}.`);
-  assertStringIncludes(r.digest, "No prometas descuentos.");
+Deno.test("finalizeDigest: la salida NO pasa por el corte de datos (ya se cortó en la entrada) y las notas quedan aparte", () => {
+  const rules = "## Errores a no repetir\n- No digas que abre el domingo; si preguntan, aclara que está cerrado y cuándo abre.\n- No prometas descuentos.";
+  const r = finalizeDigest({ agent_rules: rules, operator_notes: "- Falta en la KB el estado actual de la sede Playa Mar." }, 900);
+  // KIA (producción): el corte sobre la salida dejaba «El horario es único, el de tu prompt;»
+  assertEquals(r.digest, rules);
+  assertEquals(r.outputRules, 2);
   assert(!r.digest.includes("Falta en la KB"), "las notas del operador no van al agente");
   assertEquals(r.operatorNotes, "- Falta en la KB el estado actual de la sede Playa Mar.");
+});
+
+Deno.test("finalizeDigest: Veterinaria — un marcador copiado por el modelo no deja una cláusula mutilada", () => {
+  const r = finalizeDigest({
+    agent_rules: `## Errores a no repetir\n- Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead y ofrece la cita más próxima.\n- Pide el nombre de la mascota.`,
+    operator_notes: "",
+  }, 900);
+  assertEquals(r.digest, "## Errores a no repetir\n- Llama ahora al lead y ofrece la cita más próxima.\n- Pide el nombre de la mascota.");
+  assert(!r.digest.includes(AGENT_FACT_STANDALONE), r.digest);
+  assertEquals(detectInternalLeak(r.digest), null, r.digest);
+});
+
+Deno.test("finalizeArchive: tampoco corta datos en la salida; solo reescribe un marcador copiado", () => {
+  const f = finalizeArchive(`## Errores a no repetir\n- Usa solo el horario de tu system prompt.\n- Remite a ${FACT_PLACEHOLDER} para reclamos.`, 900);
+  assertEquals(f.text, `## Errores a no repetir\n- Usa solo el horario de tu system prompt.\n- Remite a ${AGENT_FACT_PHRASE} para reclamos.`);
+});
+
+// ─── Los datos se cortan en la ENTRADA de la consolidación ──────────────────
+
+Deno.test("consolidationInput: los datos del negocio de cada dream y del resumen archivado llegan al modelo como marcador", () => {
+  const dreams = [
+    d("/dreams/kia.md", "No digas que abre el domingo; el concesionario está cerrado los domingos por remodelación."),
+    d("/dreams/vet.md", "Atiende emergencias 24/7; llama ahora al lead."),
+    d("/dreams/sc.md", "La sede Playa Mar está cerrada por afectación sísmica. Para reclamos da atencion@supercines.com. Cashea desde $25. El horario es de 9 a 6 pm."),
+  ];
+  const archived = "## Errores a no repetir\n- Atiende emergencias el dato oficial; llama ahora.\n- Responde en 2-3 oraciones.";
+  const inp = consolidationInput({ archived, dreams });
+  assertEquals(inp.dreams[0].content, `No digas que abre el domingo; ${FACT_PLACEHOLDER}.`);
+  assertEquals(inp.dreams[1].content, `Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead.`);
+  for (const bad of ["Playa Mar está cerrada", "sísmica", "@", "$25", "9 a 6"]) assert(!inp.dreams[2].content.includes(bad), bad);
+  assertStringIncludes(inp.dreams[2].content, FACT_PLACEHOLDER);
+  // el «el dato oficial» que dejó la versión anterior en el resumen vuelve a ser el marcador
+  assertEquals(inp.archived, `## Errores a no repetir\n- Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora.\n- Responde en 2-3 oraciones.`);
+  // los mismos números de reglas: ninguna viñeta desaparece en la entrada
+  assertEquals(inputRuleCount({ archived, dreams }), 5);
+
+  const p = buildConsolidationPrompt({ ...base, purpose: "digest", archived, dreams });
+  assertStringIncludes(p, `| Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead.`);
+  assert(!p.includes("atencion@supercines.com"), "el modelo ya no ve el dato");
+  assert(!p.includes("24/7"), "el modelo ya no ve el dato");
+});
+
+Deno.test("consolidationInput: el frontmatter del dream no se mutila (fecha, metadatos)", () => {
+  const content = "---\ncategory: anti_pattern\nseverity: error\nperiod: daily\ndate: 2026-10-19\ntitle: \"Correo atencion@x.com\"\nleads: Lead#1=0a1b2c3d-1234-5678-9abc-def012345678\n---\n\n# Correo\n\nPara reclamos da atencion@x.com.\n";
+  const out = consolidationInput({ archived: "", dreams: [d("/dreams/a.md", content)] }).dreams[0].content;
+  assertStringIncludes(out, "date: 2026-10-19");
+  assertStringIncludes(out, "severity: error");
+  assert(!out.includes("atencion@x.com"), out);
+  assert(!out.includes("Lead#1="), "lo que no le sirve al consolidador no viaja");
+});
+
+Deno.test("el prompt le dice al modelo qué hacer con el marcador: conducta hacia la fuente oficial, sin copiarlo ni inventar", () => {
+  for (const purpose of ["digest", "archive"] as const) {
+    const p = buildConsolidationPrompt({ ...base, purpose, dreams: [d("/dreams/a.md", "Regla A")] });
+    assertStringIncludes(p, FACT_PLACEHOLDER);
+    assertStringIncludes(p, "NUNCA copies el marcador");
+    assertStringIncludes(p, "NUNCA inventes el valor");
+  }
 });
 
 Deno.test("finalizeDigest: aplica el tope duro a las dos partes y tolera campos ausentes", () => {
@@ -434,20 +485,30 @@ Deno.test("finalizeDigest: un agent_rules en UN renglón cuenta sus viñetas y n
 });
 
 Deno.test("consolidateWithLossCheck: una salida SIN viñetas no se persiste (lanza) aunque nunca se congele por pérdida", async () => {
+  let calls = 0;
   await assertRejects(
-    () => consolidateWithLossCheck(24, 900, async () => ({ value: "texto suelto", outputRules: 0 })),
+    () => consolidateWithLossCheck(24, 900, async () => (calls++, { value: "texto suelto", outputRules: 0 })),
     ConsolidationMalformedError,
   );
+  assertEquals(calls, 2, "se reintenta una vez antes de rendirse");
+  // si el reintento sale bien, se usa
+  let n = 0;
+  const ok = await consolidateWithLossCheck(5, 900, async () => (n++ === 0 ? { value: "x", outputRules: 0 } : { value: "y", outputRules: 5 }));
+  assertEquals(ok, { value: "y", loss: null });
+  // con pocas reglas de entrada no se juzga
+  assertEquals((await consolidateWithLossCheck(3, 900, async () => ({ value: "z", outputRules: 0 }))).value, "z");
 });
 
 Deno.test("rebuildDigestCore: salida sin viñetas → no persiste el digest, alerta consolidation_malformed y lanza", async () => {
   const dreams = Array.from({ length: 10 }, (_, i) => dream(i));
   const alerts: unknown[] = [];
+  const saved: string[] = [];
   const bad = async () => ({ value: { text: "texto suelto", operatorNotes: "" } as ConsolidatedText, outputRules: 0 });
   await assertRejects(
-    () => rebuildDigestCore({ archived: "", dreams, toArchive: [], maxWords: 900 }, deps({ consolidate: bad }, alerts)),
+    () => rebuildDigestCore({ archived: "", dreams, toArchive: dreams.slice(0, 5), maxWords: 900 }, deps({ consolidate: bad }, alerts, saved)),
     ConsolidationMalformedError,
   );
+  assertEquals(saved.length, 0, "el resumen archivado vivo no se pisa");
   assertEquals(alerts.length, 1);
   assertEquals((alerts[0] as ReturnType<typeof consolidationMalformedAlert>).metadata.reason, "consolidation_malformed");
 });

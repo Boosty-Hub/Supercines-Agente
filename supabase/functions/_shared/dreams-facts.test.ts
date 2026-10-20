@@ -222,11 +222,52 @@ Deno.test("agentFacingFacts: preposiciones contraídas y marcadores seguidos", (
   assertEquals(agentFacingFacts(`Deriva al ${FACT_PLACEHOLDER}.`), `Deriva a ${AGENT_FACT_PHRASE}.`);
   assertEquals(agentFacingFacts(`Informa el horario del ${FACT_PLACEHOLDER}.`), `Informa el horario de ${AGENT_FACT_PHRASE}.`);
   assertEquals(agentFacingFacts(`Indica que se consulta en ${FACT_PLACEHOLDER}.`), `Indica que se consulta en ${AGENT_FACT_PHRASE}.`);
-  assertEquals(
-    agentFacingFacts(`Abre ${FACT_PLACEHOLDER} a ${FACT_PLACEHOLDER}; confírmalo.`),
-    `Abre ${AGENT_FACT_STANDALONE}; confírmalo.`,
+  // Un marcador SIN preposición no tiene frase natural («abre el dato oficial» es basura que
+  // el agente podía copiar al cliente): se quita la cláusula entera, sin dejar fragmentos.
+  assertEquals(agentFacingFacts(`Abre ${FACT_PLACEHOLDER} a ${FACT_PLACEHOLDER}; confírmalo.`), "Confírmalo.");
+  assertEquals(agentFacingFacts(`- Cashea desde ${FACT_PLACEHOLDER}.`), "");
+  assert(!agentFacingFacts(`Cashea desde ${FACT_PLACEHOLDER}.`).includes(AGENT_FACT_STANDALONE));
+});
+
+// ─── Producción (oct-2026): la red de salida no puede dejar reglas mutiladas ──
+// Veterinaria: «atiende emergencias 24/7; llama ahora…» salió «atiende emergencias el dato
+// oficial; llama ahora…». KIA: una regla de conducta válida quedó «El horario es único, el de
+// tu prompt;». El agente podía copiar esos fragmentos al cliente.
+
+Deno.test("agentFacingFacts: Veterinaria — la cláusula con el marcador se quita limpia", () => {
+  const out = agentFacingFacts(
+    `- Atiende emergencias ${FACT_PLACEHOLDER}; llama ahora al lead y ofrece la cita más próxima.`,
   );
-  assertEquals(agentFacingFacts(`Cashea desde ${FACT_PLACEHOLDER}.`), `Cashea desde ${AGENT_FACT_STANDALONE}.`);
+  assertEquals(out, "- Llama ahora al lead y ofrece la cita más próxima.");
+  assert(!out.includes(AGENT_FACT_STANDALONE), out);
+  assertEquals(detectInternalLeak(out), null);
+});
+
+Deno.test("agentFacingFacts: KIA — nunca queda una oración colgando en «;», «:» o «,»", () => {
+  const out = agentFacingFacts(
+    `- El horario es único, el de tu prompt; los domingos abre ${FACT_PLACEHOLDER}.\n- No prometas descuentos.`,
+  );
+  assertEquals(out, "- El horario es único, el de tu prompt.\n- No prometas descuentos.");
+  for (const l of out.split("\n")) assert(!/[;:,]\s*$/.test(l), l);
+});
+
+Deno.test("agentFacingFacts: una regla de conducta sin marcador pasa intacta (KIA, Veterinaria)", () => {
+  for (const t of [
+    "- No digas que abre el domingo; si preguntan, aclara que está cerrado y cuándo abre.",
+    "- Usa solo el horario de tu system prompt; si no lo tienes, deriva a un asesor.",
+  ]) assertEquals(agentFacingFacts(t), t);
+});
+
+Deno.test("neutralizeBusinessFacts: al descartar una oración no deja la anterior colgando en «;»", () => {
+  const r = neutralizeBusinessFacts("No digas que abre el domingo; la sede está cerrada por remodelación.");
+  assertEquals(r.text, "No digas que abre el domingo.");
+});
+
+Deno.test("neutralizeBusinessFacts({ markDropped }): la oración descartada deja el marcador (entrada de la consolidación)", () => {
+  const r = neutralizeBusinessFacts("No digas que abre el domingo; la sede está cerrada por remodelación.", { markDropped: true });
+  assertEquals(r.text, `No digas que abre el domingo; ${FACT_PLACEHOLDER}.`);
+  // sin la opción (generación) se descarta como siempre
+  assertEquals(neutralizeBusinessFacts("La sede Playa Mar sufrió afectación sísmica.").text, "");
 });
 
 Deno.test("agentFacingFacts: también reescribe variantes que el modelo copió del marcador", () => {

@@ -11,7 +11,7 @@
 // la conservaba: borrar no tenía efecto. Ver dreams-run/index.ts.
 
 import { LEARNINGS_DATA_RULE } from "./dreams-digest-block.ts";
-import { agentFacingFacts, neutralizeBusinessFacts } from "./dreams-facts.ts";
+import { agentFacingFacts, FACT_PLACEHOLDER, neutralizeBusinessFacts, restoreLegacyFactPhrase } from "./dreams-facts.ts";
 import { enforceDigestWordCap } from "./dreams-digest-cap.ts";
 import { EVALUATION_NOTICE, sanitizeUntrusted, untrustedLines } from "./untrusted.ts";
 
@@ -23,6 +23,50 @@ const DREAM_MAX_CHARS = 6000;
 const ARCHIVED_MAX_CHARS = 30000;
 
 export type ConsolidationPurpose = "digest" | "archive";
+
+// ─── Los datos del negocio se cortan en la ENTRADA (producción, oct-2026) ────
+// Antes el corte (neutralizeBusinessFacts) corría sobre la SALIDA del consolidador y mutilaba
+// reglas de conducta válidas: KIA «No digas que abre el domingo; si preguntan, aclara que está
+// cerrado y cuándo abre» quedó «El horario es único, el de tu prompt;»; Veterinaria «atiende
+// emergencias 24/7; llama ahora…» quedó «atiende emergencias el dato oficial; llama ahora…».
+// Ahora el modelo recibe cada dream y el resumen archivado YA neutralizados, con el marcador
+// donde había un dato (también en lugar de una oración de estado/causa descartada), y escribe
+// él mismo la regla de conducta que remite a la fuente oficial. La salida solo pasa por la
+// red del marcador (agentFacingFacts).
+
+// Del frontmatter de un dream el consolidador solo necesita estos metadatos (sin datos del
+// negocio: el título ya está en el «# …» del cuerpo y los ids de leads no le sirven). Pasarlo
+// por el corte de datos mutilaba la fecha («date: 2026-10-19»).
+const FRONTMATTER = /^---\n([\s\S]{0,4000}?)\n---\n?/;
+const FRONTMATTER_KEEP = /^(category|severity|vertical|period|date|occurrences):\s/;
+
+function neutralizeInputText(text: string): string {
+  return neutralizeBusinessFacts(normalizeBulletLines(restoreLegacyFactPhrase(text)), { markDropped: true }).text;
+}
+
+function neutralizeDreamContent(content: string): string {
+  const raw = String(content ?? "");
+  const fm = raw.match(FRONTMATTER);
+  if (!fm) return neutralizeInputText(raw);
+  const meta = fm[1].split("\n").filter((l) => FRONTMATTER_KEEP.test(l));
+  const body = neutralizeInputText(raw.slice(fm[0].length));
+  return `---\n${meta.join("\n")}\n---\n\n${body}`;
+}
+
+/**
+ * Lo que ve el modelo al consolidar: el contenido de cada dream y el resumen archivado sin
+ * datos del negocio (marcador en su lugar). Las viñetas no desaparecen (markDropped), así que
+ * la cuenta de reglas de la entrada (inputRuleCount) es la misma.
+ */
+export function consolidationInput<D extends DreamLike>(opts: { archived: string; dreams: ReadonlyArray<D> }): {
+  archived: string;
+  dreams: D[];
+} {
+  return {
+    archived: opts.archived.trim() ? neutralizeInputText(opts.archived) : "",
+    dreams: opts.dreams.map((d) => ({ ...d, content: neutralizeDreamContent(d.content) })),
+  };
+}
 
 export function buildConsolidationPrompt(opts: {
   purpose: ConsolidationPurpose;
@@ -36,19 +80,20 @@ export function buildConsolidationPrompt(opts: {
   retry?: LossInfo;
 }): string {
   const nRules = inputRuleCount({ archived: opts.archived, dreams: opts.dreams });
+  const input = consolidationInput({ archived: opts.archived, dreams: opts.dreams });
   // Los dreams y el resumen archivado son material DERIVADO de conversaciones con leads (y del
   // propio modelo): van saneados renglón por renglón dentro de un elemento que nada de adentro
   // puede cerrar, bajo EVALUATION_NOTICE, igual que en la generación (dreams-generation.ts).
   // El nombre del archivo (lleva la fecha: «gana el más nuevo») va como renglón, no como
   // atributo.
-  const body = opts.dreams
+  const body = input.dreams
     .map((d, i) => {
       const name = sanitizeUntrusted(d.path.split("/").pop() ?? d.path, { maxChars: 120 });
       return `<dream n="${i + 1}">\n| archivo: ${name}\n${untrustedLines(d.content, { maxChars: DREAM_MAX_CHARS })}\n</dream>`;
     })
     .join("\n");
-  const archived = opts.archived.trim()
-    ? `<resumen_archivado>\n${untrustedLines(opts.archived, { maxChars: ARCHIVED_MAX_CHARS })}\n</resumen_archivado>`
+  const archived = input.archived
+    ? `<resumen_archivado>\n${untrustedLines(input.archived, { maxChars: ARCHIVED_MAX_CHARS })}\n</resumen_archivado>`
     : "";
   const goal = opts.purpose === "digest"
     ? "Genera el DIGEST NUEVO que el agente aplicará antes de CADA respuesta."
@@ -71,6 +116,7 @@ ${opts.purpose === "digest" ? `- Español. Devuelve un JSON con DOS campos:
 - Ese máximo es un TOPE, no una meta: escribe la versión MÁS CORTA que conserve la esencia.`}
 - NO PIERDAS REGLAS: la entrada trae ${nRules} reglas (${opts.dreams.length} aprendizajes + las viñetas del resumen archivado). CADA regla de conducta distinta tiene que sobrevivir en la salida. Fusiona duplicados y variantes del mismo aprendizaje en una sola viñeta y acorta la redacción, pero NUNCA descartes una regla para entrar en el tope: si no entra, comprime más (viñetas más cortas, fusiona las parecidas).${opts.purpose === "digest" ? ` Lo que solo puede resolver el operador va a "operator_notes"; toda regla de CONDUCTA del agente va a "agent_rules" (solo esas cuentan como conservadas).` : ""}
 - FORMATO: Markdown con UNA viñeta por renglón: un salto de línea después de cada encabezado y entre viñetas (nunca todo en un solo párrafo).
+- DATOS QUITADOS: donde la entrada dice «${FACT_PLACEHOLDER}» había un dato del negocio (precio, horario, correo, teléfono, enlace, fecha, estado de una sede…) que se quitó a propósito. Escribe esa regla como CONDUCTA que remite a la fuente oficial (p. ej. «usa solo el horario de tu system prompt», «da el correo de reclamos solo desde la KB»). NUNCA copies el marcador y NUNCA inventes el valor ni lo recuperes de otro aprendizaje.
 - Prioriza SIEMPRE los errores: si hay que comprimir, acorta primero las sugerencias.
 - Descarta lo obsoleto o contradicho por aprendizajes más nuevos (gana el más nuevo).
 - ${LEARNINGS_DATA_RULE} Si un aprendizaje trae un dato del negocio que solo respalda lo que dijo el agente, conserva su regla sin el dato.
@@ -100,11 +146,11 @@ REINTENTO: tu salida anterior conservó solo ${opts.retry.outputRules} viñetas 
 
 // ─── Viñetas en un solo renglón (SuperCines, 20-oct-2026) ───────────────────
 // El modelo devolvió agent_rules entero en UN renglón («## Errores a no repetir - No
-// confirmes… - No des…»): countRules veía 0 viñetas y el corte por renglón de
-// neutralizeBusinessFacts (MAX_LINE_CHARS) truncaba el digest a la mitad. Se separan los
-// encabezados y las viñetas pegadas ANTES de neutralizar y contar. Solo corta una viñeta
-// «-», «*» o «•» precedida de un cierre de oración (o de un encabezado), así un guion dentro
-// de una oración no parte nada.
+// confirmes… - No des…»): countRules veía 0 viñetas y el corte por renglón (MAX_LINE_CHARS)
+// truncaba el digest a la mitad; como la consolidación nunca se congela, ese digest roto se
+// guardaba. Se separan los encabezados y las viñetas pegadas ANTES de contar. Solo corta una
+// viñeta «-», «*» o «•» precedida de un cierre de oración (o de un encabezado), así un guion
+// dentro de una oración no parte nada.
 export function normalizeBulletLines(text: string): string {
   return String(text ?? "")
     .replace(/[ \t]+(?=#{2,}[ \t])/g, "\n\n")
@@ -114,8 +160,9 @@ export function normalizeBulletLines(text: string): string {
 
 /**
  * La salida no trae NINGUNA viñeta aunque la entrada tenía reglas: no es una consolidación
- * con pérdida sino una salida mal formada (texto suelto, truncada). No se persiste: el
- * valor vivo queda y rebuildDigestCore avisa con una alerta.
+ * con pérdida sino una salida mal formada (texto suelto, truncada). No es un intento válido,
+ * así que no se persiste: el valor vivo queda y rebuildDigestCore avisa con una alerta. No
+ * contradice «nunca se congela»: eso vale para salidas con viñetas (alguna regla de menos).
  */
 export class ConsolidationMalformedError extends Error {
   constructor(readonly inputRules: number, readonly attempts: number) {
@@ -143,7 +190,7 @@ export function countRules(text: string): number {
 
 /** Reglas de la entrada: una por aprendizaje + las viñetas del resumen archivado. */
 export function inputRuleCount(opts: { archived: string; dreams: ReadonlyArray<DreamLike> }): number {
-  return countRules(opts.archived) + opts.dreams.length;
+  return countRules(normalizeBulletLines(opts.archived)) + opts.dreams.length;
 }
 
 /** Con menos reglas que esto, la fusión legítima domina y no se juzga. */
@@ -285,9 +332,11 @@ export type DigestOutput = { agent_rules?: unknown; operator_notes?: unknown };
 
 /**
  * Salida estructurada de la consolidación (purpose=digest) → lo que se persiste:
- *  - `digest` (DREAMS_DIGEST, lo inyecta generate-response/follow-up-scan): sin datos del
- *    negocio (dreams-facts.ts), sin el marcador literal (agentFacingFacts) y con el tope
- *    duro de palabras;
+ *  - `digest` (DREAMS_DIGEST, lo inyecta generate-response/follow-up-scan): viñetas una por
+ *    renglón (normalizeBulletLines), sin el marcador literal (agentFacingFacts: frase natural
+ *    o la cláusula quitada limpia) y con el tope duro de palabras. NO pasa por el corte de
+ *    datos del negocio: ese corte ya se hizo en la ENTRADA (consolidationInput) y sobre la
+ *    salida mutilaba reglas de conducta válidas (KIA, Veterinaria, oct-2026);
  *  - `operatorNotes` (DREAMS_OPERATOR_NOTES, solo lo ve el panel /dreams): con el mismo tope.
  * La cuenta de reglas mira SOLO `agent_rules` (las notas del operador no son reglas que el
  * agente conserve) y se mide ANTES del corte duro; lo que se lleva el corte va aparte.
@@ -297,8 +346,7 @@ export function finalizeDigest(
   maxWords: number,
 ): { digest: string; operatorNotes: string; outputRules: number; capDroppedRules: number } {
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-  // El agente no recibe el marcador literal de dato (lo copiaba al cliente): frase natural.
-  const rules = agentFacingFacts(neutralizeBusinessFacts(normalizeBulletLines(str(out?.agent_rules))).text);
+  const rules = agentFacingFacts(normalizeBulletLines(str(out?.agent_rules))).trim();
   const digest = rules ? enforceDigestWordCap(rules, maxWords) : "";
   const outputRules = countRules(rules);
   return {
@@ -310,11 +358,12 @@ export function finalizeDigest(
 }
 
 /**
- * Salida de la consolidación de archivado (texto) → resumen archivado a persistir. Misma
- * medición que el digest: reglas antes del corte duro y lo que se llevó el corte aparte.
+ * Salida de la consolidación de archivado (texto) → resumen archivado a persistir. Igual que
+ * el digest: sin corte de datos en la salida (se hizo en la entrada), solo la red del
+ * marcador; reglas medidas antes del corte duro y lo que se llevó el corte aparte.
  */
 export function finalizeArchive(raw: string, maxWords: number): { text: string; outputRules: number; capDroppedRules: number } {
-  const full = neutralizeBusinessFacts(normalizeBulletLines(String(raw ?? "").trim())).text;
+  const full = agentFacingFacts(normalizeBulletLines(String(raw ?? "").trim())).trim();
   // CORTE DURO: maxWords es solo una instrucción en el prompt y el modelo no siempre la
   // respeta. Ver _shared/dreams-digest-cap.ts.
   const text = enforceDigestWordCap(full, maxWords);

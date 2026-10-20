@@ -146,12 +146,30 @@ const HEADING = /^\s*#{1,6}\s/;
 
 export type NeutralizeResult = { text: string; redacted: number; dropped: number };
 
+export type NeutralizeOptions = {
+  /**
+   * La oración descartada deja FACT_PLACEHOLDER en su lugar en vez de desaparecer. Lo usa la
+   * ENTRADA de la consolidación (dreams-consolidation.ts → consolidationInput): el modelo ve
+   * que ahí había un dato y escribe él mismo la regla de conducta que remite a la fuente
+   * oficial. La generación (neutralizeLearning) no lo usa: descarta como siempre.
+   */
+  markDropped?: boolean;
+};
+
+// Una oración que queda AL FINAL tras descartar las siguientes no puede quedar colgando en
+// «;», «:» o «,» («No digas que abre el domingo;»): se cierra con punto.
+const DANGLING_END = /\s*[;:,]\s*$/;
+
+function closeDangling(sentence: string): string {
+  return DANGLING_END.test(sentence) ? sentence.replace(DANGLING_END, ".") : sentence;
+}
+
 /**
  * Neutraliza los datos del negocio de un texto (aprendizaje o digest): reemplaza los datos
  * con forma reconocible y descarta las oraciones que afirman un estado o su causa. Conserva
  * la estructura por líneas (encabezados, viñetas); una viñeta que queda vacía se quita.
  */
-export function neutralizeBusinessFacts(input: string): NeutralizeResult {
+export function neutralizeBusinessFacts(input: string, opts: NeutralizeOptions = {}): NeutralizeResult {
   let redacted = 0;
   let dropped = 0;
   const out: string[] = [];
@@ -169,14 +187,22 @@ export function neutralizeBusinessFacts(input: string): NeutralizeResult {
     const prefix = r.text.match(BULLET)?.[1] ?? "";
     const body = r.text.slice(prefix.length);
     const sentences = body.split(/(?<=[.!?;])\s+/);
-    const kept = sentences.filter((s) => {
-      if (assertsStateOrCause(s)) {
-        dropped++;
-        return false;
+    const kept: string[] = [];
+    let lineDropped = false;
+    for (const s of sentences) {
+      if (!assertsStateOrCause(s)) {
+        kept.push(s);
+        continue;
       }
-      return true;
-    });
+      dropped++;
+      lineDropped = true;
+      // Marcador en lugar de la oración (con su cierre), uno solo por tramo descartado.
+      if (opts.markDropped && !kept.at(-1)?.startsWith(FACT_PLACEHOLDER)) {
+        kept.push(FACT_PLACEHOLDER + (s.trimEnd().match(/[.!?;]$/)?.[0] ?? "."));
+      }
+    }
     if (kept.length === 0) continue;
+    if (lineDropped) kept[kept.length - 1] = closeDangling(kept[kept.length - 1]);
     out.push(prefix + kept.join(" "));
   }
   // Sin líneas en blanco sobrantes en los bordes.
@@ -228,7 +254,11 @@ export const FACT_MARKER_RE = /\[\s*datos?\s*(?::|\](?!\s*[(:]))/i;
 
 /** Tras una preposición («remite a …», «consulta en …»): el lugar al que se deriva. */
 export const AGENT_FACT_PHRASE = "los canales oficiales";
-/** En cualquier otra posición («abre …», «desde …»): el dato en sí. */
+/**
+ * Frase LEGADA: la versión anterior la ponía en lugar de un marcador sin preposición y dejaba
+ * reglas mutiladas («atiende emergencias el dato oficial»). Ya no se escribe; solo se
+ * reconoce en la entrada de la consolidación (restoreLegacyFactPhrase).
+ */
 export const AGENT_FACT_STANDALONE = "el dato oficial";
 
 // Marcador con contenido (el modelo copia variantes al consolidar, a veces largas: «[dato:
@@ -240,24 +270,71 @@ const MARKER_MAX_CONTENT = 1000;
 const MARKER = String.raw`\[\s*datos?\s*(?::[^\]\n]{0,${MARKER_MAX_CONTENT}}\]|\](?!\s*[(:]))`;
 const MARKER_RUN = new RegExp(`${MARKER}(?:\\s{0,3}(?:[–—-]|a|y|o|hasta|,)\\s{0,3}${MARKER})+`, "gi");
 const PREP_MARKER = new RegExp(`\\b(a|al|en|de|del|por|con|hacia)\\s{1,3}${MARKER}`, "gi");
-const ANY_MARKER = new RegExp(MARKER, "gi");
+const HAS_MARKER = new RegExp(MARKER, "i");
+const HEADING_PREFIX = /^\s*#{1,6}\s+/;
 const PREP_FOLD: Record<string, string> = { al: "a", del: "de" };
 
+/** Primera letra en mayúscula (la cláusula que queda pasó a ser el inicio de la oración). */
+function capitalizeFirst(s: string): string {
+  return s.replace(/^(\s*)(\p{Ll})/u, (_m, sp: string, c: string) => sp + c.toUpperCase());
+}
+
 /**
- * Reescribe los marcadores de dato de un texto que va al AGENTE (el digest) en una frase
- * natural: «remite a [dato…]» → «remite a los canales oficiales»; el resto → «el dato
- * oficial». Si el agente la repite al cliente, no expone nada interno. Idempotente; sin
- * marcadores devuelve el mismo texto.
+ * Una línea que va al agente con marcadores: los que siguen a una preposición tienen frase
+ * natural («remite a los canales oficiales»); cualquier otro («atiende emergencias [dato…]»,
+ * «Cashea desde [dato…]») NO: «el dato oficial» en esa posición era una regla mutilada que el
+ * agente podía copiar al cliente (Veterinaria, KIA, oct-2026). Esa oración o cláusula (hasta
+ * «.», «!», «?» o «;») se quita entera, y lo que queda nunca termina colgando en «;», «:» o
+ * «,». Una línea que se queda sin nada desaparece.
  */
-export function agentFacingFacts(text: string): string {
-  const s = String(text ?? "");
-  if (!FACT_MARKER_RE.test(s)) return s;
-  return s
+function agentFacingLine(line: string): string | null {
+  const s = line
     .replace(MARKER_RUN, FACT_PLACEHOLDER)
     .replace(PREP_MARKER, (_m, prep: string) => {
       const p = PREP_FOLD[prep.toLowerCase()] ?? prep;
       return `${prep[0] === prep[0].toUpperCase() ? p[0].toUpperCase() + p.slice(1) : p} ${AGENT_FACT_PHRASE}`;
-    })
-    .replace(ANY_MARKER, AGENT_FACT_STANDALONE)
-    .replace(/tomarlo de la fuente oficial/gi, "tomarlo de las fuentes oficiales");
+    });
+  if (!HAS_MARKER.test(s)) return s;
+  const prefix = s.match(HEADING_PREFIX)?.[0] ?? s.match(BULLET)?.[1] ?? "";
+  const clauses = s.slice(prefix.length).split(/(?<=[.!?;])\s+/);
+  const kept: string[] = [];
+  let firstDropped = false;
+  clauses.forEach((c, i) => {
+    if (HAS_MARKER.test(c)) {
+      if (i === 0) firstDropped = true;
+    } else if (c.trim()) kept.push(c);
+  });
+  if (kept.length === 0) return null;
+  kept[kept.length - 1] = closeDangling(kept[kept.length - 1]);
+  const body = kept.join(" ");
+  return prefix + (firstDropped ? capitalizeFirst(body) : body);
+}
+
+/**
+ * Red de seguridad del texto que va al AGENTE (digest y resumen archivado; los datos ya se
+ * cortaron en la ENTRADA de la consolidación, consolidationInput): si el modelo copió el
+ * marcador, «remite a [dato…]» → «remite a los canales oficiales» y la cláusula con un
+ * marcador sin preposición se quita limpia (agentFacingLine). Si el agente repite el texto
+ * al cliente, no expone nada interno ni frases mutiladas. Idempotente; sin marcadores
+ * devuelve el mismo texto.
+ */
+export function agentFacingFacts(text: string): string {
+  const s = String(text ?? "");
+  if (!FACT_MARKER_RE.test(s)) return s;
+  const out: string[] = [];
+  for (const line of s.split("\n")) {
+    const l = agentFacingLine(capLine(line));
+    if (l !== null) out.push(l);
+  }
+  return out.join("\n").replace(/tomarlo de la fuente oficial/gi, "tomarlo de las fuentes oficiales");
+}
+
+/**
+ * «el dato oficial» (AGENT_FACT_STANDALONE) solo lo escribía la versión anterior de
+ * agentFacingFacts en lugar del marcador («atiende emergencias el dato oficial»): en la
+ * ENTRADA de la consolidación vuelve a ser el marcador, para que el modelo reescriba la regla
+ * en vez de copiar el fragmento.
+ */
+export function restoreLegacyFactPhrase(text: string): string {
+  return String(text ?? "").replace(/\bel dato oficial\b/gi, FACT_PLACEHOLDER);
 }

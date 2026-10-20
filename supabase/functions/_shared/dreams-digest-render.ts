@@ -138,7 +138,15 @@ const BLOCK_HEADER = /\[(?=[^\]\n]{0,64}[A-ZÁÉÍÓÚÑÜ])[^\]\[\na-záéíó�
  * y lo que quede de «<»/«>» queda escapado. En un renglón.
  */
 export function protocolSafeRule(rule: string): string {
-  return oneLine(sanitizeUntrusted(rule).replace(ESCAPED_TAG, " ").replace(BLOCK_HEADER, " "))
+  // Hasta que no cambie nada (tope de pasadas): una sola pasada dejaba armar un encabezado con
+  // los restos de otro («[CON[X]TEXTO]» → «[CON TEXTO]»).
+  let s = sanitizeUntrusted(rule);
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(ESCAPED_TAG, " ").replace(BLOCK_HEADER, " ");
+    if (next === s) break;
+    s = next;
+  }
+  return oneLine(s)
     .replace(/\s+([.,;:!?])/g, "$1");
 }
 

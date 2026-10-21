@@ -6,8 +6,6 @@
 //   import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
 
 import { normalizeLoose } from "./text.ts";
-import { stripLoneSurrogates } from "./text-safe.ts";
-import { calcularEtiquetasNuevas, type EtiquetaExistente } from "./crm-tags.ts";
 
 /**
  * Actualiza un custom field de un lead en Kommo.
@@ -32,12 +30,11 @@ const BMP_EQUIVALENTE: Record<string, string> = {
 };
 
 /** Deja el texto guardable en un campo de Kommo (solo BMP). */
-export function sanitizeKommoFieldValue(input: string): string {
+export function sanitizeForKommoField(input: string): string {
   const out: string[] = [];
-  // Surrogates sueltos (de un truncado previo) romperían el JSON/utf8: fuera primero.
-  for (const ch of stripLoneSurrogates(input)) {
+  for (const ch of input) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (cp === 0xfe0f || cp === 0x200d || cp === 0x20e3) continue; // selector de variación / ZWJ / keycap huérfanos
+    if (cp === 0xfe0f || cp === 0x200d) continue; // selector de variación / ZWJ huérfanos
     if (cp > 0xffff) {
       const alt = BMP_EQUIVALENTE[ch];
       if (alt && (alt.codePointAt(0) ?? 0) <= 0xffff) out.push(alt);
@@ -55,9 +52,6 @@ export function sanitizeKommoFieldValue(input: string): string {
     .trim();
 }
 
-/** Nombre histórico de SuperCines; mismo comportamiento. */
-export const sanitizeForKommoField = sanitizeKommoFieldValue;
-
 /**
  * Escribe un campo de TEXTO/TEXTAREA de un lead. Para campos con opciones
  * predefinidas (select/radiobutton) usá patchEntityFieldTyped: este helper
@@ -71,7 +65,7 @@ export async function patchLeadField(
   kommoToken: string
 ): Promise<void> {
   const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
-  const safe = sanitizeKommoFieldValue(value);
+  const safe = sanitizeForKommoField(value);
   const res = await fetch(url, {
     method: "PATCH",
     headers: {
@@ -122,112 +116,6 @@ export async function moveLeadStage(
 // Status IDs reservados/universales de Kommo: 142 = GANADO (won), 143 = PERDIDO
 // (lost). Existen en TODOS los pipelines. Un lead en cualquiera de estas etapas
 // es terminal y nunca debe recibir seguimiento.
-/**
- * Actualiza un custom field de un CONTACTO en Kommo (mismo shape que el lead,
- * pero el endpoint apunta a /contacts/). Throws si la respuesta no es OK.
- */
-export async function patchContactField(
-  kommoContactId: number,
-  fieldId: number,
-  value: string,
-  kommoDomain: string,
-  kommoToken: string
-): Promise<void> {
-  const url = `https://${kommoDomain}/api/v4/contacts/${kommoContactId}`;
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${kommoToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      custom_fields_values: [
-        {
-          field_id: fieldId,
-          values: [{ value: sanitizeKommoFieldValue(value) }],
-        },
-      ],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`patch contact: ${res.status} ${await res.text()}`);
-  }
-}
-
-/**
- * Agrega una nota interna (note_type "common", texto plano, NO visible para el
- * cliente) a un lead de Kommo. Usada por `agregar_nota` y por `transferir_asesor`
- * (ahí es la pieza que sobrevive aunque el movimiento de etapa falle — ver
- * `runCrmTool` en generate-response/index.ts). Sanitiza con
- * `sanitizeKommoFieldValue` por la misma razón que los custom fields: no hay
- * garantía de que el endpoint de notas escape mejor que la columna utf8mb3 que
- * causó la truncación silenciosa documentada arriba, y no cuesta nada ser
- * conservador acá. Throws si !OK.
- */
-export async function addLeadNote(
-  kommoLeadId: number,
-  text: string,
-  kommoDomain: string,
-  kommoToken: string
-): Promise<void> {
-  const url = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}/notes`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${kommoToken}`,
-      "Content-Type": "application/json",
-    },
-    // La API espera un ARREGLO de notas aunque sea una sola.
-    body: JSON.stringify([{ note_type: "common", params: { text: sanitizeKommoFieldValue(text) } }]),
-  });
-  if (!res.ok) {
-    throw new Error(`add lead note: ${res.status} ${await res.text()}`);
-  }
-}
-
-/**
- * Agrega etiquetas (tags) a un lead de forma ADITIVA: lee las existentes,
- * calcula con `calcularEtiquetasNuevas` (_shared/crm-tags.ts, puro y probado)
- * cuáles faltan, y hace UN solo PATCH con la unión — Kommo reemplaza el set
- * COMPLETO de `_embedded.tags` en cada PATCH, así que mandar solo las nuevas
- * borraría las que el lead ya tenía. No-op (ni siquiera pega el PATCH) si
- * todas las candidatas ya existían. Throws si !OK.
- */
-export async function addLeadTags(
-  kommoLeadId: number,
-  candidatas: string[],
-  kommoDomain: string,
-  kommoToken: string
-): Promise<{ added: string[] }> {
-  const base = `https://${kommoDomain}/api/v4/leads/${kommoLeadId}`;
-  const getRes = await fetch(base, {
-    headers: { Authorization: `Bearer ${kommoToken}` },
-  });
-  if (!getRes.ok) {
-    throw new Error(`add lead tags (get): ${getRes.status} ${await getRes.text()}`);
-  }
-  const lead = (await getRes.json()) as { _embedded?: { tags?: EtiquetaExistente[] } };
-  const existing = lead._embedded?.tags ?? [];
-  const nuevas = calcularEtiquetasNuevas(existing, candidatas);
-  if (nuevas.length === 0) return { added: [] };
-  const tags = [
-    ...existing.map((t) => ({ id: t.id })),
-    ...nuevas.map((name) => ({ name })),
-  ];
-  const patchRes = await fetch(base, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${kommoToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ _embedded: { tags } }),
-  });
-  if (!patchRes.ok) {
-    throw new Error(`add lead tags (patch): ${patchRes.status} ${await patchRes.text()}`);
-  }
-  return { added: nuevas };
-}
-
 export const KOMMO_WON_STATUS = 142;
 export const KOMMO_LOST_STATUS = 143;
 
@@ -255,10 +143,17 @@ export async function fetchLeadStage(
     responsible_user_id?: number;
   };
   const ruid = json.responsible_user_id;
+  // Kommo nunca usa 0 como un kommo_user_id real (son IDs grandes) — 0 es su
+  // forma de decir "sin responsable" en ciertos canales (visto en leads de
+  // Instagram DM). Tratarlo como un dueño real bloqueaba el ruteo para
+  // siempre: el gate de _shared/routing.ts solo libera el lead si
+  // responsibleUserId es null o está en la lista de cuentas genéricas, y 0
+  // nunca puede estar en esa lista.
+  const normalizedRuid = ruid == null || Number(ruid) === 0 ? null : Number(ruid);
   return {
     statusId: Number(json.status_id),
     pipelineId: Number(json.pipeline_id),
-    responsibleUserId: ruid == null ? null : Number(ruid),
+    responsibleUserId: normalizedRuid,
   };
 }
 
@@ -277,23 +172,6 @@ export async function fetchPipelineStages(
   kommoDomain: string,
   kommoToken: string
 ): Promise<KommoStageLite[]> {
-  return flattenPipelines(await fetchPipelinesFull(kommoDomain, kommoToken));
-}
-
-/** Pipelines con orden, tipo y color: el formato que espera sync_kommo_pipelines (0061). */
-export type KommoPipelineFull = {
-  id: number;
-  name: string;
-  sort: number;
-  is_main: boolean;
-  is_archive: boolean;
-  statuses: Array<{ id: number; name: string; sort: number; type: number; color: string | null }>;
-};
-
-export async function fetchPipelinesFull(
-  kommoDomain: string,
-  kommoToken: string
-): Promise<KommoPipelineFull[]> {
   const url = `https://${kommoDomain}/api/v4/leads/pipelines`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${kommoToken}` },
@@ -306,228 +184,17 @@ export async function fetchPipelinesFull(
       pipelines?: Array<{
         id: number;
         name: string;
-        sort?: number;
-        is_main?: boolean;
-        is_archive?: boolean;
-        _embedded?: {
-          statuses?: Array<{ id: number; name: string; sort?: number; type?: number; color?: string }>;
-        };
+        _embedded?: { statuses?: Array<{ id: number; name: string }> };
       }>;
     };
   };
-  return (json._embedded?.pipelines ?? []).map((p) => ({
-    id: p.id,
-    name: p.name,
-    sort: p.sort ?? 0,
-    is_main: p.is_main === true,
-    is_archive: p.is_archive === true,
-    statuses: (p._embedded?.statuses ?? []).map((s) => ({
-      id: s.id,
-      name: s.name,
-      sort: s.sort ?? 0,
-      type: s.type ?? 0,
-      color: s.color ?? null,
-    })),
-  }));
-}
-
-export function flattenPipelines(pipelines: KommoPipelineFull[]): KommoStageLite[] {
   const out: KommoStageLite[] = [];
-  for (const p of pipelines) {
-    for (const s of p.statuses) {
+  for (const p of json._embedded?.pipelines ?? []) {
+    for (const s of p._embedded?.statuses ?? []) {
       out.push({ id: s.id, name: s.name, pipelineId: p.id, pipelineName: p.name });
     }
   }
   return out;
-}
-
-/** Posición de un lead tal como la informa GET /api/v4/leads. */
-export type KommoLeadPosition = { id: number; status_id: number; pipeline_id: number };
-
-export class KommoHttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-    this.name = "KommoHttpError";
-  }
-}
-
-/**
- * Kommo respondió 200 con un cuerpo que no es la lista de leads esperada (no es JSON, o
- * falta `_embedded.leads`). NO es «vacío»: el vacío legítimo es 204 o `_embedded.leads: []`.
- * Tratarlo como vacío terminaba un recorrido antes de tiempo o hacía pasar leads vivos por
- * inexistentes.
- */
-export class KommoMalformedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "KommoMalformedError";
-  }
-}
-
-/** Tope de reintentos ante 429 y espera por defecto si Kommo no manda Retry-After. */
-const KOMMO_MAX_429_RETRIES = 4;
-const KOMMO_DEFAULT_RETRY_MS = 1000;
-
-export type KommoLeadsRead = {
-  leads: KommoLeadPosition[];
-  /**
-   * Ids de TODOS los leads que Kommo devolvió, aunque les falte etapa o pipeline (esos no
-   * entran en `leads`). Es la prueba de existencia que usa la reconciliación por id: un
-   * lead devuelto sin `status_id` existe igual y no puede marcarse «no existe en Kommo».
-   */
-  ids?: number[];
-  hasMore: boolean;
-  /**
-   * Instante (ms) en que se PIDIÓ la lectura, antes de enviarla: lo que Kommo
-   * devuelve vale a esa hora. Es el `p_read_at` de apply_kommo_lead_positions, para
-   * que una lectura lenta no pise un webhook más nuevo.
-   */
-  readAtMs: number;
-};
-
-const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/**
- * GET autenticado con el manejo común de 429: espera (Retry-After si viene) y reintenta hasta
- * KOMMO_MAX_429_RETRIES. Devuelve la primera respuesta que no sea un 429 reintentable; el
- * caller decide qué hacer con el resto de los estados. ÚNICO camino de lectura con reintento.
- */
-async function kommoGet(
-  url: string,
-  kommoToken: string,
-  sleep: (ms: number) => Promise<void>,
-  signal?: AbortSignal
-): Promise<Response> {
-  for (let intento = 0; ; intento++) {
-    const res = await fetch(url, signal ? { headers: { Authorization: `Bearer ${kommoToken}` }, signal } : { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (res.status === 429 && intento < KOMMO_MAX_429_RETRIES) {
-      const retryAfter = Number(res.headers.get("retry-after"));
-      await res.body?.cancel();
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : KOMMO_DEFAULT_RETRY_MS * (intento + 1));
-      continue;
-    }
-    return res;
-  }
-}
-
-/**
- * GET /api/v4/talks/{id}: la conversación (talk) con su `entity_id`/`entity_type` (null mientras
- * Kommo no creó el lead) y `_embedded.leads`. `null` = no existe (404/204) o cuerpo ilegible;
- * cualquier otro error HTTP lanza KommoHttpError. La interpretación vive en lead-resolver.ts.
- */
-export async function fetchTalk(
-  kommoDomain: string,
-  kommoToken: string,
-  talkId: number,
-  sleep: (ms: number) => Promise<void> = sleepMs,
-  /** Corta la consulta al vencer el presupuesto de tiempo de la fila (lead-resolver). */
-  signal?: AbortSignal
-): Promise<unknown | null> {
-  const res = await kommoGet(`https://${kommoDomain}/api/v4/talks/${talkId}`, kommoToken, sleep, signal);
-  if (res.status === 404 || res.status === 204) {
-    await res.body?.cancel();
-    return null;
-  }
-  if (!res.ok) {
-    throw new KommoHttpError(res.status, `fetch talk ${talkId}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  }
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * GET /api/v4/leads con el manejo común: 204 = vacío; 429 espera (Retry-After si
- * viene) y reintenta hasta KOMMO_MAX_429_RETRIES (Kommo permite ~7 req/s por
- * cuenta, compartidos con el webhook, el agente y el panel); el resto de los
- * errores salen como KommoHttpError para que el caller decida.
- */
-async function fetchLeadsList(
-  url: string,
-  label: string,
-  kommoToken: string,
-  sleep: (ms: number) => Promise<void>
-): Promise<KommoLeadsRead> {
-  const readAtMs = Date.now();
-  const res = await kommoGet(url, kommoToken, sleep);
-  if (res.status === 204) return { leads: [], ids: [], hasMore: false, readAtMs };
-  if (!res.ok) {
-    throw new KommoHttpError(res.status, `fetch leads ${label}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  }
-  let json: {
-    _embedded?: { leads?: Array<{ id: number; status_id?: number; pipeline_id?: number }> };
-    _links?: { next?: unknown };
-  };
-  try {
-    json = await res.json();
-  } catch {
-    throw new KommoMalformedError(`fetch leads ${label}: 200 con un cuerpo que no es JSON`);
-  }
-  const raw = json?._embedded?.leads;
-  if (!Array.isArray(raw)) {
-    throw new KommoMalformedError(`fetch leads ${label}: 200 sin _embedded.leads`);
-  }
-  const leads: KommoLeadPosition[] = [];
-  const ids: number[] = [];
-  for (const l of raw) {
-    if (!l || typeof l.id !== "number") continue;
-    ids.push(l.id);
-    if (typeof l.status_id === "number" && typeof l.pipeline_id === "number") {
-      leads.push({ id: l.id, status_id: l.status_id, pipeline_id: l.pipeline_id });
-    }
-  }
-  return { leads, ids, hasMore: Boolean(json._links?.next), readAtMs };
-}
-
-/**
- * Una página de GET /api/v4/leads (id, etapa y pipeline de cada lead), ordenada
- * por id. OJO: la paginación es por offset (`page=N`) y Kommo NO ofrece cursor por
- * id (solo `filter[id][]` y rangos por fecha): si se borra un lead mientras se
- * recorre, las páginas se corren y un lead vivo puede saltarse. Por eso nadie debe
- * declarar «no existe» a un lead por no verlo acá: se verifica por id con
- * fetchLeadsByIds.
- */
-export function fetchLeadsPositionsPage(
-  kommoDomain: string,
-  kommoToken: string,
-  page: number,
-  limit = 250,
-  sleep: (ms: number) => Promise<void> = sleepMs
-): Promise<KommoLeadsRead> {
-  return fetchLeadsList(
-    `https://${kommoDomain}/api/v4/leads?limit=${limit}&page=${page}&order[id]=asc`,
-    `page ${page}`,
-    kommoToken,
-    sleep
-  );
-}
-
-/** Máximo de ids por pedido: filter[id][] va en la URL (100 ids ≈ 3 KB, bajo el límite de 8 KB). */
-export const KOMMO_IDS_PER_REQUEST = 100;
-
-/**
- * Los leads de Kommo con esos ids (hasta KOMMO_IDS_PER_REQUEST). Los que no
- * vuelven en la respuesta NO existen en Kommo (borrados): 204 si ninguno existe.
- */
-export function fetchLeadsByIds(
-  kommoDomain: string,
-  kommoToken: string,
-  ids: number[],
-  sleep: (ms: number) => Promise<void> = sleepMs
-): Promise<KommoLeadsRead> {
-  if (ids.length === 0) return Promise.resolve({ leads: [], hasMore: false, readAtMs: Date.now() });
-  if (ids.length > KOMMO_IDS_PER_REQUEST) {
-    throw new Error(`fetchLeadsByIds: máximo ${KOMMO_IDS_PER_REQUEST} ids por pedido (llegaron ${ids.length})`);
-  }
-  const qs = ids.map((id) => `filter[id][]=${encodeURIComponent(String(id))}`).join("&");
-  return fetchLeadsList(
-    `https://${kommoDomain}/api/v4/leads?limit=${KOMMO_IDS_PER_REQUEST}&${qs}`,
-    `by ids (${ids.length})`,
-    kommoToken,
-    sleep
-  );
 }
 
 export type KommoFieldLite = { id: number; name: string };
@@ -612,7 +279,7 @@ export function resolveFieldValue(
     if (!hit) return null;
     return { values: [{ enum_id: hit.id }], written: hit.value };
   }
-  const written = sanitizeKommoFieldValue(value);
+  const written = sanitizeForKommoField(value);
   return { values: [{ value: written }], written };
 }
 
@@ -820,103 +487,4 @@ export async function runSalesbot(
   if (!res.ok) {
     throw new Error(`run salesbot: ${res.status} ${await res.text()}`);
   }
-}
-
-/** Un evento `outgoing_chat_message` de un lead. `createdAt` en segundos epoch (Kommo). */
-export type OutgoingEvent = { id: string; createdAt: number | null };
-
-/**
- * Extrae, de la respuesta de `/api/v4/events`, los eventos salientes de ESE lead.
- * Puro (sin red). null = la respuesta no tiene la forma esperada (no se pudo leer).
- * Un evento de otra entidad con el mismo número (p. ej. un contacto) no cuenta.
- */
-export function outgoingEventsOfLead(json: unknown, kommoLeadId: number): OutgoingEvent[] | null {
-  const embedded = (json as { _embedded?: { events?: unknown } } | null)?._embedded;
-  const events = embedded?.events;
-  if (!Array.isArray(events)) return null;
-  const out: OutgoingEvent[] = [];
-  for (const e of events) {
-    if (e == null || typeof e !== "object") continue;
-    const ev = e as { id?: unknown; entity_id?: unknown; entity_type?: unknown; created_at?: unknown };
-    if (ev.id == null || String(ev.entity_id) !== String(kommoLeadId)) continue;
-    if (ev.entity_type != null && ev.entity_type !== "lead") continue;
-    const createdAt = Number(ev.created_at);
-    out.push({ id: String(ev.id), createdAt: ev.created_at != null && Number.isFinite(createdAt) ? createdAt : null });
-  }
-  return out;
-}
-
-/**
- * Devuelve los eventos `outgoing_chat_message` recientes que pertenecen a un lead.
- * Kommo NO permite filtrar estos eventos por entidad (filter[entity]=lead los excluye;
- * filter[entity_id] da 400), así que pedimos los últimos N por TIPO a nivel cuenta y
- * matcheamos el lead del lado nuestro.
- *
- * null = NO se pudo leer (red, HTTP no-OK, respuesta ilegible). Nunca se confunde con
- * «el lead no tiene salientes» ([]): una foto previa vacía por un error haría pasar
- * cualquier saliente del lead por la entrega del mensaje. 204 (sin eventos) es [].
- */
-export async function fetchOutgoingEvents(
-  kommoLeadId: number,
-  kommoDomain: string,
-  kommoToken: string,
-  limit = 100
-): Promise<OutgoingEvent[] | null> {
-  const url = `https://${kommoDomain}/api/v4/events?filter[type]=outgoing_chat_message&order[created_at]=desc&limit=${limit}`;
-  try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${kommoToken}` } });
-    if (res.status === 204) return [];
-    if (!res.ok) return null;
-    return outgoingEventsOfLead(await res.json(), kommoLeadId);
-  } catch {
-    return null;
-  }
-}
-
-/** IDs de los eventos salientes del lead (ver fetchOutgoingEvents). null = no se pudo leer. */
-export async function fetchOutgoingEventIds(
-  kommoLeadId: number,
-  kommoDomain: string,
-  kommoToken: string,
-  limit = 100
-): Promise<Set<string> | null> {
-  const events = await fetchOutgoingEvents(kommoLeadId, kommoDomain, kommoToken, limit);
-  return events ? new Set(events.map((e) => e.id)) : null;
-}
-
-/**
- * Verifica que el salesbot HAYA ENTREGADO un mensaje al canal del lead.
- *
- * `POST /api/v2/salesbot/run` responde 202 `{"success":true}` SIEMPRE (fire-and-forget;
- * no valida que el bot exista ni que entregue), así que esa respuesta NO prueba el
- * envío. La única señal real de entrega es un evento `outgoing_chat_message` NUEVO del
- * lead. `baseline` = los IDs de eventos salientes que ya existían ANTES de disparar el
- * bot (con fetchOutgoingEventIds); hacemos poll hasta que aparezca un ID que no estaba,
- * o hasta agotar `timeoutMs`. Devuelve `true` si se detectó la entrega.
- *
- * Caveat: `outgoing_chat_message` también se dispara con envíos MANUALES — si un humano
- * contesta dentro de la ventana daría un falso positivo (raro, asumible). Para el
- * problema real (NO-entrega) la señal es confiable.
- */
-export async function verifyOutgoingDelivery(
-  kommoLeadId: number,
-  baseline: Set<string>,
-  kommoDomain: string,
-  kommoToken: string,
-  timeoutMs = 12000
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  // Primer chequeo tras un respiro corto; luego cada ~3.5s hasta el deadline.
-  let delay = 2500;
-  while (Date.now() < deadline) {
-    await sleep(delay);
-    delay = 3500;
-    // Una lectura fallida (null) no es entrega ni no-entrega: se vuelve a mirar.
-    const current = (await fetchOutgoingEventIds(kommoLeadId, kommoDomain, kommoToken)) ?? [];
-    for (const id of current) {
-      if (!baseline.has(id)) return true;
-    }
-  }
-  return false;
 }

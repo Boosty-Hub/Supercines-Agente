@@ -36,6 +36,18 @@ export default function SalesbotFunnelTabs({
   previousPeriod: PreviousPeriodSummary;
 }) {
   const [tab, setTab] = useState<FlowType>("cumpleanos");
+  const [estadoFilter, setEstadoFilter] = useState<"todos" | "con_asesora" | "estancado">("todos");
+  const [pasoFilter, setPasoFilter] = useState<string>("todos");
+  const [nombreFilter, setNombreFilter] = useState("");
+
+  // Cambiar de pestaña cambia el conjunto de pasos disponibles — los
+  // filtros de la tabla de detalle no tienen sentido conservados entre flujos.
+  function changeTab(next: FlowType) {
+    setTab(next);
+    setEstadoFilter("todos");
+    setPasoFilter("todos");
+    setNombreFilter("");
+  }
 
   const tabs: { key: FlowType; label: string }[] = [
     { key: "cumpleanos", label: FLOW_LABELS.cumpleanos },
@@ -90,6 +102,21 @@ export default function SalesbotFunnelTabs({
     { label: "Conversaciones iniciadas", color: "#6366f1", values: days.map((d) => byDay.get(d) ?? 0) },
   ];
 
+  // Filtros de la tabla de detalle — puramente client-side, sobre lo que ya
+  // está cargado (no dispara ninguna consulta nueva).
+  const detailRows = filtered.filter((r) => {
+    if (estadoFilter === "con_asesora" && !r.reached_human) return false;
+    if (estadoFilter === "estancado" && r.reached_human) return false;
+    if (pasoFilter !== "todos" && r.furthest_step_index !== Number(pasoFilter)) return false;
+    if (nombreFilter.trim()) {
+      const name = (r.contact_name || `Lead ${r.kommo_lead_id}`).toLowerCase();
+      if (!name.includes(nombreFilter.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
+  const selectCls =
+    "rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-xs text-neutral-700 focus:border-neutral-900 focus:outline-none focus:ring-1 focus:ring-neutral-900";
+
   return (
     <div className="space-y-6">
       {/* Comparativo de sedes (punto 3): % de ESTE flujo (tab activo) en cada
@@ -122,7 +149,7 @@ export default function SalesbotFunnelTabs({
       <SegmentedControl
         items={tabs.map((t) => ({ id: t.key, label: t.label }))}
         value={tab}
-        onChange={setTab}
+        onChange={changeTab}
         aria-label="Tipo de flujo"
       />
 
@@ -185,6 +212,36 @@ export default function SalesbotFunnelTabs({
             title="Detalle"
             description="Leads de este flujo en el período, más recientes primero"
           >
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={nombreFilter}
+                onChange={(e) => setNombreFilter(e.target.value)}
+                placeholder="Buscar por nombre…"
+                className="min-w-[160px] flex-1 rounded-lg border border-neutral-300 px-3 py-1.5 text-xs focus:border-neutral-900 focus:outline-none focus:ring-1 focus:ring-neutral-900"
+              />
+              <select
+                value={estadoFilter}
+                onChange={(e) => setEstadoFilter(e.target.value as typeof estadoFilter)}
+                className={selectCls}
+              >
+                <option value="todos">Estado: todos</option>
+                <option value="con_asesora">Con asesora</option>
+                <option value="estancado">Estancado</option>
+              </select>
+              <select
+                value={pasoFilter}
+                onChange={(e) => setPasoFilter(e.target.value)}
+                className={selectCls}
+              >
+                <option value="todos">Paso: todos</option>
+                {labels.map((label, i) => (
+                  <option key={i} value={i}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-card">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[640px]">
@@ -198,7 +255,7 @@ export default function SalesbotFunnelTabs({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
-                    {filtered.slice(0, 100).map((r) => (
+                    {detailRows.slice(0, 100).map((r) => (
                       <tr key={r.kommo_lead_id} className="hover:bg-neutral-50/70 transition-colors">
                         <td className="px-4 py-3 text-xs text-neutral-500 tabular-nums">{r.kommo_created_at.slice(0, 10)}</td>
                         <td className="px-4 py-3 text-sm text-neutral-700">{r.contact_name || `Lead ${r.kommo_lead_id}`}</td>
@@ -229,9 +286,11 @@ export default function SalesbotFunnelTabs({
                 </table>
               </div>
             </div>
-            {filtered.length > 100 && (
-              <p className="mt-2 text-xs text-neutral-400">Mostrando los 100 más recientes de {filtered.length}.</p>
-            )}
+            {detailRows.length === 0 ? (
+              <p className="mt-2 text-xs text-neutral-400">Ningún lead coincide con estos filtros.</p>
+            ) : detailRows.length > 100 ? (
+              <p className="mt-2 text-xs text-neutral-400">Mostrando los 100 más recientes de {detailRows.length}.</p>
+            ) : null}
           </SectionCard>
         </>
       )}

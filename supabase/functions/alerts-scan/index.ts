@@ -223,6 +223,85 @@ async function detectUnroutedCorporateLeads(): Promise<AlertInput[]> {
   return out;
 }
 
+// Lead del funnel de Salesbots (Cumpleaños / Alquiler de Salas, /salesbots)
+// que llegó lejos en el guion del bot pero se enfrió sin llegar a la asesora.
+// Mismo umbral de "frío" (48h) que ya muestra el dashboard — la diferencia es
+// que acá solo alertamos a los AVANZADOS (paso >= SALESBOT_ADVANCED_STEP de
+// 7): alguien que abandonó en el paso 1-2 es ruido esperado y no amerita que
+// nadie intervenga. El bot vive 100% en Kommo (no es nuestro código), así
+// que no hay nada que "reintentar" — esto es solo para que una persona
+// decida si vale la pena escribirle a mano.
+const SALESBOT_COLD_HOURS = 48;
+const SALESBOT_ADVANCED_STEP = 3;
+const SEDE_LABEL: Record<string, string> = {
+  caracas: "Caracas (Altos Mirandinos)",
+  valencia: "Valencia",
+  maracay: "Maracay",
+};
+const FLOW_LABEL: Record<string, string> = {
+  cumpleanos: "Cumpleaños",
+  alquiler_salas: "Alquiler de Salas",
+};
+
+async function detectColdSalesbotLeads(): Promise<AlertInput[]> {
+  const staleCutoff = new Date(Date.now() - SALESBOT_COLD_HOURS * 3600 * 1000).toISOString();
+  const { data } = await supabase
+    .from("salesbot_funnel_leads")
+    .select("id, kommo_lead_id, sede, flow_type, contact_name, furthest_step_index, kommo_updated_at")
+    .eq("reached_human", false)
+    .gte("furthest_step_index", SALESBOT_ADVANCED_STEP)
+    .lt("kommo_updated_at", staleCutoff)
+    .limit(500);
+
+  type Row = {
+    id: string;
+    kommo_lead_id: number;
+    sede: string;
+    flow_type: string;
+    contact_name: string | null;
+    furthest_step_index: number;
+  };
+  const rows = (data ?? []) as Row[];
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id);
+  const existing = await existingAlerts("salesbot_lead_cold", ids);
+
+  // Para el link directo al lead en Kommo (best-effort, no bloquea la alerta
+  // si falta la config).
+  const { data: kommoRow } = await supabase
+    .from("runtime_config")
+    .select("value")
+    .eq("key", "KOMMO_API_DOMAIN")
+    .maybeSingle();
+  const kommoDomain = (kommoRow as { value?: string } | null)?.value;
+
+  return rows
+    .filter((r) => !existing.has(r.id))
+    .map((r) => {
+      const leadName = r.contact_name || `lead ${r.kommo_lead_id}`;
+      const sedeLabel = SEDE_LABEL[r.sede] ?? r.sede;
+      const flowLabel = FLOW_LABEL[r.flow_type] ?? r.flow_type;
+      const link = kommoDomain ? ` Ver: https://${kommoDomain}/leads/detail/${r.kommo_lead_id}` : "";
+      return {
+        kind: "salesbot_lead_cold",
+        severity: "warning" as const,
+        title: `Salesbot frío (avanzado): ${leadName}`,
+        description:
+          `${sedeLabel} · ${flowLabel} — llegó al paso ${r.furthest_step_index + 1} de 7 pero lleva más de ` +
+          `${SALESBOT_COLD_HOURS}h sin actividad y no llegó a la asesora.${link}`,
+        ref_table: "salesbot_funnel_leads",
+        ref_id: r.id,
+        metadata: {
+          kommo_lead_id: r.kommo_lead_id,
+          sede: r.sede,
+          flow_type: r.flow_type,
+          furthest_step_index: r.furthest_step_index,
+        },
+      };
+    });
+}
+
 async function detectHumanReviewNeeded(): Promise<AlertInput[]> {
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { data } = await supabase
@@ -482,15 +561,16 @@ Deno.serve(async (req: Request) => {
 
   try {
     const config = await getConfig();
-    const [failed, review, regression, silence, unrouted, providerCreditResolved] = await Promise.all([
+    const [failed, review, regression, silence, unrouted, coldSalesbot, providerCreditResolved] = await Promise.all([
       detectFailedDrafts(),
       detectHumanReviewNeeded(),
       detectOutcomesRegression(),
       detectInboundSilence(),
       detectUnroutedCorporateLeads(),
+      detectColdSalesbotLeads(),
       resolveRecoveredProviderCredit(),
     ]);
-    const newAlerts = [...failed, ...review, ...regression, ...silence, ...unrouted];
+    const newAlerts = [...failed, ...review, ...regression, ...silence, ...unrouted, ...coldSalesbot];
 
     for (const a of newAlerts) {
       try {
@@ -511,6 +591,7 @@ Deno.serve(async (req: Request) => {
           outcomes_regression: regression.length,
           inbound_silence: silence.length,
           corporate_lead_unrouted: unrouted.length,
+          salesbot_lead_cold: coldSalesbot.length,
           provider_credit_resolved: providerCreditResolved,
         },
       }),

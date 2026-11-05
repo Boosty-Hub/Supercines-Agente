@@ -28,12 +28,14 @@ export default function SalesbotFunnelTabs({
   sede,
   sedeSummary,
   previousPeriod,
+  kommoDomain,
 }: {
   rows: FunnelLeadRow[];
   rangeDays: number;
   sede: Sede;
   sedeSummary: SedeFlowSummary[];
   previousPeriod: PreviousPeriodSummary;
+  kommoDomain: string | null;
 }) {
   const [tab, setTab] = useState<FlowType>("cumpleanos");
   const [estadoFilter, setEstadoFilter] = useState<"todos" | "con_asesora" | "estancado">("todos");
@@ -258,7 +260,21 @@ export default function SalesbotFunnelTabs({
                     {detailRows.slice(0, 100).map((r) => (
                       <tr key={r.kommo_lead_id} className="hover:bg-neutral-50/70 transition-colors">
                         <td className="px-4 py-3 text-xs text-neutral-500 tabular-nums">{r.kommo_created_at.slice(0, 10)}</td>
-                        <td className="px-4 py-3 text-sm text-neutral-700">{r.contact_name || `Lead ${r.kommo_lead_id}`}</td>
+                        <td className="px-4 py-3 text-sm">
+                          {kommoDomain ? (
+                            <a
+                              href={`https://${kommoDomain}/leads/detail/${r.kommo_lead_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-neutral-700 underline decoration-neutral-300 underline-offset-2 hover:text-neutral-900 hover:decoration-neutral-500"
+                              title="Abrir este lead en Kommo"
+                            >
+                              {r.contact_name || `Lead ${r.kommo_lead_id}`}
+                            </a>
+                          ) : (
+                            <span className="text-neutral-700">{r.contact_name || `Lead ${r.kommo_lead_id}`}</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-sm text-neutral-600">{labels[r.furthest_step_index]}</td>
                         <td
                           className={

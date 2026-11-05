@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { configValues } from "@/lib/runtime-config";
 import { PageShell } from "@/components/ui";
 import SalesbotFunnelTabs from "./flow-tabs";
 import {
@@ -15,10 +16,11 @@ export const dynamic = "force-dynamic";
 const RANGES = [7, 15, 30];
 const FLOWS: FlowType[] = ["cumpleanos", "alquiler_salas"];
 
-export default async function SalesbotsPage(props: {
-  searchParams: Promise<{ sede?: string; range?: string }>;
+export default async function SalesbotsPage({
+  searchParams,
+}: {
+  searchParams: { sede?: string; range?: string };
 }) {
-  const searchParams = await props.searchParams;
   const sede: Sede = (SEDES as string[]).includes(searchParams.sede ?? "")
     ? (searchParams.sede as Sede)
     : "caracas";
@@ -28,7 +30,10 @@ export default async function SalesbotsPage(props: {
   // Período anterior de igual duración, para el comparativo "vs. período anterior".
   const prevSince = new Date(Date.now() - validRange * 2 * 24 * 3600 * 1000).toISOString();
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServerClient();
+
+  // Para armar el link directo a cada lead en Kommo desde la tabla de detalle.
+  const { KOMMO_API_DOMAIN } = await configValues(["KOMMO_API_DOMAIN"]);
 
   const [{ data }, { data: allSedesRaw }, { data: prevRaw }] = await Promise.all([
     supabase
@@ -107,6 +112,7 @@ export default async function SalesbotsPage(props: {
         sede={sede}
         sedeSummary={sedeSummary}
         previousPeriod={previousPeriod}
+        kommoDomain={KOMMO_API_DOMAIN ?? null}
       />
     </PageShell>
   );

@@ -100,6 +100,18 @@ export const ALERT_KINDS = {
     severity: "info",
     reason: "Dreams reemplazó una regla que el agente YA aplicaba (el original queda en /dreams-archive/): es feedback de calidad, se revisa en /dreams, no es una caída",
   },
+  corporate_lead_unrouted: {
+    webhook: false,
+    table: "alerts",
+    severity: "warning",
+    reason: "un lead de una vertical con ruteo automático (ej. Eventos y corporativo) no se asignó a ninguna asesora (confianza insuficiente u otro motivo en lead_routing_events) y quedó con la cuenta genérica: se revisa en /alerts, no interrumpe por Slack",
+  },
+  salesbot_lead_cold: {
+    webhook: false,
+    table: "alerts",
+    severity: "info",
+    reason: "un lead avanzó casi todo el flujo de un Salesbot (Alquiler de Cumpleaños / Reserva de Salas) sin llegar a una asesora y dejó de responder: vale un seguimiento manual mientras sigue caliente, se revisa en /alerts",
+  },
 } as const satisfies Record<string, AlertKindInfo>;
 
 /** Todo tipo registrado (alertas e incidentes de salud). */

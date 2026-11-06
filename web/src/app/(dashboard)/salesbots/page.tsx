@@ -16,11 +16,12 @@ export const dynamic = "force-dynamic";
 const RANGES = [7, 15, 30];
 const FLOWS: FlowType[] = ["cumpleanos", "alquiler_salas"];
 
-export default async function SalesbotsPage({
-  searchParams,
-}: {
-  searchParams: { sede?: string; range?: string };
-}) {
+export default async function SalesbotsPage(
+  props: {
+    searchParams: Promise<{ sede?: string; range?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const sede: Sede = (SEDES as string[]).includes(searchParams.sede ?? "")
     ? (searchParams.sede as Sede)
     : "caracas";
@@ -30,7 +31,7 @@ export default async function SalesbotsPage({
   // Período anterior de igual duración, para el comparativo "vs. período anterior".
   const prevSince = new Date(Date.now() - validRange * 2 * 24 * 3600 * 1000).toISOString();
 
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   // Para armar el link directo a cada lead en Kommo desde la tabla de detalle.
   const { KOMMO_API_DOMAIN } = await configValues(["KOMMO_API_DOMAIN"]);
